@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Manga bookshelf landing panel. Plain inflation (no DataBinding). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FF101014"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/libraryTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="漫画书架"
+            android:textColor="#FFFFFFFF"
+            android:textSize="34sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/browserButton"
+            android:layout_width="wrap_content"
+            android:layout_height="64dp"
+            android:minWidth="160dp"
+            android:text="浏览器"
+            android:textColor="#FFFFFFFF"
+            android:textSize="22sp"
+            android:background="#FF2A2A33"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/emptyText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="未找到漫画。请将漫画文件夹放入 /sdcard/Manga 后重试。"
+        android:textColor="#FFB0B0B8"
+        android:textSize="22sp"
+        android:visibility="gone" />
+
+    <com.igalia.wolvic.ui.views.CustomRecyclerView
+        android:id="@+id/mangaGrid"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp"
+        android:clipToPadding="false"
+        android:scrollbars="vertical" />
+
+</LinearLayout>

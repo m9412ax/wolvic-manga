@@ -76,6 +76,7 @@ import com.igalia.wolvic.ui.widgets.AbstractTabsBar;
 import com.igalia.wolvic.ui.widgets.AppServicesProvider;
 import com.igalia.wolvic.ui.widgets.HorizontalTabsBar;
 import com.igalia.wolvic.ui.widgets.KeyboardWidget;
+import com.igalia.wolvic.ui.widgets.MangaLibraryWidget;
 import com.igalia.wolvic.ui.widgets.NavigationBarWidget;
 import com.igalia.wolvic.ui.widgets.OverlayContentWidget;
 import com.igalia.wolvic.ui.widgets.RootWidget;
@@ -229,6 +230,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     TrayWidget mTray;
     WhatsNewWidget mWhatsNewWidget = null;
     WebXRInterstitialWidget mWebXRInterstitial;
+    private MangaLibraryWidget mMangaLibrary;
     PermissionDelegate mPermissionDelegate;
     LinkedList<UpdateListener> mWidgetUpdateListeners;
     LinkedList<PermissionListener> mPermissionListeners;
@@ -499,6 +501,23 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mPlatformPlugin.registerListener(this);
 
         mWindows.restoreSessions();
+
+        // Manga bookshelf is the default landing screen; the browser is demoted
+        // to a button on the shelf. Created after the stock widgets so it can
+        // hide them once they are attached to the restored window.
+        mMangaLibrary = new MangaLibraryWidget(this);
+        addWidget(mMangaLibrary);
+        mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
+
+        // Hide the stock browser UI. setVisible(false) is the least invasive
+        // option (TrayWidget.hide() also dismisses notifications); it keeps the
+        // back-handler stack intact and is reversed by showBrowserFromManga().
+        mNavigationBar.setVisible(false);
+        mTray.setVisible(false);
+        WindowWidget focusedWindow = mWindows.getFocusedWindow();
+        if (focusedWindow != null) {
+            focusedWindow.setVisible(false);
+        }
     }
 
     private void onPresentingImmersiveChange(boolean presenting) {
@@ -2134,6 +2153,26 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @Override
     public Windows getWindows() {
         return mWindows;
+    }
+
+    public MangaLibraryWidget getMangaLibrary() {
+        return mMangaLibrary;
+    }
+
+    /**
+     * Restore the stock browser UI from the manga bookshelf. Reverses the
+     * hiding done in initializeWidgets(). Called by the shelf's browser button.
+     */
+    public void showBrowserFromManga() {
+        if (mMangaLibrary != null) {
+            mMangaLibrary.hide(UIWidget.KEEP_WIDGET);
+        }
+        WindowWidget focusedWindow = mWindows.getFocusedWindow();
+        if (focusedWindow != null) {
+            focusedWindow.setVisible(true);
+        }
+        mNavigationBar.show(UIWidget.REQUEST_FOCUS);
+        mTray.show(UIWidget.REQUEST_FOCUS);
     }
 
     @Override
