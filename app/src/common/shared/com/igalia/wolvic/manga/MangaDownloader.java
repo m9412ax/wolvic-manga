@@ -59,15 +59,15 @@ public final class MangaDownloader {
     public void download(List<MangaWebDav.Entry> files, String baseUrl, String user,
                          String pass, File destination, Callback callback) {
         if (mBusy) {
-            notify(callback, "已有下载任务在运行");
+            postStatus(callback, "已有下载任务在运行");
             return;
         }
         if (files == null || files.isEmpty()) {
-            notify(callback, "没有可下载的文件");
+            postStatus(callback, "没有可下载的文件");
             return;
         }
         if (!canUseNetwork()) {
-            notify(callback, "已开启「仅 WiFi 下载」，当前不是 WiFi 网络");
+            postStatus(callback, "已开启「仅 WiFi 下载」，当前不是 WiFi 网络");
             return;
         }
 
@@ -79,7 +79,7 @@ public final class MangaDownloader {
         final AtomicInteger done = new AtomicInteger(0);
         final AtomicInteger failed = new AtomicInteger(0);
         final int total = files.size();
-        notify(callback, "开始下载 0/" + total);
+        postStatus(callback, "开始下载 0/" + total);
 
         for (MangaWebDav.Entry entry : files) {
             mPool.execute(() -> {
@@ -101,7 +101,7 @@ public final class MangaDownloader {
                 int current = done.incrementAndGet();
                 final String status = "下载 " + current + "/" + total
                         + (failed.get() > 0 ? " · 失败 " + failed.get() : "");
-                notify(callback, status);
+                postStatus(callback, status);
             });
         }
         mPool.shutdown();
@@ -113,7 +113,7 @@ public final class MangaDownloader {
                     return;
                 }
                 mBusy = false;
-                notify(callback, "下载完成 " + (total - failed.get()) + "/" + total
+                postStatus(callback, "下载完成 " + (total - failed.get()) + "/" + total
                         + (failed.get() > 0 ? "，失败 " + failed.get() : ""));
             }
         });
@@ -162,7 +162,7 @@ public final class MangaDownloader {
         }
     }
 
-    private void notify(Callback callback, String status) {
+    private void postStatus(Callback callback, String status) {
         Log.i(TAG, status);
         if (callback == null) {
             return;
