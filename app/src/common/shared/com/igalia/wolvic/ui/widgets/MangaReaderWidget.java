@@ -13,6 +13,7 @@ import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Surface;
 import android.view.TextureView;
@@ -21,6 +22,7 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import com.igalia.wolvic.R;
+import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
@@ -95,14 +97,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
-        aPlacement.width = 1200;
-        aPlacement.height = 800;
-        aPlacement.worldWidth = 1.6f;
+        // Match the front browser window. Translation values are WORLD UNITS
+        // (1 metre = 360 units), so a metre-scale value would clip the panel.
+        Context context = getContext();
+        int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
+        int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
+        aPlacement.width = windowWidth + mBorderWidth * 2;
+        aPlacement.height = windowHeight + mBorderWidth * 2;
+        aPlacement.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
+                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT;
+        aPlacement.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y);
+        aPlacement.translationZ = WidgetPlacement.getWindowWorldZMeters(context);
         aPlacement.anchorX = 0.5f;
         aPlacement.anchorY = 0.5f;
-        aPlacement.translationZ = -0.2f;
+        aPlacement.parentHandle = -1;
         aPlacement.cylinder = false;
         aPlacement.visible = false;
+        Log.i("MangaReader", "placement width=" + aPlacement.width
+                + " y=" + aPlacement.translationY + " z=" + aPlacement.translationZ);
     }
 
     public void setOnBackListener(Runnable onBack) {
@@ -326,6 +338,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onResume() {
+        // Keep the native placement in sync once the VR runtime is ready.
+        updateWidget();
         MediaPlayer player = mMediaPlayer;
         if (isVisible() && player != null && !mVideoCompleted) {
             try {

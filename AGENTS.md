@@ -49,7 +49,17 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
   `sourceActivityInfo` 为 `.dev`，权限申请链路生效；授权后重启不再弹窗，无 FATAL/ANR。
   **启动默认书架、封面/翻页、视频优先播放、播完切图、Back 返回仍属 VR 视觉项，必须佩戴头显
   从应用列表启动验收，当前一律记为「未验证」**。
-- **P1 内核 / 网盘 WebDAV / SMB / 扩展 APK / 下载备份**：未开始；不要声称已复现。
+- **2026-11-14 头显反馈修复（本轮）**：用户戴头显确认「无默认浏览器页面、但也无书架页面，控制栏与设置里没有漫画内容」。
+  根因：`MangaLibraryWidget` / `MangaReaderWidget` 写 `translationZ = -0.2f`，而 Wolvic 的
+  `WidgetPlacement.translation*` 是**世界单位（1 米 = 360 单位，1f ≈ 2.8mm）**；窗口 FRONT 实际用
+  `WidgetPlacement.getWindowWorldZMeters()` ≈ +1xxx。面板落在眼部近裁剪面内被剔除，不报错也不崩溃。
+  已改为与浏览器窗口同尺寸同位置，并在 `onResume()` 追加 `updateWidget()` 纠正 onCreate 排队时序。
+  书架升级为**漫画主页单面板**：标题 + 内容容器 + 底部漫画标签栏
+  （书架 / 本地 / SMB / 网盘 / 扩展 / 设置 / 浏览器）；标签栏与内容共用同一个 surface，必然可见。
+  本地页可真实浏览目录并打开阅读器；SMB / WebDAV / 扩展源仅能保存配置或扫描已安装包，
+  **协议层仍未接入**。`VRBrowserActivity` 新增 `mMangaMode` 状态，`onResume()` 强制同步
+  tray / navigation bar 可见性，避免浏览器控制栏残留在漫画模式。
+- **P1 内核 / 网盘 WebDAV / SMB / 扩展 APK / 下载备份**：协议层未开始；不要声称已复现。
 
 ## 已验证事实（别再猜）
 
@@ -139,6 +149,14 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
   之后同名同签名可直接 `adb install -r` 保数据升级。正式 release 必须换受保护签名密钥。
 - **本地存储权限**：Pico 为 Android 10 / API 29。已补 `requestLegacyExternalStorage=true` 与书架
   运行时 `READ_EXTERNAL_STORAGE` 回调；权限结果由 Wolvic `PermissionDelegate` 分发，授权后自动重扫。
+- **VR 面板 placement 坑（实测）**：`WidgetPlacement.translationX/Y/Z` 单位是世界单位而非米。
+  根级面板必须复刻 `Windows.placeWindow(FRONT)`：
+  `translationY = unitFromMeters(ctx, R.dimen.window_world_y)`、
+  `translationZ = WidgetPlacement.getWindowWorldZMeters(ctx)`、
+  `worldWidth = floatDimension(ctx, R.dimen.window_world_width) * windowWidth / WINDOW_WIDTH_DEFAULT`，
+  `width/height` 用 `SettingsStore.getWindowWidth()/getWindowHeight()`（dp）。
+  写成 `-0.2f` 会把面板放进近裁剪面，头显里完全看不见且日志无异常。
+  **多个独立 widget 各自定位容易错位**：把控制栏和页面放进同一个 UIWidget 的布局里最可靠。
 - VR 截图必须佩戴头显且会话 FOCUSED；`adb shell am start` 可用于**非视觉冒烟测试**（实测能起进程、
   触发权限弹窗、加载 OpenXR/Gecko，但灭屏时是 `APP_CMD_PAUSE` + `Will skip draw vr actvity`），
   可靠视觉验收=头显内点图标。Wolvic UIWidget 绘制在离屏 3D surface，`uiautomator dump` 只能拿到

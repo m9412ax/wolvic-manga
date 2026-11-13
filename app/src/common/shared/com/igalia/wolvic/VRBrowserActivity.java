@@ -233,6 +233,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     private MangaLibraryWidget mMangaLibrary;
     private final Runnable mMangaBrowserBackHandler = this::showMangaLibraryFromBrowser;
     private boolean mMangaBrowserBackHandlerActive;
+    private boolean mMangaMode = true;
     PermissionDelegate mPermissionDelegate;
     LinkedList<UpdateListener> mWidgetUpdateListeners;
     LinkedList<PermissionListener> mPermissionListeners;
@@ -504,16 +505,21 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
         mWindows.restoreSessions();
 
-        // Manga bookshelf is the default landing screen; the browser is demoted
-        // to a button on the shelf. Created after the stock widgets so it can
-        // hide them once they are attached to the restored window.
+        // The manga home panel is the default landing surface. It owns its own
+        // bottom tab bar (library / local / SMB / WebDAV / extensions / settings
+        // / browser), so the stock browser tray and navigation bar are hidden in
+        // manga mode. Created after the stock widgets so it can hide them once
+        // they are attached to the restored window.
+        mMangaMode = true;
         mMangaLibrary = new MangaLibraryWidget(this);
         // show() performs the initial addWidget once the placement is visible.
         mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
 
-        // Hide the stock browser UI. setVisible(false) is the least invasive
-        // option (TrayWidget.hide() also dismisses notifications); it keeps the
-        // back-handler stack intact and is reversed by showBrowserFromManga().
+        // setVisible(false) is the least invasive option (TrayWidget.hide() also
+        // dismisses notifications); it keeps the back-handler stack intact and
+        // is reversed by showBrowserFromManga(). onResume() re-asserts this,
+        // because onCreate queues the visibility updates before the VR runtime
+        // is fully ready.
         mNavigationBar.setVisible(false);
         mTray.setVisible(false);
         WindowWidget focusedWindow = mWindows.getFocusedWindow();
@@ -703,6 +709,21 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mAudioEngine.resumeEngine();
         for (Widget widget: mWidgets.values()) {
             widget.onResume();
+        }
+
+        // Re-assert manga/browser mode once the VR runtime is ready. Visibility
+        // updates queued during onCreate can be applied before addWidgetNative,
+        // so this guarantees the stock tray is really gone on the landing screen.
+        if (mNavigationBar != null && mTray != null && mWindows != null) {
+            WindowWidget focusedWindow = mWindows.getFocusedWindow();
+            if (focusedWindow != null) {
+                focusedWindow.setVisible(!mMangaMode);
+            }
+            mNavigationBar.setVisible(!mMangaMode);
+            mTray.setVisible(!mMangaMode);
+            if (mMangaMode && mMangaLibrary != null && !mMangaLibrary.isVisible()) {
+                mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
+            }
         }
 
         // If we're signed-in, poll for any new device events (e.g. received tabs) on activity resume.
@@ -2166,6 +2187,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
      * hiding done in initializeWidgets(). Called by the shelf's browser button.
      */
     public void showBrowserFromManga() {
+        mMangaMode = false;
         if (mMangaLibrary != null) {
             mMangaLibrary.hide(UIWidget.KEEP_WIDGET);
         }
@@ -2185,6 +2207,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     /** Returns from the optional browser to the root manga bookshelf. */
     public void showMangaLibraryFromBrowser() {
+        mMangaMode = true;
         if (mMangaBrowserBackHandlerActive) {
             popBackHandler(mMangaBrowserBackHandler);
             mMangaBrowserBackHandlerActive = false;
