@@ -59,6 +59,16 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
   本地页可真实浏览目录并打开阅读器；SMB / WebDAV / 扩展源仅能保存配置或扫描已安装包，
   **协议层仍未接入**。`VRBrowserActivity` 新增 `mMangaMode` 状态，`onResume()` 强制同步
   tray / navigation bar 可见性，避免浏览器控制栏残留在漫画模式。
+- **2026-11-14 最终包实测（非视觉）**：commit `d6498baf2eb2f658145dc89edfe3ee6e5e67358c`，
+  CI run `43500127787` / artifact `14072519727`（161408946 B，`sha256:` digest 与 ZIP CRC 通过）。
+  `apksigner verify --print-certs` 的证书 SHA-256 `3a247d16…26bd1` 与 Secret 完全一致，
+  固定签名**真正生效**；设备签名 KeySets 107 / `d8128228` / version 3。
+  上一轮的 `1139fa3f` 其实仍是 runner 随机签名，不是 Secret 签名，勿再当作固定签名参考。
+  logcat 实测 `MangaHome: placement width=802 height=452 worldWidth=4.0 y=126.0 z=-1515.0`
+  （与窗口同位置，旧值 `-0.2`）、`scanLibrary items=1`、`switchPage LIBRARY`、
+  `show page=LIBRARY visible=true`、`onResume`，无 FATAL/ANR。
+  同 APK 再次 `adb install -r` = Success，数据 406 文件 / 7 shared_prefs、权限 `granted=true` 全保留，
+  官方包未动。**面板是否真的可见、7 个标签切换、各页面与阅读器仍需戴头显视觉验收**。
 - **P1 内核 / 网盘 WebDAV / SMB / 扩展 APK / 下载备份**：协议层未开始；不要声称已复现。
 
 ## 已验证事实（别再猜）
