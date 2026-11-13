@@ -5,7 +5,9 @@
 
 package com.igalia.wolvic.ui.widgets;
 
+import android.Manifest;
 import android.content.Context;
+import android.os.Build;
 import android.os.Environment;
 import android.view.LayoutInflater;
 import android.widget.Button;
@@ -15,6 +17,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 
 import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
+import com.igalia.wolvic.browser.api.WSession;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
 
@@ -22,11 +25,11 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 
 /**
- * The manga bookshelf. This is the default landing screen; the stock browser
- * is demoted to a button. Each immediate subdirectory of /sdcard/Manga is one
- * manga. Clicking a cover opens {@link MangaReaderWidget}.
+ * Default manga bookshelf. Each immediate subdirectory of /sdcard/Manga is one
+ * manga. The stock browser is available through the browser button.
  */
 public class MangaLibraryWidget extends UIWidget {
 
@@ -38,6 +41,7 @@ public class MangaLibraryWidget extends UIWidget {
     private TextView mEmptyText;
     private MangaCoverAdapter mAdapter;
     private File mRoot;
+    private boolean mPermissionRequested;
 
     public MangaLibraryWidget(Context aContext) {
         super(aContext);
@@ -70,13 +74,11 @@ public class MangaLibraryWidget extends UIWidget {
 
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
-        // Large centered panel. width/height are in dp (see WidgetPlacement.viewWidth()).
         aPlacement.width = 1200;
         aPlacement.height = 800;
         aPlacement.worldWidth = 1.6f;
         aPlacement.anchorX = 0.5f;
         aPlacement.anchorY = 0.5f;
-        // Sit slightly in front of the (hidden) browser window.
         aPlacement.translationZ = -0.2f;
         aPlacement.cylinder = false;
         aPlacement.visible = false;
@@ -84,25 +86,72 @@ public class MangaLibraryWidget extends UIWidget {
 
     @Override
     public void show(@ShowFlags int aShowFlags) {
-        // Re-scan so newly added folders show up when returning to the shelf.
         scanLibrary();
         super.show(aShowFlags);
     }
 
+    @Override
+    public void onResume() {
+        if (isVisible() && hasStoragePermission()) {
+            scanLibrary();
+        }
+    }
+
+    @Override
+    protected void onDismiss() {
+        // This is the root manga view. UIWidget's default would remove it and
+        // leave the hidden browser window behind, so keep the shelf visible.
+    }
+
+    private boolean hasStoragePermission() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || mWidgetManager.isPermissionGranted(Manifest.permission.READ_EXTERNAL_STORAGE);
+    }
+
+    private void requestStoragePermission() {
+        if (mPermissionRequested || Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                || Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
+            return;
+        }
+        mPermissionRequested = true;
+        mWidgetManager.requestPermission(
+                mRoot.getAbsolutePath(),
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                WidgetManagerDelegate.OriginatorType.APPLICATION,
+                new WSession.PermissionDelegate.Callback() {
+                    @Override
+                    public void grant() {
+                        mPermissionRequested = false;
+                        scanLibrary();
+                    }
+
+                    @Override
+                    public void reject() {
+                        mPermissionRequested = false;
+                        showEmptyState("需要存储权限才能读取 /sdcard/Manga。请在系统设置中允许后重新进入。 ");
+                    }
+                });
+    }
+
     private void scanLibrary() {
+        if (!hasStoragePermission()) {
+            showEmptyState("需要存储权限才能读取 /sdcard/Manga。 ");
+            requestStoragePermission();
+            return;
+        }
+
         List<MangaCoverAdapter.MangaItem> items = new ArrayList<>();
         File[] dirs = null;
         try {
             if (mRoot != null && mRoot.isDirectory()) {
-                dirs = mRoot.listFiles(f -> f.isDirectory());
+                dirs = mRoot.listFiles(File::isDirectory);
             }
-        } catch (Throwable t) {
-            dirs = null;
+        } catch (Throwable ignored) {
         }
 
         if (dirs != null) {
-            Arrays.sort(dirs, (f1, f2) ->
-                    MangaCoverAdapter.naturalCompare(f1.getName(), f2.getName()));
+            Arrays.sort(dirs, (a, b) ->
+                    MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
             for (File dir : dirs) {
                 if (dir == null || !dir.isDirectory()) {
                     continue;
@@ -113,23 +162,26 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
 
-        if (mAdapter != null) {
-            mAdapter.update(items);
+        mAdapter.update(items);
+        if (items.isEmpty()) {
+            showEmptyState("未找到漫画。请将漫画文件夹放入 /sdcard/Manga 后重试。 ");
+        } else {
+            mEmptyText.setVisibility(GONE);
+            mGrid.setVisibility(VISIBLE);
         }
-        boolean empty = items.isEmpty();
-        if (mEmptyText != null) {
-            mEmptyText.setVisibility(empty ? VISIBLE : GONE);
-        }
-        if (mGrid != null) {
-            mGrid.setVisibility(empty ? GONE : VISIBLE);
-        }
+    }
+
+    private void showEmptyState(String message) {
+        mAdapter.update(new ArrayList<>());
+        mEmptyText.setText(message.trim());
+        mEmptyText.setVisibility(VISIBLE);
+        mGrid.setVisibility(GONE);
     }
 
     private void openReader(File folder) {
         if (folder == null) {
             return;
         }
-        // Keep the shelf so we can return to it; the reader is a fresh widget.
         hide(KEEP_WIDGET);
         MangaReaderWidget reader = new MangaReaderWidget(getContext());
         reader.setOnBackListener(() -> show(REQUEST_FOCUS));
@@ -143,15 +195,15 @@ public class MangaLibraryWidget extends UIWidget {
             return null;
         }
         List<File> images = new ArrayList<>();
-        for (File f : files) {
-            if (f.isFile() && hasExtension(f.getName(), IMAGE_EXTENSIONS)) {
-                images.add(f);
+        for (File file : files) {
+            if (file.isFile() && hasExtension(file.getName(), IMAGE_EXTENSIONS)) {
+                images.add(file);
             }
         }
         if (images.isEmpty()) {
             return null;
         }
-        images.sort((f1, f2) -> MangaCoverAdapter.naturalCompare(f1.getName(), f2.getName()));
+        images.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
         return images.get(0);
     }
 
@@ -160,8 +212,8 @@ public class MangaLibraryWidget extends UIWidget {
         if (files == null) {
             return false;
         }
-        for (File f : files) {
-            if (f.isFile() && hasExtension(f.getName(), VIDEO_EXTENSIONS)) {
+        for (File file : files) {
+            if (file.isFile() && hasExtension(file.getName(), VIDEO_EXTENSIONS)) {
                 return true;
             }
         }
@@ -172,7 +224,7 @@ public class MangaLibraryWidget extends UIWidget {
         if (name == null) {
             return false;
         }
-        String lower = name.toLowerCase();
+        String lower = name.toLowerCase(Locale.ROOT);
         for (String ext : extensions) {
             if (lower.endsWith("." + ext)) {
                 return true;

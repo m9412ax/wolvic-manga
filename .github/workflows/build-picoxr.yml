@@ -7,3 +7,5 @@ jobs:
     with:
       flavour: assemblePicoxrArm64GeckoGenericDebug
       internal: false
+      stable_debug_keystore: true
+    secrets: inherit

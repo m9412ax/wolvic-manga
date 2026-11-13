@@ -16,16 +16,27 @@
         android:textColor="#FFFFFFFF"
         android:textSize="22sp" />
 
-    <ImageView
-        android:id="@+id/pageImage"
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
         android:layout_marginTop="8dp"
         android:layout_marginBottom="8dp"
-        android:scaleType="fitCenter"
-        android:background="#FF14141A"
-        android:contentDescription="漫画页面" />
+        android:background="#FF14141A">
+
+        <ImageView
+            android:id="@+id/pageImage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter"
+            android:contentDescription="漫画页面" />
+
+        <TextureView
+            android:id="@+id/videoTexture"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <LinearLayout
         android:layout_width="match_parent"

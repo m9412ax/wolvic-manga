@@ -231,6 +231,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     WhatsNewWidget mWhatsNewWidget = null;
     WebXRInterstitialWidget mWebXRInterstitial;
     private MangaLibraryWidget mMangaLibrary;
+    private final Runnable mMangaBrowserBackHandler = this::showMangaLibraryFromBrowser;
+    private boolean mMangaBrowserBackHandlerActive;
     PermissionDelegate mPermissionDelegate;
     LinkedList<UpdateListener> mWidgetUpdateListeners;
     LinkedList<PermissionListener> mPermissionListeners;
@@ -506,7 +508,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         // to a button on the shelf. Created after the stock widgets so it can
         // hide them once they are attached to the restored window.
         mMangaLibrary = new MangaLibraryWidget(this);
-        addWidget(mMangaLibrary);
+        // show() performs the initial addWidget once the placement is visible.
         mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
 
         // Hide the stock browser UI. setVisible(false) is the least invasive
@@ -2171,8 +2173,31 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         if (focusedWindow != null) {
             focusedWindow.setVisible(true);
         }
-        mNavigationBar.show(UIWidget.REQUEST_FOCUS);
-        mTray.show(UIWidget.REQUEST_FOCUS);
+        // These widgets were visible by default. Restoring visibility avoids
+        // accumulating duplicate back handlers on repeated browser/shelf swaps.
+        mNavigationBar.setVisible(true);
+        mTray.setVisible(true);
+        if (!mMangaBrowserBackHandlerActive) {
+            pushBackHandler(mMangaBrowserBackHandler);
+            mMangaBrowserBackHandlerActive = true;
+        }
+    }
+
+    /** Returns from the optional browser to the root manga bookshelf. */
+    public void showMangaLibraryFromBrowser() {
+        if (mMangaBrowserBackHandlerActive) {
+            popBackHandler(mMangaBrowserBackHandler);
+            mMangaBrowserBackHandlerActive = false;
+        }
+        WindowWidget focusedWindow = mWindows.getFocusedWindow();
+        if (focusedWindow != null) {
+            focusedWindow.setVisible(false);
+        }
+        mNavigationBar.setVisible(false);
+        mTray.setVisible(false);
+        if (mMangaLibrary != null) {
+            mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
+        }
     }
 
     @Override
