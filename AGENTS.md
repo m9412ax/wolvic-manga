@@ -89,6 +89,17 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
   归档格式 zip/cbz/pdf、浏览搜索分类。不要声称「Mihon 全部功能已复现」。
 - **P1 内核 / SMB 协议 / 扩展加载 / 归档格式 / 浏览搜索分类**：未开始；WebDAV 下载、备份、
   阅读优化与设置持久化已落地。
+- **「别做空壳」校验**：`MangaSettings` 的 50 个 key 全部有真实消费点。`READER_BACKGROUND`
+  （`backgroundColor()`）、`SOURCE_IMAGE/VIDEO_FORMATS`（`imageExtensions()`/`videoExtensions()`）、
+  `CACHE_MB`（阅读器 `LruCache` 容量）通过封装方法生效；`SOURCE_THUMB_PX` 接
+  `MangaCoverAdapter.mTargetPx`；`ADV_LOGGING` 控制 `MangaReaderWidget.diagnostic()`；
+  `DOWNLOAD_QUEUE_PREFS` 由 `MangaDownloader` 持久化并在设置页回显。新增设置项时务必同时写入消费点。
+- **Z 层级（勿误改）**：窗口 ≈ -1515、书架 = 窗口 +40、阅读器 = 窗口 +220，数值越大越靠近用户。
+  阅读器浮最前、书架遮住浏览器窗口、托盘常驻，所以 `applyUiMode()` 里书架用
+  `setVisible(mMangaUiMode != UI_BROWSER)`（阅读器模式保留书架作背景）是正确的。
+- **Java 命名坑**：不要在类里定义名为 `notify(...)` 的私有方法；匿名 `Runnable` 内调用会被
+  `Object.notify()`（final 无参）遮蔽，javac 报 `method notify in class Object cannot be applied`。
+  本仓库已统一使用 `postStatus(...)`。
 
 ## 已验证事实（别再猜）
 
