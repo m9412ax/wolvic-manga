@@ -84,6 +84,35 @@ jobs:
       - name: Build ${{ inputs.flavour }} Flavour
         run: ./gradlew ${{ inputs.flavour }}
 
+      # Writing ~/.android/debug.keystore is not enough: AGP may fail to read a
+      # PKCS12 store as its legacy JKS debug store and silently regenerate a
+      # random one, which changes the signature on every run. Re-sign every
+      # produced APK with the repository keystore so upgrades stay compatible.
+      - name: Force stable debug signing
+        if: inputs.stable_debug_keystore == true
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYSTORE="$RUNNER_TEMP/wolvic-debug.keystore"
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          echo "Using $APKSIGNER"
+          found=0
+          while IFS= read -r -d '' apk; do
+            found=1
+            echo "Re-signing $apk"
+            "$APKSIGNER" sign \
+              --ks "$KEYSTORE" --ks-key-alias androiddebugkey \
+              --ks-pass pass:android --key-pass pass:android \
+              --v1-signing-enabled true --v2-signing-enabled true \
+              --out "$apk.stable" "$apk"
+            mv "$apk.stable" "$apk"
+            "$APKSIGNER" verify --print-certs "$apk"
+          done < <(find app/build/outputs/apk -type f -name '*.apk' -print0)
+          test "$found" -eq 1
+
       - name: Upload APK (without WebXR support) to Artifacts
         uses: actions/upload-artifact@v4
         with:

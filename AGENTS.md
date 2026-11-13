@@ -138,6 +138,12 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
 - **CI debug 签名已固定（不落盘到仓库）**：仓库 Actions Secret `DEBUG_KEYSTORE_BASE64` 保存仅开发用途的
   PKCS12 debug keystore；`build-picoxr.yml` 用 `secrets: inherit` + `stable_debug_keystore: true`，
   `build.yml` 解码为 runner 的 `~/.android/debug.keystore` 并用 `keytool -list` 校验 alias。
+  **实测坑（2026-11-14）**：两次 CI 的 Secret 证书指纹完全相同（`3A:24:7D:16…:D1`），
+  但产物签名不同、`adb install -r` 报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —— AGP 把
+  PKCS12 当 legacy JKS 读取失败后自行重新生成了随机 debug keystore，
+  仅写 `~/.android/debug.keystore` 并不生效。现已在 Gradle 构建后增加
+  `Force stable debug signing` step，用 `apksigner sign --ks` 对产出 APK 强制重签名并
+  `verify --print-certs`，产物签名才真正固定。
   GitHub 拒绝把含私钥的二进制 keystore 作为 Git blob（实测 400/连接重置），禁止绕过。
   首次从旧 runner 随机签名切换会报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。实测可行流程：
   先 `run-as <pkg> tar -cf - .` 导出并**逐文件读取校验**备份 → `adb install -r` 试探 →
