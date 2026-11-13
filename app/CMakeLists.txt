@@ -111,7 +111,7 @@ if(OPENXR)
         add_custom_command(TARGET native-lib POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy
             ${CMAKE_SOURCE_DIR}/../third_party/picoxr/libs/android.${ANDROID_ABI}/libopenxr_loader.so
-            ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libopenxr_loader.so
+            ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libpico_openxr_loader.so
         )
     else ()
         target_link_libraries(native-lib PRIVATE OpenXR::openxr_loader)
