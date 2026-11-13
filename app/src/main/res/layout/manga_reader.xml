@@ -1,28 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Basic paged image reader. Plain inflation (no DataBinding). -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- Independent floating reader window. There is NO control bar here: every
+     persistent control lives in Wolvic's original tray widget. Only a page
+     indicator overlay and a transient page-jump dialog are rendered here. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/readerRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#FF0C0C10"
-    android:padding="16dp">
-
-    <TextView
-        android:id="@+id/pageCounter"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:gravity="center"
-        android:text="0 / 0"
-        android:textColor="#FFFFFFFF"
-        android:textSize="22sp" />
+    android:background="#FF0C0C10">
 
     <FrameLayout
+        android:id="@+id/pageStage"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="8dp"
-        android:background="#FF14141A">
+        android:layout_height="match_parent">
 
         <ImageView
             android:id="@+id/pageImage"
@@ -38,44 +27,84 @@
             android:visibility="gone" />
     </FrameLayout>
 
-    <LinearLayout
+    <View
+        android:id="@+id/brightnessOverlay"
         android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:alpha="0"
+        android:clickable="false" />
+
+    <TextView
+        android:id="@+id/pageCounter"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center">
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:background="#99000000"
+        android:text="0 / 0"
+        android:textColor="#FFFFFFFF"
+        android:textSize="20sp" />
 
-        <Button
-            android:id="@+id/backButton"
-            android:layout_width="0dp"
-            android:layout_height="64dp"
-            android:layout_weight="1"
-            android:layout_margin="6dp"
-            android:text="返回"
-            android:textColor="#FFFFFFFF"
-            android:textSize="22sp"
-            android:background="#FF2A2A33" />
+    <TextView
+        android:id="@+id/readerHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text=""
+        android:textColor="#FFDDDDDD"
+        android:textSize="22sp"
+        android:visibility="gone" />
 
-        <Button
-            android:id="@+id/prevButton"
-            android:layout_width="0dp"
-            android:layout_height="64dp"
-            android:layout_weight="1"
-            android:layout_margin="6dp"
-            android:text="上一页"
-            android:textColor="#FFFFFFFF"
-            android:textSize="22sp"
-            android:background="#FF2A2A33" />
+    <LinearLayout
+        android:id="@+id/gotoDialog"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:background="#FF202028"
+        android:visibility="gone">
 
-        <Button
-            android:id="@+id/nextButton"
-            android:layout_width="0dp"
-            android:layout_height="64dp"
-            android:layout_weight="1"
-            android:layout_margin="6dp"
-            android:text="下一页"
+        <TextView
+            android:id="@+id/gotoTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="跳转页码"
             android:textColor="#FFFFFFFF"
-            android:textSize="22sp"
-            android:background="#FF2A2A33" />
+            android:textSize="22sp" />
+
+        <EditText
+            android:id="@+id/gotoInput"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:inputType="number"
+            android:textColor="#FFFFFFFF"
+            android:textSize="22sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/gotoConfirm"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="跳转"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/gotoCancel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="取消"
+                android:textSize="18sp" />
+        </LinearLayout>
     </LinearLayout>
 
-</LinearLayout>
+</FrameLayout>

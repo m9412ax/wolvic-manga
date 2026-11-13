@@ -75,7 +75,7 @@
     <item name="settings_world_y" format="float" type="dimen">1.6</item>
     <item name="settings_world_z" format="float" type="dimen">-2.0</item>
     <dimen name="settings_width">680dp</dimen>
-    <dimen name="settings_height">490dp</dimen>
+    <dimen name="settings_height">620dp</dimen>
     <dimen name="settings_main_button_text_width">125dp</dimen>
     <dimen name="settings_outline_button_height">24dp</dimen>
 
@@ -140,8 +140,8 @@
     <!-- Tray -->
     <item name="tray_world_y" format="float" type="dimen">0.25</item>
     <item name="tray_world_z" format="float" type="dimen">-2.5</item>
-    <item name="tray_world_width" format="float" type="dimen">1.4</item>
-    <dimen name="tray_width">244dp</dimen>
+    <item name="tray_world_width" format="float" type="dimen">1.95</item>
+    <dimen name="tray_width">340dp</dimen>
     <dimen name="tray_height">66dp</dimen>
     <!-- The density of the tray tooltips is the default one. -->
     <item name="tray_tooltip_density" format="float" type="dimen">1.0</item>

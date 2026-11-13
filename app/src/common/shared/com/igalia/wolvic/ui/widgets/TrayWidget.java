@@ -71,6 +71,10 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
 
     private static final int ICON_ANIMATION_DURATION = 200;
 
+    public static final int MODE_BROWSER = 0;
+    public static final int MODE_MANGA = 1;
+    public static final int MODE_READER = 2;
+
     private static final int TAB_ADDED_NOTIFICATION_ID = 0;
     private static final int TAB_SENT_NOTIFICATION_ID = 1;
     private static final int BOOKMARK_ADDED_NOTIFICATION_ID = 2;
@@ -100,6 +104,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private int mLeftControllerBatteryLevel;
     private int mRightControllerBatteryLevel;
     private ConnectivityReceiver mConnectivityReceived;
+    private int mMangaMode = MODE_BROWSER;
+    private String mMangaPage = "LIBRARY";
 
     public TrayWidget(Context aContext) {
         super(aContext);
@@ -244,6 +250,27 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
             notifyDownloadsClicked();
             view.requestFocusFromTouch();
         });
+
+        // Manga page tabs and reader controls live in the SAME tray widget and
+        // reuse the stock UIButton style/tooltip/background, so the browser and
+        // manga modes are one UI instead of two separate applications.
+        bindMangaButton(mBinding.mangaHomeButton, "MANGA");
+        bindMangaButton(mBinding.mangaShelfButton, "LIBRARY");
+        bindMangaButton(mBinding.mangaLocalButton, "LOCAL");
+        bindMangaButton(mBinding.mangaSmbButton, "SMB");
+        bindMangaButton(mBinding.mangaWebDavButton, "WEBDAV");
+        bindMangaButton(mBinding.mangaExtensionsButton, "EXTENSIONS");
+        bindMangaButton(mBinding.mangaBrowserButton, "BROWSER");
+        bindMangaButton(mBinding.mangaSettingsButton, "SETTINGS");
+        bindMangaButton(mBinding.readerBackButton, "READER_BACK");
+        bindMangaButton(mBinding.readerPrevButton, "READER_PREV");
+        bindMangaButton(mBinding.readerNextButton, "READER_NEXT");
+        bindMangaButton(mBinding.readerGotoButton, "READER_GOTO");
+        bindMangaButton(mBinding.readerScaleButton, "READER_SCALE");
+        bindMangaButton(mBinding.readerDirectionButton, "READER_DIRECTION");
+        bindMangaButton(mBinding.readerBrightnessButton, "READER_BRIGHTNESS");
+        bindMangaButton(mBinding.readerAutoButton, "READER_AUTO");
+        applyMangaMode();
 
         mBinding.wifi.setOnHoverListener((view, motionEvent) -> {
             if (motionEvent.getAction() == MotionEvent.ACTION_HOVER_ENTER) {
@@ -502,6 +529,64 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private void notifyDownloadsClicked() {
         hideNotifications();
         mTrayListeners.forEach(TrayListener::onDownloadsClicked);
+    }
+
+    private void bindMangaButton(UIButton button, String action) {
+        if (button == null) {
+            return;
+        }
+        button.setOnHoverListener(mButtonScaleHoverListener);
+        button.setOnClickListener(view -> mangaAction(action));
+    }
+
+    private void mangaAction(String action) {
+        if (isImmersive()) {
+            return;
+        }
+        if (mAudio != null) {
+            mAudio.playSound(AudioEngine.Sound.CLICK);
+        }
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).onMangaTrayAction(action);
+        }
+    }
+
+    /** Switches the tray between the stock browser controls and manga controls. */
+    public void setMangaMode(int mode) {
+        mMangaMode = mode;
+        applyMangaMode();
+    }
+
+    public int getMangaMode() {
+        return mMangaMode;
+    }
+
+    public void setMangaPage(String page) {
+        mMangaPage = page;
+        applyMangaMode();
+    }
+
+    public void setReaderAutoActive(boolean active) {
+        if (mBinding != null) {
+            mBinding.readerAutoButton.setActiveMode(active);
+        }
+    }
+
+    private void applyMangaMode() {
+        if (mBinding == null) {
+            return;
+        }
+        mBinding.trayButtons.setVisibility(mMangaMode == MODE_BROWSER ? View.VISIBLE : View.GONE);
+        mBinding.mangaButtons.setVisibility(mMangaMode == MODE_MANGA ? View.VISIBLE : View.GONE);
+        mBinding.readerButtons.setVisibility(mMangaMode == MODE_READER ? View.VISIBLE : View.GONE);
+
+        mBinding.mangaShelfButton.setActiveMode("LIBRARY".equals(mMangaPage));
+        mBinding.mangaLocalButton.setActiveMode("LOCAL".equals(mMangaPage));
+        mBinding.mangaSmbButton.setActiveMode("SMB".equals(mMangaPage));
+        mBinding.mangaWebDavButton.setActiveMode("WEBDAV".equals(mMangaPage));
+        mBinding.mangaExtensionsButton.setActiveMode("EXTENSIONS".equals(mMangaPage));
+        Log.i("MangaTray", "mode=" + mMangaMode + " page=" + mMangaPage);
     }
 
     @Override

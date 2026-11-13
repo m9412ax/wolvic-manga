@@ -69,7 +69,26 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
   `show page=LIBRARY visible=true`、`onResume`，无 FATAL/ANR。
   同 APK 再次 `adb install -r` = Success，数据 406 文件 / 7 shared_prefs、权限 `granted=true` 全保留，
   官方包未动。**面板是否真的可见、7 个标签切换、各页面与阅读器仍需戴头显视觉验收**。
-- **P1 内核 / 网盘 WebDAV / SMB / 扩展 APK / 下载备份**：协议层未开始；不要声称已复现。
+- **2026-11-14 第二次头显反馈（方向纠偏，本轮待 CI 验收）**：用户明确要求**在 Wolvic 原生控件体系内
+  融合**，不是另起一套 UI：①页面切换要做进**原本浏览器下方托盘**（替换/切换托盘按钮行），
+  不许自建底部标签栏；②浏览器与漫画必须双向可逆，设置菜单里要有**分组的漫画完整设置**；
+  ③阅读漫画要弹**独立悬浮窗口**，窗口下方只保留原生托盘（内容换成阅读控制），且要有漫画软件
+  真实的阅读优化/设置，不接受空壳。
+  本轮据此重写：`tray.xml` 增加 `tray_buttons`/`manga_buttons`/`reader_buttons` 三行按钮（全部用原生
+  `UIButton` + `trayButton*Theme` + tooltip），`TrayWidget.setMangaMode()` 切换 BROWSER/MANGA/READER；
+  `VRBrowserActivity` 三态 `UI_LIBRARY/UI_READER/UI_BROWSER`，托盘与窗口**常驻不隐藏**，
+  `applyUiMode()` 统一同步，Back handler 只在浏览器态压栈，可随时切回漫画；
+  `settings.xml` 增加独立「漫画 / MANGA」分组（阅读/图源/下载/备份/高级 5 个 HoneycombButton），
+  `SettingsView.SettingViewType` + `SettingsWidget.showView()` 路由到新 `MangaOptionsView`，
+  复用原生 `SwitchSetting`/`RadioGroupSetting`/`SingleEditSetting`/`ButtonSetting`；
+  新增 `manga/MangaSettings`（单一配置源，全部真实持久化）、`MangaWebDav`（PROPFIND+GET，可用）、
+  `MangaDownloader`（并发/重试/仅 WiFi）、`MangaBackup`（JSON 导入导出）；
+  `MangaReaderWidget` 重写为独立悬浮窗口，消费全部设置（阅读方向/缩放/亮度/双击缩放/点击区域/
+  音量键/自动翻页/预加载/裁白边/翻页动画/进度/视频策略），控制项全在原生托盘。
+  **仍未接入**：SMB 协议栈（仅 445 探测 + 挂载点打开）、Mihon 扩展 APK 加载层（仅扫描/安装）、
+  归档格式 zip/cbz/pdf、浏览搜索分类。不要声称「Mihon 全部功能已复现」。
+- **P1 内核 / SMB 协议 / 扩展加载 / 归档格式 / 浏览搜索分类**：未开始；WebDAV 下载、备份、
+  阅读优化与设置持久化已落地。
 
 ## 已验证事实（别再猜）
 
@@ -110,10 +129,15 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
 - `show(REQUEST_FOCUS)` / `hide(KEEP_WIDGET|REMOVE_WIDGET)` / `setVisible(bool)`。
   **手柄射线点击 = 标准 Android `OnClickListener`**，滚动 = 标准 RecyclerView，无需 VR 专用输入代码。
 - **启动钩子**：`VRBrowserActivity.initializeWidgets()`（`mWindows.restoreSessions()` 之后）创建并
-  `show` 书架，`setVisible(false)` 隐藏 `mNavigationBar`/`mTray`/`focusedWindow`；
-  `showBrowserFromManga()` 恢复浏览器，`showMangaLibraryFromBrowser()` 用专用 Back handler 返回书架。
-  `TrayWidget.hide()` 有副作用（dismiss 通知），故用 `setVisible`；`show()` 已隐式 `addWidget`，
+  `show` 书架，再 `applyUiMode()`。**不要再隐藏 `mTray` 或 `focusedWindow`**：原生 tray 是窗口的子控件，
+  隐藏窗口会连托盘一起消失，且导致浏览器/漫画无法双向切换。托盘改为三态按钮行
+  （`TrayWidget.setMangaMode(MODE_BROWSER|MODE_MANGA|MODE_READER)`），导航条在漫画态隐藏。
+  `mMangaBrowserBackHandler` 只在 `UI_BROWSER` 压栈，其余态弹出，保证随时可回漫画。
+  `TrayWidget.hide()` 有副作用（dismiss 通知），显隐一律用 `setVisible`；`show()` 已隐式 `addWidget`，
   创建书架时不要再显式 `addWidget`，否则重复注册同一 handle。
+- **页面切换入口**：`VRBrowserActivity.onMangaTrayAction(String)` 统一处理托盘 action；
+  阅读器由 `openMangaReader(File)` 弹出独立悬浮窗（`UI_READER`），`closeMangaReader()` 回书架。
+  不要在任何漫画 widget 内再自建底部标签栏/控制栏。
 - 网格用 `ui/views/CustomRecyclerView` + `GridLayoutManager`；参照 `ui/adapters/TopSitesAdapterImpl`。
 - **已加文件**：`ui/widgets/MangaLibraryWidget.java`、`ui/widgets/MangaReaderWidget.java`、
   `ui/adapters/MangaCoverAdapter.java` + `res/layout/manga_library.xml`、`manga_cover_item.xml`、`manga_reader.xml`。

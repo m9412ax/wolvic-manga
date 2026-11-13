@@ -41,7 +41,12 @@ public abstract class SettingsView extends FrameLayout {
         SEARCH_ENGINE_EDIT,
         CUSTOM_SEARCH_ENGINES,
         TERMS_OF_SERVICE,
-        PRIVACY_POLICY
+        PRIVACY_POLICY,
+        MANGA_READER,
+        MANGA_SOURCES,
+        MANGA_DOWNLOADS,
+        MANGA_BACKUP,
+        MANGA_ADVANCED
     }
 
     protected Delegate mDelegate;

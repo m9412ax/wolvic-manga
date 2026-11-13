@@ -77,6 +77,7 @@ import com.igalia.wolvic.ui.widgets.AppServicesProvider;
 import com.igalia.wolvic.ui.widgets.HorizontalTabsBar;
 import com.igalia.wolvic.ui.widgets.KeyboardWidget;
 import com.igalia.wolvic.ui.widgets.MangaLibraryWidget;
+import com.igalia.wolvic.ui.widgets.MangaReaderWidget;
 import com.igalia.wolvic.ui.widgets.NavigationBarWidget;
 import com.igalia.wolvic.ui.widgets.OverlayContentWidget;
 import com.igalia.wolvic.ui.widgets.RootWidget;
@@ -90,6 +91,7 @@ import com.igalia.wolvic.ui.widgets.WidgetManagerDelegate;
 import com.igalia.wolvic.ui.widgets.WidgetPlacement;
 import com.igalia.wolvic.ui.widgets.WindowWidget;
 import com.igalia.wolvic.ui.widgets.Windows;
+import com.igalia.wolvic.ui.widgets.settings.SettingsView;
 import com.igalia.wolvic.ui.widgets.dialogs.LegalDocumentDialogWidget;
 import com.igalia.wolvic.ui.widgets.dialogs.PromptDialogWidget;
 import com.igalia.wolvic.ui.widgets.dialogs.SendTabDialogWidget;
@@ -231,6 +233,12 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     WhatsNewWidget mWhatsNewWidget = null;
     WebXRInterstitialWidget mWebXRInterstitial;
     private MangaLibraryWidget mMangaLibrary;
+    private MangaReaderWidget mMangaReader;
+    private static final int UI_LIBRARY = 0;
+    private static final int UI_READER = 1;
+    private static final int UI_BROWSER = 2;
+    private int mMangaUiMode = UI_LIBRARY;
+    private String mMangaPage = "LIBRARY";
     private final Runnable mMangaBrowserBackHandler = this::showMangaLibraryFromBrowser;
     private boolean mMangaBrowserBackHandlerActive;
     private boolean mMangaMode = true;
@@ -505,27 +513,17 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
         mWindows.restoreSessions();
 
-        // The manga home panel is the default landing surface. It owns its own
-        // bottom tab bar (library / local / SMB / WebDAV / extensions / settings
-        // / browser), so the stock browser tray and navigation bar are hidden in
-        // manga mode. Created after the stock widgets so it can hide them once
-        // they are attached to the restored window.
+        // Manga is a mode of the EXISTING browser, not a separate application.
+        // The stock tray stays visible and becomes the manga page/reader control
+        // bar; the manga panel is drawn slightly in front of the browser window
+        // so the window (and therefore its attached tray) is never removed.
+        mMangaUiMode = UI_LIBRARY;
         mMangaMode = true;
         mMangaLibrary = new MangaLibraryWidget(this);
         // show() performs the initial addWidget once the placement is visible.
         mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
-
-        // setVisible(false) is the least invasive option (TrayWidget.hide() also
-        // dismisses notifications); it keeps the back-handler stack intact and
-        // is reversed by showBrowserFromManga(). onResume() re-asserts this,
-        // because onCreate queues the visibility updates before the VR runtime
-        // is fully ready.
-        mNavigationBar.setVisible(false);
-        mTray.setVisible(false);
-        WindowWidget focusedWindow = mWindows.getFocusedWindow();
-        if (focusedWindow != null) {
-            focusedWindow.setVisible(false);
-        }
+        applyUiMode();
+        Log.i("MangaMode", "initializeWidgets uiMode=" + mMangaUiMode);
     }
 
     private void onPresentingImmersiveChange(boolean presenting) {
@@ -711,20 +709,9 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             widget.onResume();
         }
 
-        // Re-assert manga/browser mode once the VR runtime is ready. Visibility
-        // updates queued during onCreate can be applied before addWidgetNative,
-        // so this guarantees the stock tray is really gone on the landing screen.
-        if (mNavigationBar != null && mTray != null && mWindows != null) {
-            WindowWidget focusedWindow = mWindows.getFocusedWindow();
-            if (focusedWindow != null) {
-                focusedWindow.setVisible(!mMangaMode);
-            }
-            mNavigationBar.setVisible(!mMangaMode);
-            mTray.setVisible(!mMangaMode);
-            if (mMangaMode && mMangaLibrary != null && !mMangaLibrary.isVisible()) {
-                mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
-            }
-        }
+        // Visibility updates queued during onCreate can be applied before the
+        // native VR layer is ready. Re-assert the unified manga/browser mode.
+        applyUiMode();
 
         // If we're signed-in, poll for any new device events (e.g. received tabs) on activity resume.
         // There's no push support right now, so this helps with the perception of speedy tab delivery.
@@ -2182,45 +2169,158 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         return mMangaLibrary;
     }
 
-    /**
-     * Restore the stock browser UI from the manga bookshelf. Reverses the
-     * hiding done in initializeWidgets(). Called by the shelf's browser button.
-     */
-    public void showBrowserFromManga() {
-        mMangaMode = false;
-        if (mMangaLibrary != null) {
-            mMangaLibrary.hide(UIWidget.KEEP_WIDGET);
-        }
-        WindowWidget focusedWindow = mWindows.getFocusedWindow();
-        if (focusedWindow != null) {
-            focusedWindow.setVisible(true);
-        }
-        // These widgets were visible by default. Restoring visibility avoids
-        // accumulating duplicate back handlers on repeated browser/shelf swaps.
-        mNavigationBar.setVisible(true);
-        mTray.setVisible(true);
-        if (!mMangaBrowserBackHandlerActive) {
-            pushBackHandler(mMangaBrowserBackHandler);
-            mMangaBrowserBackHandlerActive = true;
-        }
+    public MangaReaderWidget getMangaReader() {
+        return mMangaReader;
     }
 
-    /** Returns from the optional browser to the root manga bookshelf. */
-    public void showMangaLibraryFromBrowser() {
-        mMangaMode = true;
-        if (mMangaBrowserBackHandlerActive) {
+    /**
+     * One UI, three modes. The stock browser window is never hidden (the native
+     * tray is its child), so switching between browser and manga is always
+     * reversible. Manga panels are placed slightly in front of that window.
+     */
+    private void applyUiMode() {
+        if (mTray == null || mWindows == null) {
+            return;
+        }
+        WindowWidget focused = mWindows.getFocusedWindow();
+        if (focused != null) {
+            focused.setVisible(true);
+        }
+        if (mNavigationBar != null) {
+            mNavigationBar.setVisible(mMangaUiMode == UI_BROWSER);
+        }
+        mTray.setVisible(true);
+        mTray.setMangaMode(mMangaUiMode == UI_BROWSER ? TrayWidget.MODE_BROWSER
+                : mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
+                : TrayWidget.MODE_MANGA);
+        mTray.setMangaPage(mMangaPage);
+        if (mMangaLibrary != null) {
+            mMangaLibrary.setVisible(mMangaUiMode != UI_BROWSER);
+        }
+        if (mMangaReader != null) {
+            mMangaReader.setVisible(mMangaUiMode == UI_READER);
+        }
+        Log.i("MangaMode", "mode=" + mMangaUiMode + " page=" + mMangaPage
+                + " tray=" + mTray.isVisible());
+    }
+
+    private void setUiMode(int mode) {
+        mMangaUiMode = mode;
+        mMangaMode = mode != UI_BROWSER;
+        applyUiMode();
+        if (mode == UI_BROWSER && !mMangaBrowserBackHandlerActive) {
+            pushBackHandler(mMangaBrowserBackHandler);
+            mMangaBrowserBackHandlerActive = true;
+        } else if (mode != UI_BROWSER && mMangaBrowserBackHandlerActive) {
             popBackHandler(mMangaBrowserBackHandler);
             mMangaBrowserBackHandlerActive = false;
         }
-        WindowWidget focusedWindow = mWindows.getFocusedWindow();
-        if (focusedWindow != null) {
-            focusedWindow.setVisible(false);
+    }
+
+    /** Single entry point for all manga actions coming from Wolvic's tray. */
+    public void onMangaTrayAction(String action) {
+        if (action == null) {
+            return;
         }
-        mNavigationBar.setVisible(false);
-        mTray.setVisible(false);
-        if (mMangaLibrary != null) {
-            mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
+        Log.i("MangaTray", "action=" + action + " mode=" + mMangaUiMode);
+        switch (action) {
+            case "MANGA":
+            case "LIBRARY":
+            case "LOCAL":
+            case "SMB":
+            case "WEBDAV":
+            case "EXTENSIONS": {
+                String page = "MANGA".equals(action) ? mMangaPage : action;
+                mMangaPage = page;
+                setUiMode(UI_LIBRARY);
+                if (mMangaLibrary != null) {
+                    mMangaLibrary.showPage(page);
+                }
+                if (mTray != null) {
+                    mTray.setMangaPage(page);
+                }
+                break;
+            }
+            case "BROWSER":
+                setUiMode(UI_BROWSER);
+                break;
+            case "SETTINGS":
+                if (mTray != null) {
+                    mTray.showSettingsDialog(SettingsView.SettingViewType.MAIN);
+                }
+                break;
+            case "READER_BACK":
+                closeMangaReader();
+                break;
+            case "READER_PREV":
+                if (mMangaReader != null) {
+                    mMangaReader.pageDelta(-1);
+                }
+                break;
+            case "READER_NEXT":
+                if (mMangaReader != null) {
+                    mMangaReader.pageDelta(1);
+                }
+                break;
+            case "READER_GOTO":
+                if (mMangaReader != null) {
+                    mMangaReader.openGotoDialog();
+                }
+                break;
+            case "READER_SCALE":
+                if (mMangaReader != null) {
+                    mMangaReader.cycleScale();
+                }
+                break;
+            case "READER_DIRECTION":
+                if (mMangaReader != null) {
+                    mMangaReader.cycleDirection();
+                }
+                break;
+            case "READER_BRIGHTNESS":
+                if (mMangaReader != null) {
+                    mMangaReader.cycleBrightness();
+                }
+                break;
+            case "READER_AUTO":
+                if (mMangaReader != null) {
+                    mMangaReader.toggleAutoAdvance();
+                }
+                break;
+            default:
+                break;
         }
+    }
+
+    /** Opens the reader as an independent floating window in front of the shelf. */
+    public void openMangaReader(File folder) {
+        if (folder == null) {
+            return;
+        }
+        if (mMangaReader == null) {
+            mMangaReader = new MangaReaderWidget(this);
+            mMangaReader.show(UIWidget.REQUEST_FOCUS);
+        }
+        mMangaReader.setFolder(folder);
+        setUiMode(UI_READER);
+        Log.i("MangaMode", "openReader " + folder.getAbsolutePath());
+    }
+
+    public void closeMangaReader() {
+        if (mMangaReader != null) {
+            mMangaReader.persistState();
+        }
+        setUiMode(UI_LIBRARY);
+    }
+
+    /** Restore the stock browser UI from manga mode. */
+    public void showBrowserFromManga() {
+        setUiMode(UI_BROWSER);
+    }
+
+    /** Returns from the browser to the manga bookshelf. */
+    public void showMangaLibraryFromBrowser() {
+        setUiMode(UI_LIBRARY);
     }
 
     @Override

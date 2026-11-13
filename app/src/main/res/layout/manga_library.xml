@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Manga home panel: title + switchable page container + bottom manga tab bar. -->
+<!-- Manga content panel only. Page switching lives in Wolvic's original tray
+     widget (see tray.xml), so this layout has NO custom bottom tab bar. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -20,14 +21,14 @@
             android:layout_weight="1"
             android:text="漫画书架"
             android:textColor="#FFFFFFFF"
-            android:textSize="30sp"
+            android:textSize="28sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/pageHint"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="漫画模式"
+            android:text="使用下方控制栏切换页面"
             android:textColor="#FF8A8A96"
             android:textSize="16sp" />
     </LinearLayout>
@@ -66,22 +67,5 @@
                 android:scrollbars="vertical" />
         </LinearLayout>
     </FrameLayout>
-
-    <HorizontalScrollView
-        android:id="@+id/tabScroller"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:background="#FF1A1A22"
-        android:scrollbars="none">
-
-        <LinearLayout
-            android:id="@+id/tabBar"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:padding="8dp" />
-    </HorizontalScrollView>
 
 </LinearLayout>

@@ -258,6 +258,41 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             showView(SettingsView.SettingViewType.CONTROLLER);
         });
 
+        mBinding.mangaReaderButton.setOnClickListener(view -> {
+            if (mAudio != null) {
+                mAudio.playSound(AudioEngine.Sound.CLICK);
+            }
+            showView(SettingsView.SettingViewType.MANGA_READER);
+        });
+
+        mBinding.mangaSourcesButton.setOnClickListener(view -> {
+            if (mAudio != null) {
+                mAudio.playSound(AudioEngine.Sound.CLICK);
+            }
+            showView(SettingsView.SettingViewType.MANGA_SOURCES);
+        });
+
+        mBinding.mangaDownloadsButton.setOnClickListener(view -> {
+            if (mAudio != null) {
+                mAudio.playSound(AudioEngine.Sound.CLICK);
+            }
+            showView(SettingsView.SettingViewType.MANGA_DOWNLOADS);
+        });
+
+        mBinding.mangaBackupButton.setOnClickListener(view -> {
+            if (mAudio != null) {
+                mAudio.playSound(AudioEngine.Sound.CLICK);
+            }
+            showView(SettingsView.SettingViewType.MANGA_BACKUP);
+        });
+
+        mBinding.mangaAdvancedButton.setOnClickListener(view -> {
+            if (mAudio != null) {
+                mAudio.playSound(AudioEngine.Sound.CLICK);
+            }
+            showView(SettingsView.SettingViewType.MANGA_ADVANCED);
+        });
+
         mBinding.whatsNewButton.setOnClickListener(v -> {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
@@ -519,6 +554,13 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 break;
             case PRIVACY_POLICY:
                 showView(new LegalDocumentView(getContext(), mWidgetManager, LegalDocumentView.LegalDocument.PRIVACY_POLICY));
+                break;
+            case MANGA_READER:
+            case MANGA_SOURCES:
+            case MANGA_DOWNLOADS:
+            case MANGA_BACKUP:
+            case MANGA_ADVANCED:
+                showView(new MangaOptionsView(getContext(), mWidgetManager, aType));
                 break;
         }
     }
