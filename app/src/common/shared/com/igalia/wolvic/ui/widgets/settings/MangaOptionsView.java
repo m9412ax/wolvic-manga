@@ -226,8 +226,12 @@ public class MangaOptionsView extends SettingsView
         button("查看下载目录", "刷新状态", () -> {
             java.io.File dir = new java.io.File(mSettings.text(MangaSettings.DOWNLOAD_DIR));
             java.io.File[] chapters = dir.listFiles(java.io.File::isDirectory);
+            android.content.SharedPreferences queue = mSettings.downloadQueuePrefs();
             setStatus(dir.getAbsolutePath() + " · 章节 "
-                    + (chapters == null ? 0 : chapters.length));
+                    + (chapters == null ? 0 : chapters.length)
+                    + " · 上次任务 " + queue.getString("last", "无")
+                    + " 完成 " + queue.getInt("completed", 0)
+                    + "/失败 " + queue.getInt("failed", 0));
         });
     }
 

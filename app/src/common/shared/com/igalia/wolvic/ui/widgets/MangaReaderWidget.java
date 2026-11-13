@@ -351,6 +351,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         scheduleAuto();
         Log.i(TAG, "showPage " + (mIndex + 1) + "/" + mPages.size()
                 + " gen=" + generation);
+        diagnostic("detail zoom=" + mZoom + " scale=" + mSettings.integer(MangaSettings.READER_SCALE)
+                + " direction=" + mSettings.integer(MangaSettings.READER_DIRECTION)
+                + " brightness=" + mSettings.integer(MangaSettings.READER_BRIGHTNESS)
+                + " preload=" + mSettings.integer(MangaSettings.READER_PRELOAD)
+                + " decodeMax=" + mSettings.integer(MangaSettings.ADV_MAX_DECODE_PX)
+                + " cacheKb=" + (mCache == null ? 0 : mCache.maxSize()));
+    }
+
+    /** Verbose reader diagnostics, gated by 设置 → 漫画 · 高级 → 输出诊断日志. */
+    private void diagnostic(String message) {
+        if (mSettings != null && mSettings.bool(MangaSettings.ADV_LOGGING)) {
+            Log.d(TAG, message);
+        }
     }
 
     private Bitmap decodePage(File file) {

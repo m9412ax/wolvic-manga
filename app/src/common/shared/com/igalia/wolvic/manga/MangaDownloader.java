@@ -76,6 +76,11 @@ public final class MangaDownloader {
         final int retries = Math.max(0, Math.min(5, settings.integer(MangaSettings.DOWNLOAD_RETRY)));
         mBusy = true;
         mPool = Executors.newFixedThreadPool(parallel);
+        settings.downloadQueuePrefs().edit()
+                .putString("last", destination.getAbsolutePath())
+                .putInt("total", files.size())
+                .putLong("started", System.currentTimeMillis())
+                .apply();
         final AtomicInteger done = new AtomicInteger(0);
         final AtomicInteger failed = new AtomicInteger(0);
         final int total = files.size();
@@ -113,6 +118,11 @@ public final class MangaDownloader {
                     return;
                 }
                 mBusy = false;
+                MangaSettings.get(mContext).downloadQueuePrefs().edit()
+                        .putInt("completed", total - failed.get())
+                        .putInt("failed", failed.get())
+                        .putLong("finished", System.currentTimeMillis())
+                        .apply();
                 postStatus(callback, "下载完成 " + (total - failed.get()) + "/" + total
                         + (failed.get() > 0 ? "，失败 " + failed.get() : ""));
             }

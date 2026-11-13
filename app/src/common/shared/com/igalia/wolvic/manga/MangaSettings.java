@@ -109,6 +109,11 @@ public final class MangaSettings {
         return mContext.getSharedPreferences(PROGRESS_PREFS, Context.MODE_PRIVATE);
     }
 
+    /** Persisted download queue state (last download result per chapter folder). */
+    public SharedPreferences downloadQueuePrefs() {
+        return mContext.getSharedPreferences(DOWNLOAD_QUEUE_PREFS, Context.MODE_PRIVATE);
+    }
+
     public void register(SharedPreferences.OnSharedPreferenceChangeListener listener) {
         prefs().registerOnSharedPreferenceChangeListener(listener);
     }

@@ -21,6 +21,7 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
+import com.igalia.wolvic.manga.MangaSettings;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -64,10 +65,14 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     private final OnMangaClickListener mListener;
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
+    /** Cover decode budget from 设置 → 漫画 · 图源 → 封面解码尺寸. */
+    private final int mTargetPx;
 
     public MangaCoverAdapter(@NonNull Context context, @Nullable OnMangaClickListener listener) {
         mContext = context;
         mListener = listener;
+        int configured = MangaSettings.get(context).integer(MangaSettings.SOURCE_THUMB_PX);
+        mTargetPx = configured > 0 ? configured : COVER_TARGET_PX;
     }
 
     public void update(@Nullable List<MangaItem> items) {
@@ -124,7 +129,7 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         // Tag guards against recycled views receiving a stale bitmap.
         view.setTag(path);
         mExecutor.execute(() -> {
-            final Bitmap bitmap = decodeScaled(cover, COVER_TARGET_PX, COVER_TARGET_PX);
+            final Bitmap bitmap = decodeScaled(cover, mTargetPx, mTargetPx);
             mMainHandler.post(() -> {
                 if (bitmap == null) {
                     return;
