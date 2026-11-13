@@ -25,6 +25,14 @@ Mihon 功能以上游 saber1008611 为参照。Wolvic 原生层已解决 Pico Op
 - picoxr 唯一私有依赖 = Pico `libopenxr_loader.so`。已从 **Pico-Developer/PICO-Unity-OpenXR-SDK**
   （`Runtime/Android/arm64/libopenxr_loader.so`，1141360 字节，arm64 Android ELF）取得并提交到
   `third_party/picoxr/libs/android.arm64-v8a/`。**无需私有 wolvic-third-parties**（OVR SDK 仅 OCULUSVR 用）。
+- **加载器 SONAME 坑（已修，commit 5837494）**：Pico 的 `libopenxr_loader.so` 内部 SONAME 实为
+  `libpico_openxr_loader.so`，native-lib 按 SONAME 依赖它。Wolvic 原 CMake 把副本打包成
+  `libopenxr_loader.so` → 启动崩 `UnsatisfiedLinkError: libpico_openxr_loader.so not found`
+  （`VRBrowserActivity.<clinit>` loadLibrary("native-lib")）。修复：`app/CMakeLists.txt` PICOXR 分支
+  copy 目标改为 `${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/libpico_openxr_loader.so`。
+- **包名共存**：设备已装官方 Wolvic（`com.igalia.wolvic`，Igalia 签名）。漫画版用
+  `user.properties: simultaneousDevProduction=true` → debug 包名 `com.igalia.wolvic.dev`，与官方版共存，
+  避免 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，不卸载用户数据。
 - Wolvic UI = `VRBrowserActivity` + `ui/widgets/`（Widget/WindowWidget/RootWidget/
   WidgetManagerDelegate/WidgetPlacement），Android Views 渲染进 3D 窗口
   （`UISurfaceTextureRenderer`/`OffscreenDisplay`）。**源码在 `app/src/common/shared/com/igalia/wolvic`，
