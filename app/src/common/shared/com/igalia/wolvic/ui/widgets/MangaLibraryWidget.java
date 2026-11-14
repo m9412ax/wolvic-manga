@@ -18,6 +18,7 @@ import android.os.Looper;
 import android.text.InputType;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
@@ -38,6 +39,7 @@ import com.igalia.wolvic.VRBrowserActivity;
 import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.browser.api.WSession;
 import com.igalia.wolvic.manga.MangaDownloader;
+import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
@@ -94,6 +96,12 @@ public class MangaLibraryWidget extends UIWidget {
     private float mDragStartTX;
     private float mDragStartTY;
 
+    // Transient state for the keybinding capture flow.
+    private String mCaptureAction = MangaSettings.ACTION_NEXT_PAGE;
+    private int mCaptureScope = MangaSettings.SCOPE_READER;
+    private int mCaptureKey = 0;
+    private TextView mCaptureKeyView;
+
     private final Map<MangaPage, View> mPageViews = new EnumMap<>(MangaPage.class);
     private final Map<MangaPage, LinearLayout> mPageContents = new EnumMap<>(MangaPage.class);
 
@@ -120,6 +128,7 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void initialize() {
         mSettings = MangaSettings.get(getContext());
+        mSettings.ensureDefaultBindings();
         LayoutInflater.from(getContext()).inflate(R.layout.manga_library, this, true);
 
         mTitle = findViewById(R.id.libraryTitle);
@@ -155,7 +164,11 @@ public class MangaLibraryWidget extends UIWidget {
 
     // ------------------------------------------------------------- dragging
 
-    /** Grab the bottom bar to reposition the whole panel. */
+    /** Grab the bottom bar to reposition the whole panel.
+     *  Uses incremental pointer deltas in the bar's own local coordinate space.
+     *  No pointer capture (capture silently remaps getX()/getY() onto a different
+     *  coordinate space mid-drag on the first MOVE, which previously flung the
+     *  panel off-screen). This tracks 1:1 with the pointer like a browser window. */
     private void setupPanelDrag() {
         if (mDragBar == null) {
             return;
@@ -164,41 +177,26 @@ public class MangaLibraryWidget extends UIWidget {
             WidgetPlacement p = getPlacement();
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    // Grab-follow: remember where on the panel we grabbed and the
-                    // current offset, so the panel tracks the pointer 1:1 like a
-                    // browser window. Uses local view coordinates (density
-                    // independent) instead of raw screen pixels for smoothness.
                     mDragPointerX = event.getX();
                     mDragPointerY = event.getY();
-                    mDragStartTX = p.translationX;
-                    mDragStartTY = p.translationY;
-                    try {
-                        view.requestPointerCapture();
-                    } catch (Throwable ignored) {
-                        // Pointer capture is best-effort; the drag still works.
-                    }
                     return true;
                 case MotionEvent.ACTION_MOVE: {
                     if (p.width <= 0 || p.height <= 0) {
                         return true;
                     }
-                    float panelWorldH = p.worldWidth * ((float) p.height / (float) p.width);
-                    float dxMeters = (event.getX() - mDragPointerX) / p.width * p.worldWidth;
-                    float dyMeters = (event.getY() - mDragPointerY) / p.height * panelWorldH;
-                    p.translationX = mDragStartTX + dxMeters * 360.0f;
-                    p.translationY = mDragStartTY - dyMeters * 360.0f;
+                    // Meters represented by one panel pixel (worldWidth is in meters).
+                    float metersPerPx = p.worldWidth / (float) p.width;
+                    float dx = (event.getX() - mDragPointerX) * metersPerPx * 360.0f;
+                    float dy = (event.getY() - mDragPointerY) * metersPerPx * 360.0f;
+                    p.translationX += dx;
+                    p.translationY -= dy;
+                    mDragPointerX = event.getX();
+                    mDragPointerY = event.getY();
                     updateWidget();
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
-                    try {
-                        if (view.hasPointerCapture()) {
-                            view.releasePointerCapture();
-                        }
-                    } catch (Throwable ignored) {
-                        // best-effort
-                    }
                     return true;
                 default:
                     return false;
@@ -348,6 +346,10 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void switchPage(MangaPage page) {
+        // Leaving the settings page cancels any in-progress key capture.
+        if (mCurrentPage == MangaPage.SETTINGS && page != MangaPage.SETTINGS) {
+            MangaKeyCapture.stop();
+        }
         mCurrentPage = page;
         for (Map.Entry<MangaPage, View> entry : mPageViews.entrySet()) {
             entry.getValue().setVisibility(entry.getKey() == page ? VISIBLE : GONE);
@@ -857,8 +859,6 @@ public class MangaLibraryWidget extends UIWidget {
         addInfo(content, "漫画设置", "完整设置已并入原生设置菜单：设置 → 漫画 / MANGA 分组。");
         addInfo(content, "存储权限", hasStoragePermission() ? "已授予" : "未授予（书架无法读取）");
         addInfo(content, "漫画根目录", mSettings.text(MangaSettings.SOURCE_ROOT));
-        addInfo(content, "阅读方向", String.valueOf(mSettings.integer(MangaSettings.READER_DIRECTION)));
-        addInfo(content, "缩放模式", String.valueOf(mSettings.integer(MangaSettings.READER_SCALE)));
         addInfo(content, "当前页面", mCurrentPage.label);
 
         LinearLayout actions = addRow(content);
@@ -879,6 +879,144 @@ public class MangaLibraryWidget extends UIWidget {
             if (context instanceof VRBrowserActivity) {
                 ((VRBrowserActivity) context).onMangaTrayAction("BROWSER");
             }
+        });
+
+        buildKeybindingSection(content);
+    }
+
+    // --------------------------------------------------- keybinding settings
+
+    private void buildKeybindingSection(LinearLayout content) {
+        addInfo(content, "自定义快捷键",
+                "可添加任意数量的快捷键；支持「全局」或「仅看图」生效。添加时按下手柄按键即可捕获键值。");
+        LinearLayout list = new LinearLayout(getContext());
+        list.setOrientation(LinearLayout.VERTICAL);
+        content.addView(list);
+        List<MangaSettings.KeyBinding> bindings = mSettings.getBindings();
+        if (bindings.isEmpty()) {
+            TextView empty = new TextView(getContext());
+            empty.setText("（暂无快捷键，点击下方添加）");
+            empty.setTextColor(0xFF808088);
+            empty.setTextSize(16f);
+            list.addView(empty);
+        }
+        for (int i = 0; i < bindings.size(); i++) {
+            final int index = i;
+            MangaSettings.KeyBinding b = bindings.get(i);
+            LinearLayout row = new LinearLayout(getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = new TextView(getContext());
+            label.setText(MangaSettings.actionLabel(b.action) + "  |  "
+                    + KeyEvent.keyCodeToString(b.keyCode) + " (" + b.keyCode + ")  |  "
+                    + MangaSettings.scopeLabel(b.scope));
+            label.setTextSize(16f);
+            label.setTextColor(0xFFE0E0E8);
+            label.setPadding(0, dp(4), dp(8), dp(4));
+            row.addView(label);
+            Button remove = new Button(getContext());
+            remove.setText("删除");
+            remove.setAllCaps(false);
+            remove.setTextSize(15f);
+            remove.setTextColor(0xFFFFFFFF);
+            remove.setBackgroundColor(0xFF3A2226);
+            remove.setOnClickListener(v -> {
+                mSettings.removeBinding(index);
+                refreshPage(MangaPage.SETTINGS);
+            });
+            row.addView(remove);
+            list.addView(row);
+        }
+        LinearLayout addRow = addRow(content);
+        addButton(addRow, "添加快捷键", v -> startCaptureFlow(content));
+    }
+
+    private void startCaptureFlow(LinearLayout content) {
+        mCaptureAction = MangaSettings.ACTION_NEXT_PAGE;
+        mCaptureScope = MangaSettings.SCOPE_READER;
+        mCaptureKey = 0;
+        content.removeAllViews();
+
+        addInfo(content, "添加快捷键",
+                "① 选择功能  ② 选择生效范围  ③ 按下手柄任意键捕获  ④ 确认保存");
+
+        TextView actionCaption = new TextView(getContext());
+        actionCaption.setText("功能：");
+        actionCaption.setTextSize(17f);
+        actionCaption.setTextColor(0xFFFFFFFF);
+        content.addView(actionCaption);
+
+        LinearLayout actionRow = new LinearLayout(getContext());
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        String[] actions = MangaSettings.allActions();
+        Button[] actionButtons = new Button[actions.length];
+        for (int i = 0; i < actions.length; i++) {
+            final String act = actions[i];
+            final Button b = new Button(getContext());
+            b.setText(MangaSettings.actionLabel(act));
+            b.setAllCaps(false);
+            b.setTextSize(14f);
+            b.setTextColor(0xFFFFFFFF);
+            b.setMinHeight(dp(44));
+            b.setOnClickListener(v -> {
+                mCaptureAction = act;
+                for (Button ab : actionButtons) {
+                    ab.setBackgroundColor(0xFF2A2A33);
+                }
+                b.setBackgroundColor(0xFF3A5A8A);
+            });
+            if (i == 0) {
+                b.setBackgroundColor(0xFF3A5A8A);
+            }
+            actionButtons[i] = b;
+            actionRow.addView(b);
+        }
+        content.addView(actionRow);
+
+        final Button scopeBtn = new Button(getContext());
+        scopeBtn.setAllCaps(false);
+        scopeBtn.setTextSize(16f);
+        scopeBtn.setTextColor(0xFFFFFFFF);
+        scopeBtn.setMinHeight(dp(48));
+        scopeBtn.setOnClickListener(v -> {
+            mCaptureScope = mCaptureScope == MangaSettings.SCOPE_READER
+                    ? MangaSettings.SCOPE_GLOBAL : MangaSettings.SCOPE_READER;
+            scopeBtn.setText("生效范围：" + MangaSettings.scopeLabel(mCaptureScope));
+        });
+        scopeBtn.setText("生效范围：" + MangaSettings.scopeLabel(mCaptureScope));
+        content.addView(scopeBtn);
+
+        TextView keyView = new TextView(getContext());
+        keyView.setText("按键：未捕获（按下手柄任意键）");
+        keyView.setTextSize(18f);
+        keyView.setTextColor(0xFFFFD080);
+        keyView.setPadding(0, dp(10), 0, dp(10));
+        content.addView(keyView);
+        mCaptureKeyView = keyView;
+
+        MangaKeyCapture.start(code -> {
+            mCaptureKey = code;
+            if (mCaptureKeyView != null) {
+                mCaptureKeyView.setText("按键：" + KeyEvent.keyCodeToString(code) + " (" + code + ")");
+            }
+        });
+
+        LinearLayout confirmRow = addRow(content);
+        addButton(confirmRow, "确认保存", v -> {
+            if (mCaptureKey == 0) {
+                if (mCaptureKeyView != null) {
+                    mCaptureKeyView.setText("请先按下任意键再保存");
+                }
+                return;
+            }
+            mSettings.addBinding(new MangaSettings.KeyBinding(mCaptureAction, mCaptureKey, mCaptureScope));
+            MangaKeyCapture.stop();
+            refreshPage(MangaPage.SETTINGS);
+        });
+        addButton(confirmRow, "取消", v -> {
+            MangaKeyCapture.stop();
+            refreshPage(MangaPage.SETTINGS);
         });
     }
 

@@ -43,7 +43,9 @@ import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
+import java.io.FileFilter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -235,12 +237,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         aPlacement.width = (int) (windowWidth * 0.78f) + mBorderWidth * 2;
         aPlacement.height = (int) (windowHeight * 0.82f) + mBorderWidth * 2;
         aPlacement.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
-                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.78f;
-        aPlacement.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y) + 40.0f;
-        // Lift so the bottom of the reader clears the tray.
+                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
+        // Anchor the reader by its BOTTOM so it always sits a fixed gap above the
+        // control bar (tray_world_y), instead of being vertically centered (which
+        // pushed the bottom of the tall image below the tray and got it covered).
         float readerWorldHeight = aPlacement.worldWidth
                 * ((float) aPlacement.height / (float) aPlacement.width) * 360.0f;
-        aPlacement.translationY += readerWorldHeight * 0.05f;
+        float trayY = WidgetPlacement.unitFromMeters(context, R.dimen.tray_world_y);
+        aPlacement.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
         // A truly separate floating surface, closer to the viewer than the shelf.
         aPlacement.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + 220.0f;
         aPlacement.anchorX = 0.5f;
@@ -415,14 +419,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
-            // Decode as large as possible for maximum clarity, but never exceed
-            // the GPU's maximum texture size (Canvas refuses to draw a bitmap
-            // larger than this and throws, crashing the app). We raise the sample
-            // size until both the longest edge and the total byte size are within
-            // safe limits. Normal pages stay at full native resolution; only
-            // pathologically large scans are gently downsampled.
-            final int MAX_EDGE = 4096;                 // safe GPU texture ceiling
-            final long MAX_BYTES = 64L * 1024 * 1024; // 64 MB per bitmap
+            // Decode at the largest size the GPU can actually present. Android's
+            // Canvas refuses to draw a bitmap larger than its max bitmap size
+            // (observed crash at ~174 MB for a 5820x7500 page), so we only
+            // downsample when a bitmap would exceed that. We no longer cap the
+            // longest edge at 4096 - that was needlessly halving ordinary
+            // 3000-4500px pages and making them look blurry. Typical pages now
+            // decode at full native resolution.
+            final int MAX_EDGE = 16384;                  // sanity bound (GL texture ceiling)
+            final long MAX_BYTES = 150L * 1024 * 1024;  // 150 MB, safely below the draw limit
             int sample = 1;
             while (sample <= 32) {
                 int w = (bounds.outWidth + sample - 1) / sample;
@@ -794,6 +799,115 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    // --------------------------------------------------- external control API
+
+    /** Multiply the image zoom factor (clamped). Used by key bindings. */
+    public void zoomBy(float factor) {
+        mZoom = clamp(mZoom * factor, 0.2f, 8.0f);
+        applyImageTransform();
+        showHint("缩放：" + Math.round(mZoom * 100) + "%");
+    }
+
+    /** Re-apply the default placement, window size and image zoom. */
+    public void resetPosition() {
+        mUserScale = 1.0f;
+        mZoom = 1.0f;
+        mScrollY = 0.0f;
+        Context context = getContext();
+        int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
+        int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
+        WidgetPlacement p = getPlacement();
+        p.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
+                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
+        p.width = (int) (windowWidth * 0.78f) + mBorderWidth * 2;
+        p.height = (int) (windowHeight * 0.82f) + mBorderWidth * 2;
+        float readerWorldHeight = p.worldWidth
+                * ((float) p.height / (float) p.width) * 360.0f;
+        float trayY = WidgetPlacement.unitFromMeters(context, R.dimen.tray_world_y);
+        p.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
+        p.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + 220.0f;
+        mWidgetManager.updateWidget(this);
+        applyImageTransform();
+        showHint("已重置位置/大小");
+    }
+
+    /** Jump to the previous/next sibling folder (chapter) of the current one. */
+    public void openSiblingFolder(int delta) {
+        if (mFolder == null || mFolder.getParentFile() == null) {
+            showHint("无法切换文件夹");
+            return;
+        }
+        File parent = mFolder.getParentFile();
+        File[] dirs = parent.listFiles((FileFilter) f -> f.isDirectory());
+        if (dirs == null || dirs.length == 0) {
+            showHint("没有同级文件夹");
+            return;
+        }
+        List<File> list = new ArrayList<>();
+        for (File d : dirs) {
+            list.add(d);
+        }
+        Collections.sort(list, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        int idx = -1;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).getAbsolutePath().equals(mFolder.getAbsolutePath())) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) {
+            showHint("当前文件夹不在父目录中");
+            return;
+        }
+        int next = (idx + delta + list.size()) % list.size();
+        setFolder(list.get(next));
+        showHint("文件夹：" + list.get(next).getName());
+    }
+
+    public void setResizeModifier(boolean on) {
+        if (on == mResizeModifier) {
+            return;
+        }
+        mResizeModifier = on;
+        if (on) {
+            startJoyTick();
+        } else {
+            stopJoyTick();
+        }
+    }
+
+    /** Execute a bound action (dispatched from VRBrowserActivity). */
+    public void dispatchMangaAction(String action) {
+        switch (action) {
+            case MangaSettings.ACTION_PREV_PAGE:
+                pageDelta(-1);
+                break;
+            case MangaSettings.ACTION_NEXT_PAGE:
+                pageDelta(1);
+                break;
+            case MangaSettings.ACTION_PREV_FOLDER:
+                openSiblingFolder(-1);
+                break;
+            case MangaSettings.ACTION_NEXT_FOLDER:
+                openSiblingFolder(1);
+                break;
+            case MangaSettings.ACTION_ZOOM_IN:
+                zoomBy(1.2f);
+                break;
+            case MangaSettings.ACTION_ZOOM_OUT:
+                zoomBy(1.0f / 1.2f);
+                break;
+            case MangaSettings.ACTION_RESET_POS:
+                resetPosition();
+                break;
+            case MangaSettings.ACTION_TOGGLE_DOUBLE:
+                toggleDoublePage();
+                break;
+            default:
+                break;
+        }
+    }
+
     private String displayKey(int index) {
         return (mDoublePage ? "d:" : "s:") + index;
     }
@@ -928,14 +1042,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
         float baseWorld = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
-                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.78f;
+                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
         p.worldWidth = baseWorld * mUserScale;
         p.width = (int) (windowWidth * 0.78f * mUserScale) + mBorderWidth * 2;
         p.height = (int) (windowHeight * 0.82f * mUserScale) + mBorderWidth * 2;
         float readerWorldHeight = p.worldWidth
                 * ((float) p.height / (float) p.width) * 360.0f;
-        p.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y) + 40.0f
-                + readerWorldHeight * 0.05f;
+        // Keep the bottom a fixed gap above the tray, matching initializeWidgetPlacement.
+        float trayY = WidgetPlacement.unitFromMeters(context, R.dimen.tray_world_y);
+        p.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
         mWidgetManager.updateWidget(this);
     }
 

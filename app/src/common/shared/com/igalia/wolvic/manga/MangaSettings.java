@@ -16,6 +16,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 /**
  * Single source of truth for every manga setting. Wolvic's stock settings UI
  * (SwitchSetting / RadioGroupSetting / SliderSetting / ...) writes here and the
@@ -287,5 +291,137 @@ public final class MangaSettings {
             default:
                 return 0x00000000; // transparent by default so the world shows through
         }
+    }
+
+    // --------------------------------------------------- custom key bindings
+
+    /** Scope: GLOBAL bindings fire in both the library and the reader.
+     *  READER bindings only fire while a page is open. */
+    public static final int SCOPE_GLOBAL = 0;
+    public static final int SCOPE_READER = 1;
+
+    public static final String ACTION_PREV_PAGE = "prev_page";
+    public static final String ACTION_NEXT_PAGE = "next_page";
+    public static final String ACTION_PREV_FOLDER = "prev_folder";
+    public static final String ACTION_NEXT_FOLDER = "next_folder";
+    public static final String ACTION_ZOOM_IN = "zoom_in";
+    public static final String ACTION_ZOOM_OUT = "zoom_out";
+    public static final String ACTION_RESET_POS = "reset_position";
+    public static final String ACTION_TOGGLE_DOUBLE = "toggle_double";
+    /** Hold modifier: while this key is down the joystick resizes/repositions the window. */
+    public static final String ACTION_RESIZE_MOD = "resize_modifier";
+
+    private static final String KEY_BINDINGS = "manga_key_bindings";
+    private static final String[] ALL_ACTIONS = {
+            ACTION_PREV_PAGE, ACTION_NEXT_PAGE, ACTION_PREV_FOLDER, ACTION_NEXT_FOLDER,
+            ACTION_ZOOM_IN, ACTION_ZOOM_OUT, ACTION_RESET_POS, ACTION_TOGGLE_DOUBLE,
+            ACTION_RESIZE_MOD
+    };
+
+    public static final class KeyBinding {
+        public String action;
+        public int keyCode;
+        public int scope;
+
+        public KeyBinding(String action, int keyCode, int scope) {
+            this.action = action;
+            this.keyCode = keyCode;
+            this.scope = scope;
+        }
+
+        public JSONObject toJson() throws JSONException {
+            JSONObject o = new JSONObject();
+            o.put("action", action);
+            o.put("key", keyCode);
+            o.put("scope", scope);
+            return o;
+        }
+
+        public static KeyBinding fromJson(JSONObject o) throws JSONException {
+            return new KeyBinding(o.getString("action"), o.getInt("key"), o.optInt("scope", SCOPE_GLOBAL));
+        }
+    }
+
+    public List<KeyBinding> getBindings() {
+        List<KeyBinding> out = new ArrayList<>();
+        String raw = prefs().getString(KEY_BINDINGS, null);
+        if (raw == null) {
+            return out;
+        }
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                out.add(KeyBinding.fromJson(arr.getJSONObject(i)));
+            }
+        } catch (JSONException e) {
+            // Corrupt payload: ignore and fall back to empty.
+        }
+        return out;
+    }
+
+    public void setBindings(List<KeyBinding> bindings) {
+        JSONArray arr = new JSONArray();
+        for (KeyBinding b : bindings) {
+            try {
+                arr.put(b.toJson());
+            } catch (JSONException ignored) {
+                // skip unserializable entry
+            }
+        }
+        prefs().edit().putString(KEY_BINDINGS, arr.toString()).apply();
+    }
+
+    public void addBinding(KeyBinding b) {
+        List<KeyBinding> list = getBindings();
+        // Replace any existing binding for the same key to avoid duplicates.
+        list.removeIf(existing -> existing.keyCode == b.keyCode);
+        list.add(b);
+        setBindings(list);
+    }
+
+    public void removeBinding(int index) {
+        List<KeyBinding> list = getBindings();
+        if (index >= 0 && index < list.size()) {
+            list.remove(index);
+            setBindings(list);
+        }
+    }
+
+    /** First call seeds a sensible default set; subsequent calls are no-ops. */
+    public void ensureDefaultBindings() {
+        String raw = prefs().getString(KEY_BINDINGS, null);
+        if (raw != null && !raw.isEmpty()) {
+            return;
+        }
+        List<KeyBinding> defaults = new ArrayList<>();
+        defaults.add(new KeyBinding(ACTION_PREV_PAGE, android.view.KeyEvent.KEYCODE_DPAD_LEFT, SCOPE_READER));
+        defaults.add(new KeyBinding(ACTION_NEXT_PAGE, android.view.KeyEvent.KEYCODE_DPAD_RIGHT, SCOPE_READER));
+        defaults.add(new KeyBinding(ACTION_ZOOM_OUT, android.view.KeyEvent.KEYCODE_VOLUME_DOWN, SCOPE_READER));
+        defaults.add(new KeyBinding(ACTION_ZOOM_IN, android.view.KeyEvent.KEYCODE_VOLUME_UP, SCOPE_READER));
+        defaults.add(new KeyBinding(ACTION_RESIZE_MOD, android.view.KeyEvent.KEYCODE_BUTTON_R1, SCOPE_READER));
+        setBindings(defaults);
+    }
+
+    public static String actionLabel(String action) {
+        switch (action) {
+            case ACTION_PREV_PAGE: return "上一页";
+            case ACTION_NEXT_PAGE: return "下一页";
+            case ACTION_PREV_FOLDER: return "上一个文件夹";
+            case ACTION_NEXT_FOLDER: return "下一个文件夹";
+            case ACTION_ZOOM_IN: return "放大图片";
+            case ACTION_ZOOM_OUT: return "缩小图片";
+            case ACTION_RESET_POS: return "重置位置/大小";
+            case ACTION_TOGGLE_DOUBLE: return "双页切换";
+            case ACTION_RESIZE_MOD: return "缩放/移动修饰键(按住)";
+            default: return action;
+        }
+    }
+
+    public static String scopeLabel(int scope) {
+        return scope == SCOPE_READER ? "仅看图" : "全局";
+    }
+
+    public static String[] allActions() {
+        return ALL_ACTIONS.clone();
     }
 }

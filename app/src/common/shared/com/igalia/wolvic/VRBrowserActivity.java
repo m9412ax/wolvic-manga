@@ -33,6 +33,9 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Pair;
 import android.view.KeyEvent;
+
+import com.igalia.wolvic.manga.MangaKeyCapture;
+import com.igalia.wolvic.manga.MangaSettings;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewTreeObserver;
@@ -109,6 +112,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
@@ -1054,7 +1058,54 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         if (mKeyboard.dispatchKeyEvent(event)) {
             return true;
         }
+        if (dispatchMangaKey(event)) {
+            return true;
+        }
         return super.dispatchKeyEvent(event);
+    }
+
+    /** Routes key events to custom manga bindings (set in the library settings).
+     *  Works regardless of which widget currently holds focus, because this is the
+     *  top-level key dispatch. Returns true when the event was consumed. */
+    private boolean dispatchMangaKey(KeyEvent event) {
+        // Capture mode: swallow the key and report its raw code to the settings UI.
+        if (MangaKeyCapture.active) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                MangaKeyCapture.feed(event.getKeyCode());
+            }
+            return true;
+        }
+        MangaReaderWidget reader = mMangaReader;
+        MangaLibraryWidget library = mMangaLibrary;
+        boolean readerVisible = reader != null && reader.isVisible();
+        boolean libraryVisible = library != null && library.isVisible();
+        if (!readerVisible && !libraryVisible) {
+            return false;
+        }
+        List<MangaSettings.KeyBinding> bindings = MangaSettings.get(this).getBindings();
+        for (MangaSettings.KeyBinding b : bindings) {
+            if (b.keyCode != event.getKeyCode()) {
+                continue;
+            }
+            if (b.scope == MangaSettings.SCOPE_READER && !readerVisible) {
+                continue;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (MangaSettings.ACTION_RESIZE_MOD.equals(b.action)) {
+                    if (reader != null) {
+                        reader.setResizeModifier(true);
+                    }
+                } else if (reader != null) {
+                    reader.dispatchMangaAction(b.action);
+                }
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                if (MangaSettings.ACTION_RESIZE_MOD.equals(b.action) && reader != null) {
+                    reader.setResizeModifier(false);
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     final Object mWaitLock = new Object();
