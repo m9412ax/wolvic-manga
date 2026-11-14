@@ -161,11 +161,11 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         mDragBar.setOnTouchListener((view, event) -> {
+            final WidgetPlacement p = getPlacement();
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
                     mDragStartRawX = event.getRawX();
                     mDragStartRawY = event.getRawY();
-                    WidgetPlacement p = getPlacement();
                     mDragStartTX = p.translationX;
                     mDragStartTY = p.translationY;
                     return true;
@@ -173,7 +173,6 @@ public class MangaLibraryWidget extends UIWidget {
                     float dx = event.getRawX() - mDragStartRawX;
                     float dy = event.getRawY() - mDragStartRawY;
                     float unitsPerPx = worldUnitsPerPixel();
-                    WidgetPlacement p = getPlacement();
                     p.translationX = mDragStartTX + dx * unitsPerPx;
                     p.translationY = mDragStartTY - dy * unitsPerPx;
                     updateWidget();
