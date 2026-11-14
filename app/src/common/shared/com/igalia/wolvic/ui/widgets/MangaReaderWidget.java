@@ -415,14 +415,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
-            // Decode at full native resolution for maximum clarity (no
-            // downsampling). A generous safety cap avoids OOM on extreme images
-            // while keeping normal pages pixel-perfect.
-            int max = Math.max(bounds.outWidth, bounds.outHeight);
-            max = Math.max(max, 4096);
+            // Decode as large as possible for maximum clarity, but never exceed
+            // the GPU's maximum texture size (Canvas refuses to draw a bitmap
+            // larger than this and throws, crashing the app). We raise the sample
+            // size until both the longest edge and the total byte size are within
+            // safe limits. Normal pages stay at full native resolution; only
+            // pathologically large scans are gently downsampled.
+            final int MAX_EDGE = 4096;                 // safe GPU texture ceiling
+            final long MAX_BYTES = 64L * 1024 * 1024; // 64 MB per bitmap
+            int sample = 1;
+            while (sample <= 32) {
+                int w = (bounds.outWidth + sample - 1) / sample;
+                int h = (bounds.outHeight + sample - 1) / sample;
+                long bytes = (long) w * h * 4L;
+                if (Math.max(w, h) <= MAX_EDGE && bytes <= MAX_BYTES) {
+                    break;
+                }
+                sample *= 2;
+            }
             BitmapFactory.Options opts = new BitmapFactory.Options();
-            opts.inSampleSize = MangaCoverAdapter.computeInSampleSize(
-                    bounds.outWidth, bounds.outHeight, max, max);
+            opts.inSampleSize = sample;
             Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
             if (bitmap != null && mSettings.bool(MangaSettings.READER_CROP_BORDERS)) {
                 Bitmap cropped = cropBorders(bitmap);
@@ -811,6 +823,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             int h = Math.max(a.getHeight(), b.getHeight());
             int wa = Math.round(a.getWidth() * ((float) h / a.getHeight()));
             int wb = Math.round(b.getWidth() * ((float) h / b.getHeight()));
+            // Keep the combined spread within the GPU texture ceiling so it can
+            // actually be drawn (Canvas rejects oversized bitmaps).
+            final int MAX = 4096;
+            int totalW = wa + wb;
+            if (h > MAX || totalW > MAX) {
+                float scale = Math.min((float) MAX / h, (float) MAX / totalW);
+                h = (int) (h * scale);
+                wa = (int) (wa * scale);
+                wb = (int) (wb * scale);
+            }
             Bitmap out = Bitmap.createBitmap(wa + wb, h, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(out);
             c.drawBitmap(a, null, new Rect(0, 0, wa, h), null);

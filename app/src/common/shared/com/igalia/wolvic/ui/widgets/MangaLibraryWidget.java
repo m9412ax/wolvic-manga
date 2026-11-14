@@ -89,8 +89,8 @@ public class MangaLibraryWidget extends UIWidget {
     private CustomRecyclerView mGrid;
     private MangaCoverAdapter mAdapter;
     private View mDragBar;
-    private float mDragStartRawX;
-    private float mDragStartRawY;
+    private float mDragPointerX;
+    private float mDragPointerY;
     private float mDragStartTX;
     private float mDragStartTY;
 
@@ -161,38 +161,49 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         mDragBar.setOnTouchListener((view, event) -> {
-            final WidgetPlacement p = getPlacement();
+            WidgetPlacement p = getPlacement();
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
-                    mDragStartRawX = event.getRawX();
-                    mDragStartRawY = event.getRawY();
+                    // Grab-follow: remember where on the panel we grabbed and the
+                    // current offset, so the panel tracks the pointer 1:1 like a
+                    // browser window. Uses local view coordinates (density
+                    // independent) instead of raw screen pixels for smoothness.
+                    mDragPointerX = event.getX();
+                    mDragPointerY = event.getY();
                     mDragStartTX = p.translationX;
                     mDragStartTY = p.translationY;
+                    try {
+                        view.requestPointerCapture();
+                    } catch (Throwable ignored) {
+                        // Pointer capture is best-effort; the drag still works.
+                    }
                     return true;
                 case MotionEvent.ACTION_MOVE: {
-                    float dx = event.getRawX() - mDragStartRawX;
-                    float dy = event.getRawY() - mDragStartRawY;
-                    float unitsPerPx = worldUnitsPerPixel();
-                    p.translationX = mDragStartTX + dx * unitsPerPx;
-                    p.translationY = mDragStartTY - dy * unitsPerPx;
+                    if (p.width <= 0 || p.height <= 0) {
+                        return true;
+                    }
+                    float panelWorldH = p.worldWidth * ((float) p.height / (float) p.width);
+                    float dxMeters = (event.getX() - mDragPointerX) / p.width * p.worldWidth;
+                    float dyMeters = (event.getY() - mDragPointerY) / p.height * panelWorldH;
+                    p.translationX = mDragStartTX + dxMeters * 360.0f;
+                    p.translationY = mDragStartTY - dyMeters * 360.0f;
                     updateWidget();
                     return true;
                 }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    try {
+                        if (view.hasPointerCapture()) {
+                            view.releasePointerCapture();
+                        }
+                    } catch (Throwable ignored) {
+                        // best-effort
+                    }
+                    return true;
                 default:
                     return false;
             }
         });
-    }
-
-    /** World units (1 m = 360 units) per screen pixel for the current placement. */
-    private float worldUnitsPerPixel() {
-        WidgetPlacement p = getPlacement();
-        if (p.width <= 0 || p.worldWidth <= 0) {
-            return 0.5f;
-        }
-        float density = getResources().getDisplayMetrics().density;
-        float metersPerPx = p.worldWidth / (p.width * density);
-        return metersPerPx * 360.0f;
     }
 
     /** Long-press a cover to forget its saved reading progress. */
