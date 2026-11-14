@@ -19,6 +19,7 @@ import android.text.InputType;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -87,6 +88,11 @@ public class MangaLibraryWidget extends UIWidget {
     private TextView mEmptyText;
     private CustomRecyclerView mGrid;
     private MangaCoverAdapter mAdapter;
+    private View mDragBar;
+    private float mDragStartRawX;
+    private float mDragStartRawY;
+    private float mDragStartTX;
+    private float mDragStartTY;
 
     private final Map<MangaPage, View> mPageViews = new EnumMap<>(MangaPage.class);
     private final Map<MangaPage, LinearLayout> mPageContents = new EnumMap<>(MangaPage.class);
@@ -121,10 +127,12 @@ public class MangaLibraryWidget extends UIWidget {
         mLibraryPage = findViewById(R.id.libraryPage);
         mEmptyText = findViewById(R.id.emptyText);
         mGrid = findViewById(R.id.mangaGrid);
+        mDragBar = findViewById(R.id.dragBar);
 
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
-        mAdapter = new MangaCoverAdapter(getContext(), this::openReader);
+        mAdapter = new MangaCoverAdapter(getContext(), this::openReader, this::resetProgress);
         mGrid.setAdapter(mAdapter);
+        setupPanelDrag();
 
         mRoot = new File(mSettings.text(MangaSettings.SOURCE_ROOT));
         mLocalDir = Environment.getExternalStorageDirectory();
@@ -145,6 +153,62 @@ public class MangaLibraryWidget extends UIWidget {
         switchPage(MangaPage.LIBRARY);
     }
 
+    // ------------------------------------------------------------- dragging
+
+    /** Grab the bottom bar to reposition the whole panel. */
+    private void setupPanelDrag() {
+        if (mDragBar == null) {
+            return;
+        }
+        mDragBar.setOnTouchListener((view, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    mDragStartRawX = event.getRawX();
+                    mDragStartRawY = event.getRawY();
+                    WidgetPlacement p = getPlacement();
+                    mDragStartTX = p.translationX;
+                    mDragStartTY = p.translationY;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = event.getRawX() - mDragStartRawX;
+                    float dy = event.getRawY() - mDragStartRawY;
+                    float unitsPerPx = worldUnitsPerPixel();
+                    WidgetPlacement p = getPlacement();
+                    p.translationX = mDragStartTX + dx * unitsPerPx;
+                    p.translationY = mDragStartTY - dy * unitsPerPx;
+                    updateWidget();
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        });
+    }
+
+    /** World units (1 m = 360 units) per screen pixel for the current placement. */
+    private float worldUnitsPerPixel() {
+        WidgetPlacement p = getPlacement();
+        if (p.width <= 0 || p.worldWidth <= 0) {
+            return 0.5f;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        float metersPerPx = p.worldWidth / (p.width * density);
+        return metersPerPx * 360.0f;
+    }
+
+    /** Long-press a cover to forget its saved reading progress. */
+    private void resetProgress(File folder) {
+        if (folder == null) {
+            return;
+        }
+        MangaSettings.get(getContext()).progressPrefs().edit()
+                .remove("page:" + folder.getAbsolutePath())
+                .apply();
+        Toast.makeText(getContext(), "已重置阅读进度：" + folder.getName(), Toast.LENGTH_SHORT).show();
+        refreshCurrentPage();
+        Log.i(TAG, "resetProgress " + folder.getAbsolutePath());
+    }
+
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
         Context context = getContext();
@@ -156,8 +220,13 @@ public class MangaLibraryWidget extends UIWidget {
         aPlacement.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT;
         aPlacement.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y);
-        // Slightly in front of the browser window so the stock tray (a child of
-        // that window) stays alive while the manga content is on top.
+        // Lift the panel so its bottom clears the tray, which floats at the window
+        // bottom. The drag bar lets the user reposition it anyway.
+        float worldHeightUnits = aPlacement.worldWidth
+                * ((float) aPlacement.height / (float) aPlacement.width) * 360.0f;
+        aPlacement.translationY += worldHeightUnits * 0.10f;
+        // Slightly in front of the browser window so the (detached) tray and the
+        // manga content stay alive while the browser window is hidden.
         aPlacement.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + PANEL_Z_OFFSET;
         aPlacement.anchorX = 0.5f;
         aPlacement.anchorY = 0.5f;

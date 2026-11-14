@@ -2178,22 +2178,37 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
      * tray is its child), so switching between browser and manga is always
      * reversible. Manga panels are placed slightly in front of that window.
      */
+    /** Re-applies the current manga/browser UI mode. Used by TrayWidget to restore
+     *  the manga state after a settings dialog (opened while the browser window was
+     *  hidden) closes. */
+    public void syncMangaUiMode() {
+        applyUiMode();
+    }
+
     private void applyUiMode() {
         if (mTray == null || mWindows == null) {
             return;
         }
+        boolean browserMode = (mMangaUiMode == UI_BROWSER);
         WindowWidget focused = mWindows.getFocusedWindow();
         if (focused != null) {
-            focused.setVisible(true);
+            // The browser window must hide in manga / reader modes so its page
+            // does not bleed through behind the manga panels.
+            focused.setVisible(browserMode);
         }
         if (mNavigationBar != null) {
-            mNavigationBar.setVisible(mMangaUiMode == UI_BROWSER);
+            mNavigationBar.setVisible(browserMode);
         }
-        mTray.setVisible(true);
-        mTray.setMangaMode(mMangaUiMode == UI_BROWSER ? TrayWidget.MODE_BROWSER
-                : mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
-                : TrayWidget.MODE_MANGA);
-        mTray.setMangaPage(mMangaPage);
+        if (mTray != null) {
+            // Keep the tray visible in every mode. Detach it from the (hidden)
+            // browser window while in manga / reader modes so it stays on screen.
+            mTray.setMangaDetached(!browserMode);
+            mTray.setVisible(true);
+            mTray.setMangaMode(browserMode ? TrayWidget.MODE_BROWSER
+                    : mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
+                    : TrayWidget.MODE_MANGA);
+            mTray.setMangaPage(mMangaPage);
+        }
         if (mMangaLibrary != null) {
             mMangaLibrary.setVisible(mMangaUiMode != UI_BROWSER);
         }
@@ -2201,7 +2216,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mMangaReader.setVisible(mMangaUiMode == UI_READER);
         }
         Log.i("MangaMode", "mode=" + mMangaUiMode + " page=" + mMangaPage
-                + " tray=" + mTray.isVisible());
+                + " browserVisible=" + browserMode);
     }
 
     private void setUiMode(int mode) {

@@ -42,6 +42,11 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         void onMangaClick(@NonNull File folder);
     }
 
+    /** Long-press callback, e.g. to reset reading progress for a folder. */
+    public interface OnMangaLongClickListener {
+        void onMangaLongClick(@NonNull File folder);
+    }
+
     /** One manga entry: a folder plus its discovered cover / video flag. */
     public static class MangaItem {
         @NonNull public final File folder;
@@ -63,14 +68,17 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     private final Context mContext;
     private final List<MangaItem> mItems = new ArrayList<>();
     private final OnMangaClickListener mListener;
+    private final OnMangaLongClickListener mLongListener;
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     /** Cover decode budget from 设置 → 漫画 · 图源 → 封面解码尺寸. */
     private final int mTargetPx;
 
-    public MangaCoverAdapter(@NonNull Context context, @Nullable OnMangaClickListener listener) {
+    public MangaCoverAdapter(@NonNull Context context, @Nullable OnMangaClickListener listener,
+                             @Nullable OnMangaLongClickListener longListener) {
         mContext = context;
         mListener = listener;
+        mLongListener = longListener;
         int configured = MangaSettings.get(context).integer(MangaSettings.SOURCE_THUMB_PX);
         mTargetPx = configured > 0 ? configured : COVER_TARGET_PX;
     }
@@ -100,6 +108,13 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
             if (mListener != null) {
                 mListener.onMangaClick(item.folder);
             }
+        });
+        holder.itemView.setOnLongClickListener(v -> {
+            if (mLongListener != null) {
+                mLongListener.onMangaLongClick(item.folder);
+                return true;
+            }
+            return false;
         });
     }
 

@@ -60,7 +60,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private MangaSettings mSettings;
     private FrameLayout mRootView;
     private FrameLayout mStage;
-    private FrameLayout mGotoDialog;
+    private LinearLayout mGotoDialog;
     private ImageView mPageImage;
     private TextureView mVideoTexture;
     private TextView mPageCounter;
@@ -200,6 +200,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         aPlacement.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.78f;
         aPlacement.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y) + 40.0f;
+        // Lift so the bottom of the reader clears the tray.
+        float readerWorldHeight = aPlacement.worldWidth
+                * ((float) aPlacement.height / (float) aPlacement.width) * 360.0f;
+        aPlacement.translationY += readerWorldHeight * 0.05f;
         // A truly separate floating surface, closer to the viewer than the shelf.
         aPlacement.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + 220.0f;
         aPlacement.anchorX = 0.5f;

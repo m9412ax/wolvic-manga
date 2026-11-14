@@ -106,6 +106,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private ConnectivityReceiver mConnectivityReceived;
     private int mMangaMode = MODE_BROWSER;
     private String mMangaPage = "LIBRARY";
+    /** True while the browser window is temporarily shown just to host the settings dialog. */
+    private boolean mSettingsUsedWindow;
 
     public TrayWidget(Context aContext) {
         super(aContext);
@@ -589,6 +591,42 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         Log.i("MangaTray", "mode=" + mMangaMode + " page=" + mMangaPage);
     }
 
+    /**
+     * In manga / reader modes the focused browser window is hidden, but the tray
+     * (its child) must stay visible. Detach it to world-space so it survives the
+     * window hide, and re-attach it when returning to the browser. The world
+     * placement mirrors exactly where the tray sits on the window, so its on-screen
+     * position does not move.
+     */
+    public void setMangaDetached(boolean detached) {
+        WidgetPlacement p = getPlacement();
+        if (detached) {
+            if (p.parentHandle != -1) {
+                p.translationY = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_y);
+                p.translationZ = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_z);
+                p.parentAnchorX = 0.5f;
+                p.parentAnchorY = 0.5f;
+                detachFromWindow();
+                mWidgetManager.updateWidget(this);
+            }
+        } else {
+            if (p.parentHandle == -1) {
+                p.translationY = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_y)
+                        - WidgetPlacement.unitFromMeters(getContext(), R.dimen.window_world_y);
+                p.translationZ = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_z)
+                        - WidgetPlacement.getWindowWorldZMeters(getContext());
+                p.parentAnchorX = 0.5f;
+                p.parentAnchorY = 0.0f;
+                WindowWidget window = ((VRBrowserActivity) getContext()).getFocusedWindow();
+                if (window != null) {
+                    attachToWindow(window);
+                }
+                mWidgetManager.updateWidget(this);
+            }
+        }
+        Log.i("MangaTray", "detached=" + detached + " parent=" + getPlacement().parentHandle);
+    }
+
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
         Context context = getContext();
@@ -743,14 +781,40 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mSettingsWidget = new SettingsWidget(getContext());
         mSettingsWidget.setVisibilityListener(visible -> {
             mTrayViewModel.setSettingsWidgetVisible(visible);
+            // When the settings dialog was opened from manga mode (tray detached,
+            // browser window hidden) we temporarily re-showed the window to host it.
+            // Restore the manga state now that the dialog is gone.
+            if (!visible && mSettingsUsedWindow) {
+                mSettingsUsedWindow = false;
+                ((VRBrowserActivity) getContext()).syncMangaUiMode();
+            }
         });
+    }
+
+    /** Attaches the settings widget to a window, falling back to the focused window
+     *  (and briefly showing it) when the tray is detached in manga mode. */
+    private void attachSettingsToWindow() {
+        if (mAttachedWindow != null) {
+            mSettingsWidget.attachToWindow(mAttachedWindow);
+            return;
+        }
+        WindowWidget window = ((VRBrowserActivity) getContext()).getFocusedWindow();
+        if (window != null) {
+            attachToWindow(window);
+            window.setVisible(true);
+            mSettingsUsedWindow = true;
+        }
     }
 
     public void toggleSettingsDialog(@NonNull SettingsView.SettingViewType settingDialog) {
         if (mSettingsWidget == null) {
             createSettingsWidget();
         }
-        mSettingsWidget.attachToWindow(mAttachedWindow);
+        if (mAttachedWindow != null) {
+            mSettingsWidget.attachToWindow(mAttachedWindow);
+        } else {
+            attachSettingsToWindow();
+        }
 
         if (mSettingsWidget.isVisible()) {
             mSettingsWidget.hide(KEEP_WIDGET);
@@ -764,7 +828,11 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         if (mSettingsWidget == null) {
             createSettingsWidget();
         }
-        mSettingsWidget.attachToWindow(mAttachedWindow);
+        if (mAttachedWindow != null) {
+            mSettingsWidget.attachToWindow(mAttachedWindow);
+        } else {
+            attachSettingsToWindow();
+        }
 
         mSettingsWidget.show(REQUEST_FOCUS, settingDialog);
     }
