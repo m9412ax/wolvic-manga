@@ -6,7 +6,7 @@
     android:id="@+id/readerRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FF0C0C10">
+    android:background="#00000000">
 
     <FrameLayout
         android:id="@+id/pageStage"

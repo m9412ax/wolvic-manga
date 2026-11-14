@@ -44,6 +44,7 @@ public final class MangaSettings {
     public static final String READER_VIDEO_RESUME = "reader_video_resume";
     public static final String READER_TRANSITION = "reader_transition";
     public static final String READER_BACKGROUND = "reader_background";
+    public static final String READER_DOUBLE_PAGE = "reader_double_page";
 
     // Sources
     public static final String SOURCE_ROOT = "source_root";
@@ -193,9 +194,10 @@ public final class MangaSettings {
             case READER_DIRECTION:
             case READER_SCALE:
             case READER_TRANSITION:
-            case READER_BACKGROUND:
             default:
                 return 0;
+            case READER_BACKGROUND:
+                return 3; // transparent
         }
     }
 
@@ -280,8 +282,10 @@ public final class MangaSettings {
                 return 0xFFFFFFFF;
             case 2:
                 return 0xFF808080;
+            case 3:
+                return 0x00000000; // fully transparent
             default:
-                return 0xFF0C0C10;
+                return 0x00000000; // transparent by default so the world shows through
         }
     }
 }

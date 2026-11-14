@@ -2204,13 +2204,18 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             // browser window while in manga / reader modes so it stays on screen.
             mTray.setMangaDetached(!browserMode);
             mTray.setVisible(true);
-            mTray.setMangaMode(browserMode ? TrayWidget.MODE_BROWSER
-                    : mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
+            // Always keep the manga control bar (MODE_MANGA) so the user can move
+            // between browser / shelf / reader at any time. Only the reader shows
+            // the reader-specific bar. This guarantees the control bar is never
+            // lost after switching to the browser.
+            mTray.setMangaMode(mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
                     : TrayWidget.MODE_MANGA);
             mTray.setMangaPage(mMangaPage);
         }
         if (mMangaLibrary != null) {
-            mMangaLibrary.setVisible(mMangaUiMode != UI_BROWSER);
+            // The shelf is only shown in library mode; it must stay hidden while a
+            // page is open so only the image and the control bar remain.
+            mMangaLibrary.setVisible(mMangaUiMode == UI_LIBRARY);
         }
         if (mMangaReader != null) {
             mMangaReader.setVisible(mMangaUiMode == UI_READER);
@@ -2257,7 +2262,9 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 break;
             }
             case "BROWSER":
-                setUiMode(UI_BROWSER);
+                // Toggle between the browser and the manga shelf so the control
+                // bar's browser button always offers a way back.
+                setUiMode(mMangaUiMode == UI_BROWSER ? UI_LIBRARY : UI_BROWSER);
                 break;
             case "SETTINGS":
                 if (mTray != null) {
@@ -2300,6 +2307,11 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             case "READER_AUTO":
                 if (mMangaReader != null) {
                     mMangaReader.toggleAutoAdvance();
+                }
+                break;
+            case "READER_DOUBLE":
+                if (mMangaReader != null) {
+                    mMangaReader.toggleDoublePage();
                 }
                 break;
             default:

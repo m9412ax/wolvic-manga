@@ -10,6 +10,8 @@ import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
+import android.graphics.Rect;
+import android.graphics.Canvas;
 import android.graphics.SurfaceTexture;
 import android.media.MediaPlayer;
 import android.os.Handler;
@@ -99,6 +101,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     };
 
+    // Joystick / controller support -------------------------------------------
+    private boolean mDoublePage = false;
+    private boolean mResizeModifier = false;   // a controller side button is held
+    private float mAxisX = 0f;
+    private float mAxisY = 0f;
+    private boolean mJoyActive = false;
+    private boolean mJoyPageCooldown = false;
+    private float mUserScale = 1.0f;           // user window-size multiplier
+    private final Runnable mJoyTick = this::joyTick;
+
     public MangaReaderWidget(Context aContext) {
         super(aContext);
         initialize();
@@ -106,6 +118,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void initialize() {
         mSettings = MangaSettings.get(getContext());
+        mDoublePage = mSettings.bool(MangaSettings.READER_DOUBLE_PAGE);
         setIsHardwareAccelerationEnabled(mSettings.bool(MangaSettings.ADV_HW_ACCEL));
         LayoutInflater.from(getContext()).inflate(R.layout.manga_reader, this, true);
 
@@ -165,20 +178,43 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         });
         mStage.setOnTouchListener((view, event) -> mGestureDetector.onTouchEvent(event));
+        mStage.setOnGenericMotionListener((view, event) -> onJoyMotion(event));
 
         setFocusableInTouchMode(true);
         setOnKeyListener((view, keyCode, event) -> {
-            if (event.getAction() != KeyEvent.ACTION_DOWN
-                    || !mSettings.bool(MangaSettings.READER_VOLUME_KEYS)) {
+            // Holding a controller side button (grip / shoulder / thumbstick press)
+            // switches the joystick into window-resize mode.
+            if (isResizeKey(keyCode)) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    mResizeModifier = true;
+                    startJoyTick();
+                } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                    mResizeModifier = false;
+                    stopJoyTick();
+                }
+                return true;
+            }
+            if (event.getAction() != KeyEvent.ACTION_DOWN) {
                 return false;
             }
-            if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            // DPAD fallback for paging (works even if the joystick axis isn't forwarded).
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 pageDelta(-1);
                 return true;
             }
-            if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
                 pageDelta(1);
                 return true;
+            }
+            if (mSettings.bool(MangaSettings.READER_VOLUME_KEYS)) {
+                if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+                    pageDelta(-1);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                    pageDelta(1);
+                    return true;
+                }
             }
             return false;
         });
@@ -322,7 +358,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
         mVideoTexture.setVisibility(GONE);
         mPageImage.setVisibility(VISIBLE);
-        Bitmap cached = mCache.get(page.getAbsolutePath());
+        Bitmap cached = mCache.get(displayKey(mIndex));
         if (cached != null && !cached.isRecycled()) {
             mCurrent = cached;
             mPageImage.setImageBitmap(cached);
@@ -332,14 +368,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mPageImage.setImageDrawable(null);
         mExecutor.execute(() -> {
-            final Bitmap bitmap = decodePage(page);
+            final Bitmap bitmap = decodeDisplay(mIndex);
             mMainHandler.post(() -> {
                 if (mDestroyed || generation != mLoadGeneration) {
                     return;
                 }
                 mCurrent = bitmap;
                 if (bitmap != null) {
-                    mCache.put(page.getAbsolutePath(), bitmap);
+                    mCache.put(displayKey(mIndex), bitmap);
                     mPageImage.setImageBitmap(bitmap);
                     mPageImage.post(this::applyImageTransform);
                 } else {
@@ -379,7 +415,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
-            int max = Math.max(400, mSettings.integer(MangaSettings.ADV_MAX_DECODE_PX));
+            // Decode at full native resolution for maximum clarity (no
+            // downsampling). A generous safety cap avoids OOM on extreme images
+            // while keeping normal pages pixel-perfect.
+            int max = Math.max(bounds.outWidth, bounds.outHeight);
+            max = Math.max(max, 4096);
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = MangaCoverAdapter.computeInSampleSize(
                     bounds.outWidth, bounds.outHeight, max, max);
@@ -730,6 +770,157 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    // ----------------------------------------------------- double page / joystick
+
+    /** Toggles two-up (double page) reading and reloads the current spread. */
+    public void toggleDoublePage() {
+        mDoublePage = !mDoublePage;
+        mSettings.put(MangaSettings.READER_DOUBLE_PAGE, mDoublePage);
+        showHint(mDoublePage ? "双页：开" : "双页：关");
+        if (!mPages.isEmpty()) {
+            showPage(mIndex);
+        }
+    }
+
+    private String displayKey(int index) {
+        return (mDoublePage ? "d:" : "s:") + index;
+    }
+
+    /** Builds the bitmap to display for a page index (single, or a 2-page spread). */
+    private Bitmap decodeDisplay(int index) {
+        if (mDoublePage && mSettings.integer(MangaSettings.READER_DIRECTION) != 2) {
+            Bitmap bmA = decodePage(mPages.get(index));
+            if (bmA != null && index + 1 < mPages.size()) {
+                Bitmap bmB = decodePage(mPages.get(index + 1));
+                if (bmB != null) {
+                    boolean aPortrait = bmA.getHeight() >= bmA.getWidth();
+                    boolean bPortrait = bmB.getHeight() >= bmB.getWidth();
+                    // Two portrait pages side by side; a landscape page forces single.
+                    if (aPortrait && bPortrait) {
+                        return combineSideBySide(bmA, bmB);
+                    }
+                }
+            }
+            return bmA;
+        }
+        return decodePage(mPages.get(index));
+    }
+
+    private Bitmap combineSideBySide(Bitmap a, Bitmap b) {
+        try {
+            int h = Math.max(a.getHeight(), b.getHeight());
+            int wa = Math.round(a.getWidth() * ((float) h / a.getHeight()));
+            int wb = Math.round(b.getWidth() * ((float) h / b.getHeight()));
+            Bitmap out = Bitmap.createBitmap(wa + wb, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(out);
+            c.drawBitmap(a, null, new Rect(0, 0, wa, h), null);
+            c.drawBitmap(b, null, new Rect(wa, 0, wa + wb, h), null);
+            return out;
+        } catch (Throwable t) {
+            return a;
+        }
+    }
+
+    // ------------------------------------------------------------- controller
+
+    private static boolean isResizeKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_R1
+                || keyCode == KeyEvent.KEYCODE_BUTTON_L1
+                || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBL
+                || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR
+                || keyCode == KeyEvent.KEYCODE_BUTTON_MODE;
+    }
+
+    private boolean onJoyMotion(MotionEvent e) {
+        if (e.getAction() == MotionEvent.ACTION_MOVE) {
+            float x = e.getAxisValue(MotionEvent.AXIS_X);
+            float y = e.getAxisValue(MotionEvent.AXIS_Y);
+            float hatX = e.getAxisValue(MotionEvent.AXIS_HAT_X);
+            float hatY = e.getAxisValue(MotionEvent.AXIS_HAT_Y);
+            if (Math.abs(hatX) > Math.abs(x)) x = hatX;
+            if (Math.abs(hatY) > Math.abs(y)) y = hatY;
+            mAxisX = x;
+            mAxisY = y;
+            if (Math.abs(x) > 0.15f || Math.abs(y) > 0.15f) {
+                startJoyTick();
+            }
+        }
+        return true;
+    }
+
+    private void startJoyTick() {
+        if (mJoyActive) {
+            return;
+        }
+        mJoyActive = true;
+        mMainHandler.post(mJoyTick);
+    }
+
+    private void stopJoyTick() {
+        mJoyActive = false;
+        mMainHandler.removeCallbacks(mJoyTick);
+    }
+
+    private void joyTick() {
+        if (mDestroyed || !isVisible()) {
+            mJoyActive = false;
+            return;
+        }
+        float dead = 0.20f;
+        boolean moving = Math.abs(mAxisX) > dead || Math.abs(mAxisY) > dead;
+        if (!moving) {
+            mJoyActive = false;
+            return;
+        }
+        if (mResizeModifier) {
+            // Hold a controller side button + joystick to resize / reposition window.
+            mUserScale = clamp(mUserScale * (1.0f - mAxisY * 0.05f), 0.4f, 3.0f);
+            WidgetPlacement p = getPlacement();
+            float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
+            p.translationZ = clamp(p.translationZ - mAxisX * 8.0f, baseZ - 200.0f, baseZ + 400.0f);
+            applyUserScale();
+        } else {
+            int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
+            if (direction == 2) {
+                // Vertical continuous scroll, like swiping a long image.
+                mScrollY -= mAxisY * 50.0f;
+                applyImageTransform();
+            } else if (!mJoyPageCooldown) {
+                if (mAxisY < -dead) {
+                    pageDelta(1);
+                    mJoyPageCooldown = true;
+                    mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
+                } else if (mAxisY > dead) {
+                    pageDelta(-1);
+                    mJoyPageCooldown = true;
+                    mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
+                }
+            }
+        }
+        mMainHandler.postDelayed(mJoyTick, 50);
+    }
+
+    private void applyUserScale() {
+        WidgetPlacement p = getPlacement();
+        Context context = getContext();
+        int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
+        int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
+        float baseWorld = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
+                * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.78f;
+        p.worldWidth = baseWorld * mUserScale;
+        p.width = (int) (windowWidth * 0.78f * mUserScale) + mBorderWidth * 2;
+        p.height = (int) (windowHeight * 0.82f * mUserScale) + mBorderWidth * 2;
+        float readerWorldHeight = p.worldWidth
+                * ((float) p.height / (float) p.width) * 360.0f;
+        p.translationY = WidgetPlacement.unitFromMeters(context, R.dimen.window_world_y) + 40.0f
+                + readerWorldHeight * 0.05f;
+        mWidgetManager.updateWidget(this);
+    }
+
+    private static float clamp(float v, float lo, float hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
     public void persistState() {
         MediaPlayer player = mMediaPlayer;
         if (player != null && !mVideoCompleted && mSettings.bool(MangaSettings.PROGRESS_ENABLED)
@@ -896,6 +1087,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mDestroyed = true;
             mLoadGeneration++;
             cancelAuto();
+            stopJoyTick();
             stopVideo(true);
             mExecutor.shutdownNow();
             mMainHandler.removeCallbacksAndMessages(null);

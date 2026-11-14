@@ -272,6 +272,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         bindMangaButton(mBinding.readerDirectionButton, "READER_DIRECTION");
         bindMangaButton(mBinding.readerBrightnessButton, "READER_BRIGHTNESS");
         bindMangaButton(mBinding.readerAutoButton, "READER_AUTO");
+        bindMangaButton(mBinding.readerDoubleButton, "READER_DOUBLE");
         applyMangaMode();
 
         mBinding.wifi.setOnHoverListener((view, motionEvent) -> {
@@ -717,6 +718,11 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         }
 
         mIsWindowAttached = false;
+        // Drop the stale reference so a later re-attach actually re-parents the
+        // tray. Without this, attachToWindow() sees the old window still set,
+        // early-returns, and never restores parentHandle -> the control bar
+        // silently disappears after returning from the browser.
+        mAttachedWindow = null;
     }
 
     @Override

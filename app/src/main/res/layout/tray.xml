@@ -415,6 +415,15 @@
                         android:src="@drawable/ic_icon_brightness" />
 
                     <com.igalia.wolvic.ui.views.UIButton
+                        android:id="@+id/readerDoubleButton"
+                        style="@style/trayButtonMiddleTheme"
+                        android:tooltipText="双页/双叶"
+                        app:tooltipDensity="@dimen/tray_tooltip_density"
+                        app:tooltipPosition="bottom"
+                        app:tooltipLayout="@layout/tooltip_tray"
+                        android:src="@drawable/ic_manga_double" />
+
+                    <com.igalia.wolvic.ui.views.UIButton
                         android:id="@+id/readerAutoButton"
                         style="@style/trayButtonEndTheme"
                         android:tooltipText="自动翻页"

@@ -223,7 +223,9 @@ public class MangaLibraryWidget extends UIWidget {
         // bottom. The drag bar lets the user reposition it anyway.
         float worldHeightUnits = aPlacement.worldWidth
                 * ((float) aPlacement.height / (float) aPlacement.width) * 360.0f;
-        aPlacement.translationY += worldHeightUnits * 0.10f;
+        // Lift the whole panel well above the tray (which floats at the window
+        // bottom). The drag bar lets the user reposition it afterwards.
+        aPlacement.translationY += worldHeightUnits * 0.40f;
         // Slightly in front of the browser window so the (detached) tray and the
         // manga content stay alive while the browser window is hidden.
         aPlacement.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + PANEL_Z_OFFSET;
