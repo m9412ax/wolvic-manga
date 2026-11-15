@@ -109,11 +109,16 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     public void onBindViewHolder(@NonNull CoverViewHolder holder, int position) {
         final MangaItem item = mItems.get(position);
         holder.title.setText(item.title);
-        int heightDp = mCompact ? 96 : 200;
+        // Only touch layout params when the height actually changes. Setting
+        // them unconditionally on every bind requests a layout from inside a
+        // RecyclerView layout pass, which can loop forever and freeze the UI.
+        int targetPx = (int) ((mCompact ? 96 : 200)
+                * mContext.getResources().getDisplayMetrics().density + 0.5f);
         android.view.ViewGroup.LayoutParams lp = holder.cover.getLayoutParams();
-        lp.height = (int) (heightDp * mContext.getResources().getDisplayMetrics().density + 0.5f);
-        holder.cover.setLayoutParams(lp);
-        holder.title.setSingleLine(mCompact);
+        if (lp != null && lp.height != targetPx) {
+            lp.height = targetPx;
+            holder.cover.setLayoutParams(lp);
+        }
         loadCover(holder.cover, item.cover);
         holder.itemView.setOnClickListener(v -> {
             if (mListener != null) {

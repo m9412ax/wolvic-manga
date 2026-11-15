@@ -423,20 +423,45 @@ public class MangaLibraryWidget extends UIWidget {
                 });
     }
 
+    private int mScanGeneration = 0;
+
+    /** Directory enumeration and cover discovery run off the UI thread: a
+     *  large manga tree must never block app startup or freeze the loading
+     *  screen. Only the adapter update is posted back to the main thread. */
     private void scanLibrary() {
         if (!hasStoragePermission()) {
             showEmptyState("需要存储权限才能读取漫画根目录。");
             requestStoragePermission();
             return;
         }
-
         mRoot = new File(mSettings.text(MangaSettings.SOURCE_ROOT));
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
+        final int generation = ++mScanGeneration;
+        final String rootPath = mRoot.getAbsolutePath();
+        mIoExecutor.execute(() -> {
+            final List<MangaCoverAdapter.MangaItem> items = buildLibraryItems();
+            mMain.post(() -> {
+                if (generation != mScanGeneration || mCurrentPage != MangaPage.LIBRARY) {
+                    return;
+                }
+                mAdapter.update(items);
+                if (items.isEmpty()) {
+                    showEmptyState("未找到漫画。请把漫画文件夹放到 " + rootPath);
+                } else {
+                    mEmptyText.setVisibility(GONE);
+                    mGrid.setVisibility(VISIBLE);
+                }
+                Log.i(TAG, "scanLibrary items=" + items.size() + " root=" + rootPath);
+            });
+        });
+    }
 
+    private List<MangaCoverAdapter.MangaItem> buildLibraryItems() {
+        final File root = new File(mSettings.text(MangaSettings.SOURCE_ROOT));
         List<File> dirs = new ArrayList<>();
-        File[] roots = mRoot.listFiles();
-        if (roots != null) {
-            for (File child : roots) {
+        File[] top = root.listFiles();
+        if (top != null) {
+            for (File child : top) {
                 if (child.isDirectory()) {
                     dirs.add(child);
                 }
@@ -451,6 +476,11 @@ public class MangaLibraryWidget extends UIWidget {
         dirs.sort((a, b) -> mSettings.bool(MangaSettings.SOURCE_NATURAL_SORT)
                 ? MangaCoverAdapter.naturalCompare(a.getName(), b.getName())
                 : a.getName().compareToIgnoreCase(b.getName()));
+        // Hard ceiling: an accidental root with thousands of folders must not
+        // turn into an unbounded I/O walk.
+        if (dirs.size() > 200) {
+            dirs = new ArrayList<>(dirs.subList(0, 200));
+        }
 
         List<MangaCoverAdapter.MangaItem> items = new ArrayList<>();
         String[] images = mSettings.imageExtensions();
@@ -467,15 +497,7 @@ public class MangaLibraryWidget extends UIWidget {
             }
             items.add(new MangaCoverAdapter.MangaItem(dir, dir.getName(), cover, hasVideo));
         }
-
-        mAdapter.update(items);
-        if (items.isEmpty()) {
-            showEmptyState("未找到漫画。请把漫画文件夹放到 " + mRoot.getAbsolutePath());
-        } else {
-            mEmptyText.setVisibility(GONE);
-            mGrid.setVisibility(VISIBLE);
-        }
-        Log.i(TAG, "scanLibrary items=" + items.size() + " root=" + mRoot.getAbsolutePath());
+        return items;
     }
 
     private void collectChapterDirs(File dir, boolean recursive, int depth, List<File> out) {
@@ -531,6 +553,13 @@ public class MangaLibraryWidget extends UIWidget {
     // ---------------------------------------------- bookshelf toolbar
 
     private void setupLibraryToolbar() {
+        // Defer adding the extra row until after the initial layout pass. A
+        // synchronous insertion into a weighted LinearLayout during startup
+        // forces an extra full measure while the RecyclerView is binding.
+        post(this::buildLibraryToolbar);
+    }
+
+    private void buildLibraryToolbar() {
         LinearLayout bar = new LinearLayout(getContext());
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -817,8 +846,10 @@ public class MangaLibraryWidget extends UIWidget {
             label.setEllipsize(android.text.TextUtils.TruncateAt.END);
             cell.addView(label);
 
+            // Plain (unweighted) specs: weighted GridLayout cells inside a
+            // ScrollView trigger a very expensive repeated measure pass.
             GridLayout.LayoutParams gp = new GridLayout.LayoutParams(
-                    GridLayout.spec(i / cols, 1f), GridLayout.spec(i % cols, 1f));
+                    GridLayout.spec(i / cols), GridLayout.spec(i % cols));
             gp.setMargins(dp(4), dp(4), dp(4), dp(4));
             cell.setLayoutParams(gp);
             cell.setOnClickListener(v -> openReaderAt(folder, file));
