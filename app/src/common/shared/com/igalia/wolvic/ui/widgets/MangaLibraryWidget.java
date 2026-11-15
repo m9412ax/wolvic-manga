@@ -138,6 +138,14 @@ public class MangaLibraryWidget extends UIWidget {
         mGrid = findViewById(R.id.mangaGrid);
         mDragBar = findViewById(R.id.dragBar);
 
+        // Always-visible shortcut into the keybinding settings. The tray's
+        // settings button also lands here now (see VRBrowserActivity), but a
+        // button on the shelf itself makes the feature impossible to miss.
+        View settingsShortcut = findViewById(R.id.settingsShortcutButton);
+        if (settingsShortcut != null) {
+            settingsShortcut.setOnClickListener(v -> switchPage(MangaPage.SETTINGS));
+        }
+
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
         mAdapter = new MangaCoverAdapter(getContext(), this::openReader, this::resetProgress);
         mGrid.setAdapter(mAdapter);
@@ -856,16 +864,20 @@ public class MangaLibraryWidget extends UIWidget {
     // ----------------------------------------------------------- settings
 
     private void fillSettingsPage(LinearLayout content) {
-        addInfo(content, "漫画设置", "完整设置已并入原生设置菜单：设置 → 漫画 / MANGA 分组。");
+        // Keybindings come FIRST: the page lives inside a ScrollView and VR
+        // scrolling is awkward, so the new feature must be visible on entry.
+        buildKeybindingSection(content);
+
+        addInfo(content, "漫画设置", "这里是漫画专属设置页；Wolvic 原生设置请用下方「系统设置」按钮打开。");
         addInfo(content, "存储权限", hasStoragePermission() ? "已授予" : "未授予（书架无法读取）");
         addInfo(content, "漫画根目录", mSettings.text(MangaSettings.SOURCE_ROOT));
         addInfo(content, "当前页面", mCurrentPage.label);
 
         LinearLayout actions = addRow(content);
-        addButton(actions, "打开完整设置", v -> {
+        addButton(actions, "系统设置(原生)", v -> {
             Context context = getContext();
             if (context instanceof VRBrowserActivity) {
-                ((VRBrowserActivity) context).onMangaTrayAction("SETTINGS");
+                ((VRBrowserActivity) context).onMangaTrayAction("SYSTEM_SETTINGS");
             }
         });
         addButton(actions, "重新扫描书架", v -> scanLibrary());
@@ -880,8 +892,6 @@ public class MangaLibraryWidget extends UIWidget {
                 ((VRBrowserActivity) context).onMangaTrayAction("BROWSER");
             }
         });
-
-        buildKeybindingSection(content);
     }
 
     // --------------------------------------------------- keybinding settings

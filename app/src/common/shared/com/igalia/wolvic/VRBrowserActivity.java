@@ -2318,6 +2318,20 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 setUiMode(mMangaUiMode == UI_BROWSER ? UI_LIBRARY : UI_BROWSER);
                 break;
             case "SETTINGS":
+                // The manga settings page in the shelf holds the custom
+                // keybinding editor. This used to open Wolvic's native settings
+                // dialog instead, which left the whole keybinding UI unreachable.
+                mMangaPage = "SETTINGS";
+                setUiMode(UI_LIBRARY);
+                if (mMangaLibrary != null) {
+                    mMangaLibrary.showPage("SETTINGS");
+                }
+                if (mTray != null) {
+                    mTray.setMangaPage("SETTINGS");
+                }
+                break;
+            case "SYSTEM_SETTINGS":
+                // Explicit escape hatch to Wolvic's own settings dialog.
                 if (mTray != null) {
                     mTray.showSettingsDialog(SettingsView.SettingViewType.MAIN);
                 }

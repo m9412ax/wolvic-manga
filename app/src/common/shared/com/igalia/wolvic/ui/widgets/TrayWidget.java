@@ -589,6 +589,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBinding.mangaSmbButton.setActiveMode("SMB".equals(mMangaPage));
         mBinding.mangaWebDavButton.setActiveMode("WEBDAV".equals(mMangaPage));
         mBinding.mangaExtensionsButton.setActiveMode("EXTENSIONS".equals(mMangaPage));
+        mBinding.mangaSettingsButton.setActiveMode("SETTINGS".equals(mMangaPage));
         Log.i("MangaTray", "mode=" + mMangaMode + " page=" + mMangaPage);
     }
 
