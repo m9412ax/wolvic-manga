@@ -108,6 +108,12 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private String mMangaPage = "LIBRARY";
     /** True while the browser window is temporarily shown just to host the settings dialog. */
     private boolean mSettingsUsedWindow;
+    /** Original tray dimensions, used to pin its size during a manga canvas zoom. */
+    private float mBaseTrayWorldWidth = -1f;
+    private int mBaseTrayWidth = -1;
+    private int mBaseTrayHeight = -1;
+    /** True only while parented to a manga surface, not to a browser window. */
+    private boolean mParentedToManga = false;
 
     public TrayWidget(Context aContext) {
         super(aContext);
@@ -645,6 +651,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         float absY = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_y);
         float absZ = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_z);
         if (parent == null) {
+            mParentedToManga = false;
             if (p.parentHandle != -1) {
                 p.parentHandle = -1;
                 p.parentAnchorX = 0.5f;
@@ -663,9 +670,29 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         p.translationX = -t.translationX;
         p.translationY = absY - t.translationY;
         p.translationZ = absZ - t.translationZ;
+        mParentedToManga = true;
         mWidgetManager.updateWidget(this);
         Log.i("MangaTray", "attached to manga parent=" + parent.getHandle()
                 + " relY=" + p.translationY + " relZ=" + p.translationZ);
+    }
+
+    /** A canvas zoom grows the manga surface upwards around a fixed bottom edge.
+     *  The tray is a child of that surface, so its centre would move up by
+     *  deltaParentY and its quad could be scaled with the parent. Cancel that
+     *  delta and pin the original dimensions: the control bar must stay exactly
+     *  where it was, at exactly the same size - only the canvas changes. */
+    public void onMangaParentResized(float deltaParentY) {
+        WidgetPlacement p = getPlacement();
+        if (!mParentedToManga || p.parentHandle == -1) {
+            return;
+        }
+        p.translationY -= deltaParentY;
+        if (mBaseTrayWorldWidth > 0f) {
+            p.worldWidth = mBaseTrayWorldWidth;
+            p.width = mBaseTrayWidth;
+            p.height = mBaseTrayHeight;
+        }
+        mWidgetManager.updateWidget(this);
     }
 
     @Override
@@ -684,6 +711,9 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         aPlacement.rotation = (float)Math.toRadians(-45);
         aPlacement.cylinder = false;
         aPlacement.textureScale *= aPlacement.worldWidth;
+        mBaseTrayWorldWidth = aPlacement.worldWidth;
+        mBaseTrayWidth = aPlacement.width;
+        mBaseTrayHeight = aPlacement.height;
         updatePlacementTranslationZ();
     }
 
@@ -767,7 +797,13 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
 
     @Override
     public void attachToWindow(@NonNull WindowWidget aWindow) {
-        if (mAttachedWindow == aWindow) {
+        // The window reference can outlive a temporary detach: setMangaParent(null)
+        // clears parentHandle while mAttachedWindow still points at the same
+        // window. Returning early here would leave the tray world-detached (and,
+        // once the manga surface is hidden, invisible). Only skip when the
+        // placement really is parented to this window.
+        if (mAttachedWindow == aWindow
+                && mWidgetPlacement.parentHandle == aWindow.getHandle()) {
             return;
         }
         detachFromWindow();
@@ -822,18 +858,26 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         toggleSettingsDialog(SettingsView.SettingViewType.MAIN);
     }
 
+    /** Live state of the merged settings dialog. The activity uses this to
+     *  decide whether the floating manga panels must step aside. */
+    public boolean isSettingsWidgetVisible() {
+        return mSettingsWidget != null && mSettingsWidget.isVisible();
+    }
+
     private void createSettingsWidget() {
         assert mSettingsWidget == null : "SettingsWidget already created";
         mSettingsWidget = new SettingsWidget(getContext());
         mSettingsWidget.setVisibilityListener(visible -> {
             mTrayViewModel.setSettingsWidgetVisible(visible);
-            // When the settings dialog was opened from manga mode (tray detached,
-            // browser window hidden) we temporarily re-showed the window to host it.
-            // Restore the manga state now that the dialog is gone.
-            if (!visible && mSettingsUsedWindow) {
+            // The dialog is hosted by the browser window. In manga mode the
+            // browser window is hidden and the floating manga panels sit in
+            // front of it, so they would cover the dialog. Let the activity
+            // hide them (and keep the host window visible) while it is open,
+            // then restore the exact previous UI mode when it closes.
+            if (!visible) {
                 mSettingsUsedWindow = false;
-                ((VRBrowserActivity) getContext()).syncMangaUiMode();
             }
+            ((VRBrowserActivity) getContext()).onMangaSettingsVisibilityChanged(visible);
         });
     }
 
@@ -868,6 +912,10 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         } else {
             mSettingsWidget.show(REQUEST_FOCUS, settingDialog);
         }
+        // Re-apply the manga UI mode AFTER the widget state changed, so the
+        // live visibility query in applyUiMode() sees the correct value.
+        ((VRBrowserActivity) getContext()).onMangaSettingsVisibilityChanged(
+                isSettingsWidgetVisible());
     }
 
     public void showSettingsDialog(@NonNull SettingsView.SettingViewType settingDialog) {
@@ -881,6 +929,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         }
 
         mSettingsWidget.show(REQUEST_FOCUS, settingDialog);
+        ((VRBrowserActivity) getContext()).onMangaSettingsVisibilityChanged(
+                isSettingsWidgetVisible());
     }
 
     public void setAddWindowVisible(boolean aVisible) {

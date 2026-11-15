@@ -52,6 +52,9 @@ public final class MangaSettings {
     /** Persistent window/canvas size multiplier. Unlike the temporary image
      *  zoom, this survives page changes and restarts. */
     public static final String READER_CANVAS_SCALE = "reader_canvas_scale";
+    /** Thumbstick vertical scroll multiplier in continuous (webtoon) mode.
+     *  1.0 == the old hard-coded speed; 2.0 is the new default. */
+    public static final String READER_SCROLL_SPEED = "reader_scroll_speed";
 
     // Sources
     public static final String SOURCE_ROOT = "source_root";

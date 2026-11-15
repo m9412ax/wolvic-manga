@@ -67,9 +67,36 @@ public class MangaSettingsPanel extends LinearLayout {
         if (MangaKeyCapture.addFlow) {
             renderAddFlow();
         } else {
+            // Keep this on the first screen: options buried at the bottom of
+            // the VR scroll view are effectively unreachable.
+            buildScrollSpeedSection();
             buildKeybindingSection();
             buildMangaSections();
         }
+    }
+
+    /** Continuous-mode thumbstick scroll speed. Read live by the reader, so
+     *  changing it here takes effect immediately without reopening the page. */
+    private void buildScrollSpeedSection() {
+        final float speed = mSettings.getFloat(MangaSettings.READER_SCROLL_SPEED, 2.0f);
+        addInfo("连续模式 · 摇杆滚动速度",
+                "摇杆上下滑动时图片的滚动倍率（仅纵向连续模式生效）。当前 "
+                        + speed + " 倍，数值越大滚动越快。");
+        LinearLayout row = addRow();
+        addButton(row, "－ 减慢", v -> {
+            float next = Math.max(0.25f, Math.round((speed - 0.25f) * 100f) / 100f);
+            mSettings.put(MangaSettings.READER_SCROLL_SPEED, next);
+            rebuild();
+        });
+        addButton(row, "＋ 加快", v -> {
+            float next = Math.min(8.0f, Math.round((speed + 0.25f) * 100f) / 100f);
+            mSettings.put(MangaSettings.READER_SCROLL_SPEED, next);
+            rebuild();
+        });
+        addButton(row, "恢复默认", v -> {
+            mSettings.put(MangaSettings.READER_SCROLL_SPEED, 2.0f);
+            rebuild();
+        });
     }
 
     // --------------------------------------------------- keybinding settings

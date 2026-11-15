@@ -47,11 +47,15 @@ public interface WidgetManagerDelegate {
     float DEFAULT_NO_DIM_BRIGHTNESS = 1.0f;
 
 
-    @IntDef(value = { WIDGET_MOVE_BEHAVIOUR_GENERAL, WIDGET_MOVE_BEHAVIOUR_KEYBOARD, WIDGET_MOVE_BEHAVIOUR_WINDOW})
+    @IntDef(value = { WIDGET_MOVE_BEHAVIOUR_GENERAL, WIDGET_MOVE_BEHAVIOUR_KEYBOARD, WIDGET_MOVE_BEHAVIOUR_WINDOW, WIDGET_MOVE_BEHAVIOUR_MANGA})
     public @interface WidgetMoveBehaviourFlags {}
     public static final int WIDGET_MOVE_BEHAVIOUR_GENERAL = 0;
     public static final int WIDGET_MOVE_BEHAVIOUR_KEYBOARD = 1;
     public static final int WIDGET_MOVE_BEHAVIOUR_WINDOW = 2;
+    /** Manga surfaces are dragged from a separate floating grab bar, so the
+     *  general +/-1.0 m vertical clamp is far too tight (the bar sits high and
+     *  the ray anchor is near zero). Must match WidgetMoveBehaviour::MANGA. */
+    public static final int WIDGET_MOVE_BEHAVIOUR_MANGA = 3;
 
     @IntDef(value = { WEBXR_INTERSTITIAL_FORCED, WEBXR_INTERSTITIAL_ALLOW_DISMISS, WEBXR_INTERSTITIAL_HIDDEN})
     @interface WebXRInterstitialState {}

@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.BitmapRegionDecoder;
 import android.graphics.Matrix;
 import android.graphics.Rect;
 import android.graphics.Canvas;
@@ -61,6 +62,12 @@ import java.util.concurrent.Executors;
 public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTextureListener {
 
     private static final String TAG = "MangaReader";
+    /** Android's RecordingCanvas refuses to draw a single Bitmap above this
+     *  size (observed crash at ~166 MB). This is a *draw* limit, not a decode
+     *  limit: pages beyond it are decoded as full-resolution tiles instead of
+     *  being downsampled, so no detail is ever thrown away. */
+    private static final long SINGLE_BITMAP_LIMIT = 150L * 1024 * 1024;
+    private static final long TILE_BYTES_LIMIT = 96L * 1024 * 1024;
 
     private MangaSettings mSettings;
     private FrameLayout mRootView;
@@ -127,6 +134,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mJoyActive = false;
     private boolean mJoyPageCooldown = false;
     private float mUserScale = 1.0f;           // user window-size multiplier
+    /** Paging from the thumbstick is suspended while a zoom gesture is in
+     *  progress (and briefly afterwards), so a resize never flips pages. */
+    private long mZoomGestureUntil = 0L;
+    /** True when the current page is drawn as a stack of decoded tiles. */
+    private boolean mTiledPage = false;
+    /** Native dimensions of the current page, even when it is tiled. */
+    private int mDisplayWidth = 0;
+    private int mDisplayHeight = 0;
     private final Runnable mJoyTick = this::joyTick;
 
     public MangaReaderWidget(Context aContext) {
@@ -274,7 +289,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 case MotionEvent.ACTION_DOWN:
                     if (mWidgetManager != null) {
                         mWidgetManager.startWidgetMove(this,
-                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_GENERAL);
+                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_MANGA);
                     }
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -415,6 +430,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
         final File page = mPages.get(mIndex);
         final boolean continuous = isContinuous();
+        mTiledPage = false;
+        mDisplayWidth = 0;
+        mDisplayHeight = 0;
+        if (mStripView != null) {
+            mStripView.clearTiles();
+        }
         applyDisplaySettings();
         mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
         mGotoDialog.setVisibility(GONE);
@@ -432,12 +453,69 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
 
         mVideoTexture.setVisibility(GONE);
-        mPageImage.setVisibility(continuous ? GONE : VISIBLE);
-        setStripVisible(continuous);
+        // An oversized page is shown as full-resolution tiles rather than one
+        // downsampled bitmap, so zooming in never loses text detail.
+        final boolean tiled = !continuous && needsTiling(page);
+        mPageImage.setVisibility(continuous || tiled ? GONE : VISIBLE);
+        setStripVisible(continuous || tiled);
         final String cacheKey = continuous ? stripKey(mIndex) : displayKey(mIndex);
+        if (tiled) {
+            // Deliberately not cached in the Bitmap LruCache: a set of tiles can
+            // be several hundred MB and must not evict all the small pages.
+            mCurrent = null;
+            mPageImage.setImageDrawable(null);
+            mExecutor.execute(() -> {
+                final Bitmap[] tiles = decodePageTiles(page);
+                // Some formats (e.g. certain WebP/GIF variants) have no region
+                // decoder. Fall back to a single sampled bitmap rather than
+                // leaving the reader blank.
+                final Bitmap fallback = (tiles == null || tiles.length == 0)
+                        ? decodePage(page) : null;
+                mMainHandler.post(() -> {
+                    if (mDestroyed || generation != mLoadGeneration) {
+                        return;
+                    }
+                    if (tiles == null || tiles.length == 0) {
+                        if (fallback != null) {
+                            mTiledPage = false;
+                            mStripView.clearTiles();
+                            setStripVisible(false);
+                            mPageImage.setVisibility(VISIBLE);
+                            mCurrent = fallback;
+                            mDisplayWidth = fallback.getWidth();
+                            mDisplayHeight = fallback.getHeight();
+                            mPageImage.setImageBitmap(fallback);
+                            mPageImage.post(this::applyImageTransform);
+                        } else {
+                            showHint("无法解码：" + page.getName());
+                        }
+                        finishPageLoad(generation);
+                        return;
+                    }
+                    int totalW = 0;
+                    int totalH = 0;
+                    for (Bitmap tile : tiles) {
+                        totalW = Math.max(totalW, tile.getWidth());
+                        totalH += tile.getHeight();
+                    }
+                    mDisplayWidth = totalW;
+                    mDisplayHeight = totalH;
+                    mTiledPage = true;
+                    mStripView.setTiles(tiles, null);
+                    applyImageTransform();
+                    // The strip view may not have been measured yet when it
+                    // first becomes visible; recompute once layout completes.
+                    mStripView.post(this::applyImageTransform);
+                    finishPageLoad(generation);
+                });
+            });
+            return;
+        }
         Bitmap cached = mCache.get(cacheKey);
         if (cached != null && !cached.isRecycled()) {
             mCurrent = cached;
+            mDisplayWidth = cached.getWidth();
+            mDisplayHeight = cached.getHeight();
             if (continuous) {
                 rebuildStrip(cached, stripGeneration);
             } else {
@@ -458,6 +536,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 }
                 mCurrent = bitmap;
                 if (bitmap != null) {
+                    mDisplayWidth = bitmap.getWidth();
+                    mDisplayHeight = bitmap.getHeight();
                     mCache.put(cacheKey, bitmap);
                     if (continuous) {
                         rebuildStrip(bitmap, stripGeneration);
@@ -502,24 +582,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
-            // Decode at the largest size the GPU can actually present. Android's
-            // Canvas refuses to draw a bitmap larger than its max bitmap size
-            // (observed crash at ~174 MB for a 5820x7500 page), so we only
-            // downsample when a bitmap would exceed that. We no longer cap the
-            // longest edge at 4096 - that was needlessly halving ordinary
-            // 3000-4500px pages and making them look blurry. Typical pages now
-            // decode at full native resolution.
-            final int MAX_EDGE = 16384;                  // sanity bound (GL texture ceiling)
-            final long MAX_BYTES = 150L * 1024 * 1024;  // 150 MB, safely below the draw limit
+            // No resolution cap. Every page decodes at 1:1 native resolution;
+            // the old 4096-edge / 150 MB downsampling was exactly what made
+            // zoomed-in comic text look blurry. Only the continuous-mode path
+            // (which needs one Bitmap per page) falls back to a sample when a
+            // single bitmap would exceed Canvas' draw limit. Single-page mode
+            // uses decodePageTiles() for those pages and stays at full res.
+            long bytes = (long) bounds.outWidth * bounds.outHeight * 4L;
             int sample = 1;
-            while (sample <= 32) {
-                int w = (bounds.outWidth + sample - 1) / sample;
-                int h = (bounds.outHeight + sample - 1) / sample;
-                long bytes = (long) w * h * 4L;
-                if (Math.max(w, h) <= MAX_EDGE && bytes <= MAX_BYTES) {
-                    break;
+            if (bytes > SINGLE_BITMAP_LIMIT) {
+                while (sample <= 32) {
+                    long w = (bounds.outWidth + sample - 1L) / sample;
+                    long h = (bounds.outHeight + sample - 1L) / sample;
+                    if (w * h * 4L <= SINGLE_BITMAP_LIMIT) {
+                        break;
+                    }
+                    sample *= 2;
                 }
-                sample *= 2;
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
@@ -531,6 +610,55 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 }
             }
             return bitmap;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** True when a page cannot be drawn as a single Bitmap and must be tiled. */
+    private boolean needsTiling(File file) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            return bounds.outWidth > 0 && bounds.outHeight > 0
+                    && (long) bounds.outWidth * bounds.outHeight * 4L > SINGLE_BITMAP_LIMIT;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Full-resolution decode of a very tall / high-res page. The page is cut
+     *  into vertical strips that are each small enough for RecordingCanvas;
+     *  MangaStripView draws them as one continuous image. No pixel is ever
+     *  discarded, so zooming in keeps every bit of the original detail. */
+    private Bitmap[] decodePageTiles(File file) {
+        try {
+            BitmapRegionDecoder decoder = BitmapRegionDecoder.newInstance(
+                    file.getAbsolutePath(), false);
+            if (decoder == null) {
+                return null;
+            }
+            final int w = decoder.getWidth();
+            final int h = decoder.getHeight();
+            if (w <= 0 || h <= 0) {
+                decoder.recycle();
+                return null;
+            }
+            final int rows = (int) Math.max(1L, TILE_BYTES_LIMIT / ((long) w * 4L));
+            List<Bitmap> tiles = new ArrayList<>();
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 1;
+            for (int top = 0; top < h; top += rows) {
+                int bottom = Math.min(h, top + rows);
+                Bitmap tile = decoder.decodeRegion(new Rect(0, top, w, bottom), opts);
+                if (tile == null) {
+                    break;
+                }
+                tiles.add(tile);
+            }
+            decoder.recycle();
+            return tiles.isEmpty() ? null : tiles.toArray(new Bitmap[0]);
         } catch (Throwable t) {
             return null;
         }
@@ -855,14 +983,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             updateStripTransform();
             return;
         }
-        Bitmap bitmap = mCurrent;
-        if (bitmap == null || mPageImage.getWidth() == 0 || mPageImage.getHeight() == 0) {
+        float bw = mDisplayWidth;
+        float bh = mDisplayHeight;
+        float vw = (mTiledPage && mStripView.getWidth() > 0)
+                ? mStripView.getWidth() : mPageImage.getWidth();
+        float vh = (mTiledPage && mStripView.getHeight() > 0)
+                ? mStripView.getHeight() : mPageImage.getHeight();
+        if (bw <= 0 || bh <= 0 || vw <= 0 || vh <= 0) {
             return;
         }
-        float vw = mPageImage.getWidth();
-        float vh = mPageImage.getHeight();
-        float bw = bitmap.getWidth();
-        float bh = bitmap.getHeight();
         int mode = mSettings.integer(MangaSettings.READER_SCALE);
         int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
         float sx;
@@ -898,7 +1027,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mMatrix.setScale(sx, sy);
         mMatrix.postTranslate(dx, dy);
-        mPageImage.setImageMatrix(mMatrix);
+        if (mTiledPage) {
+            mStripView.setTileMatrix(mMatrix);
+        } else {
+            mPageImage.setImageMatrix(mMatrix);
+        }
     }
 
     private void applyTransition() {
@@ -1089,6 +1222,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  fixed-size window. showPage() resets mZoom, so the next page is 100%. */
     public void zoomBy(float factor) {
         mZoom = clamp(mZoom * factor, 0.2f, 8.0f);
+        markZoomGesture();
         applyImageTransform();
         showHint("图片缩放：" + Math.round(mZoom * 100) + "%（切页重置）");
     }
@@ -1096,6 +1230,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
      *  height). Saved to prefs, so it survives page changes and restarts. */
     public void scaleCanvasBy(float factor) {
+        markZoomGesture();
         mUserScale = clamp(mUserScale * factor, 0.4f, 3.0f);
         mSettings.put(MangaSettings.READER_CANVAS_SCALE, mUserScale);
         applyUserScale();
@@ -1114,6 +1249,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
         WidgetPlacement p = getPlacement();
+        float previousY = p.translationY;
         p.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
         p.width = (int) (windowWidth * 0.78f) + mBorderWidth * 2;
@@ -1124,6 +1260,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         p.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
         p.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + 220.0f;
         mWidgetManager.updateWidget(this);
+        notifyCanvasResized(p.translationY - previousY);
         applyImageTransform();
         showHint("已重置位置/大小");
     }
@@ -1240,15 +1377,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             int h = Math.max(a.getHeight(), b.getHeight());
             int wa = Math.round(a.getWidth() * ((float) h / a.getHeight()));
             int wb = Math.round(b.getWidth() * ((float) h / b.getHeight()));
-            // Keep the combined spread within the GPU texture ceiling so it can
-            // actually be drawn (Canvas rejects oversized bitmaps).
-            final int MAX = 4096;
+            // No edge cap any more: the old 4096 limit halved ordinary
+            // spreads and made zoomed text blurry. Only guard against Canvas'
+            // single-bitmap draw limit, and even then scale by area (sqrt),
+            // which preserves far more detail than clamping one edge.
             int totalW = wa + wb;
-            if (h > MAX || totalW > MAX) {
-                float scale = Math.min((float) MAX / h, (float) MAX / totalW);
-                h = (int) (h * scale);
-                wa = (int) (wa * scale);
-                wb = (int) (wb * scale);
+            long bytes = (long) totalW * h * 4L;
+            if (bytes > SINGLE_BITMAP_LIMIT) {
+                double scale = Math.sqrt((double) SINGLE_BITMAP_LIMIT / (double) bytes);
+                h = Math.max(1, (int) (h * scale));
+                wa = Math.max(1, (int) (wa * scale));
+                wb = Math.max(1, (int) (wb * scale));
             }
             Bitmap out = Bitmap.createBitmap(wa + wb, h, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(out);
@@ -1277,7 +1416,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mScrollAccumX += dx;
         mScrollAccumY += dy;
 
+        // While a resize / zoom gesture is active the stick's unavoidable
+        // horizontal component must NOT be interpreted as a page turn.
+        boolean pagingSuspended = mResizeModifier || zoomGestureActive();
         if (mResizeModifier) {
+            markZoomGesture();
             mUserScale = clamp(mUserScale * (1.0f - dy * 0.012f), 0.4f, 3.0f);
             WidgetPlacement p = getPlacement();
             float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
@@ -1289,9 +1432,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // Seamless long-strip scroll: dy > 0 scrolls down into the
                 // next page, dy < 0 scrolls up into the previous page's tail.
                 if (isContinuous()) {
-                    scrollContinuous(-dy * 14.0f);
+                    scrollContinuous(-dy * 14.0f * scrollSpeed());
                 } else {
-                    mScrollY -= dy * 14.0f;
+                    mScrollY -= dy * 14.0f * scrollSpeed();
                     applyImageTransform();
                 }
             } else if (Math.abs(mScrollAccumY) > 0.35f) {
@@ -1300,6 +1443,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         }
 
+        if (pagingSuspended) {
+            // Discard the accumulated horizontal drift instead of letting it
+            // fire as soon as the modifier is released.
+            mScrollAccumX = 0f;
+            mMainHandler.removeCallbacks(mScrollDecay);
+            mMainHandler.postDelayed(mScrollDecay, 220);
+            return;
+        }
         if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
             pageDelta(mScrollAccumX > 0 ? -1 : 1);
             mScrollAccumX = 0f;
@@ -1310,6 +1461,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // A released stick stops sending events, so expire the accumulator.
         mMainHandler.removeCallbacks(mScrollDecay);
         mMainHandler.postDelayed(mScrollDecay, 220);
+    }
+
+    /** True for ~400 ms after the last zoom/resize input. */
+    private boolean zoomGestureActive() {
+        return System.currentTimeMillis() < mZoomGestureUntil;
+    }
+
+    private void markZoomGesture() {
+        mZoomGestureUntil = System.currentTimeMillis() + 400L;
+    }
+
+    /** User-tunable continuous-mode thumbstick scroll multiplier. */
+    private float scrollSpeed() {
+        return clamp(mSettings.getFloat(MangaSettings.READER_SCROLL_SPEED, 2.0f),
+                0.25f, 8.0f);
     }
 
     private static boolean isResizeKey(int keyCode) {
@@ -1363,6 +1529,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (mResizeModifier) {
             // Hold a controller side button + joystick to resize / reposition window.
+            markZoomGesture();
             mUserScale = clamp(mUserScale * (1.0f - mAxisY * 0.05f), 0.4f, 3.0f);
             WidgetPlacement p = getPlacement();
             float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
@@ -1373,12 +1540,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (direction == 2) {
                 // Vertical continuous scroll, like swiping a long image.
                 if (isContinuous()) {
-                    scrollContinuous(-mAxisY * 50.0f);
+                    scrollContinuous(-mAxisY * 50.0f * scrollSpeed());
                 } else {
-                    mScrollY -= mAxisY * 50.0f;
+                    mScrollY -= mAxisY * 50.0f * scrollSpeed();
                     applyImageTransform();
                 }
-            } else if (!mJoyPageCooldown) {
+            } else if (!mJoyPageCooldown && !zoomGestureActive()) {
                 if (mAxisY < -dead) {
                     pageDelta(1);
                     mJoyPageCooldown = true;
@@ -1400,15 +1567,36 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
         float baseWorld = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
+
+        // Remember the CURRENT bottom edge (which may have been moved by a
+        // drag) and keep it pinned: zooming grows the canvas upwards only, so
+        // it can never slide down behind the grab bar / control bar.
+        float previousY = p.translationY;
+        float previousHeight = p.worldWidth
+                * ((float) p.height / (float) Math.max(1, p.width)) * 360.0f;
+        float bottomY = previousY - previousHeight * 0.5f;
+
         p.worldWidth = baseWorld * mUserScale;
         p.width = (int) (windowWidth * 0.78f * mUserScale) + mBorderWidth * 2;
         p.height = (int) (windowHeight * 0.82f * mUserScale) + mBorderWidth * 2;
         float readerWorldHeight = p.worldWidth
                 * ((float) p.height / (float) p.width) * 360.0f;
-        // Keep the bottom a fixed gap above the tray, matching initializeWidgetPlacement.
-        float trayY = WidgetPlacement.unitFromMeters(context, R.dimen.tray_world_y);
-        p.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
+        p.translationY = bottomY + readerWorldHeight * 0.5f;
         mWidgetManager.updateWidget(this);
+        notifyCanvasResized(p.translationY - previousY);
+    }
+
+    /** The tray and the floating grab bar are children of this surface. When
+     *  its centre moves up during a canvas zoom, their relative translation
+     *  must be corrected by the same amount so they stay put on screen. */
+    private void notifyCanvasResized(float deltaParentY) {
+        if (Math.abs(deltaParentY) < 0.01f) {
+            return;
+        }
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).onMangaCanvasResized(deltaParentY);
+        }
     }
 
     private static float clamp(float v, float lo, float hi) {

@@ -186,7 +186,7 @@ public class MangaLibraryWidget extends UIWidget {
                 case MotionEvent.ACTION_DOWN:
                     if (mWidgetManager != null) {
                         mWidgetManager.startWidgetMove(this,
-                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_GENERAL);
+                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_MANGA);
                     }
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -1074,7 +1074,7 @@ public class MangaLibraryWidget extends UIWidget {
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                         mWidgetManager.startWidgetMove(mTarget,
-                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_GENERAL);
+                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_MANGA);
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
@@ -1131,6 +1131,24 @@ public class MangaLibraryWidget extends UIWidget {
                 mAdded = true;
                 mWidgetManager.addWidget(this);
             } else {
+                mWidgetManager.updateWidget(this);
+            }
+        }
+
+        /** Keeps the floating bar at a fixed world position and size when
+         *  a canvas zoom grows the parent manga surface upwards. */
+        public void onMangaParentResized(float deltaParentY) {
+            if (mTarget == null) {
+                return;
+            }
+            WidgetPlacement p = getPlacement();
+            p.translationY -= deltaParentY;
+            // Pin the original quad: the control bar / grab bar must never
+            // scale together with the manga canvas.
+            p.worldWidth = 0.8f;
+            p.width = dp(320);
+            p.height = dp(30);
+            if (mAdded && mWidgetManager != null) {
                 mWidgetManager.updateWidget(this);
             }
         }

@@ -31,6 +31,10 @@ public class MangaStripView extends View {
     private float mScale = 1.0f;
     private float mZoom = 1.0f;
     private float mOffset = 0.0f;   // distance scrolled down from the top of the current page
+    /** Single oversized page split into full-resolution vertical tiles. */
+    private Bitmap[] mTiles;
+    private boolean mTileMode = false;
+    private final Matrix mTileMatrix = new Matrix();
 
     public MangaStripView(Context context) {
         super(context);
@@ -47,6 +51,32 @@ public class MangaStripView extends View {
         mScale = scale > 0 ? scale : 1.0f;
         mZoom = zoom > 0 ? zoom : 1.0f;
         mOffset = offset;
+        invalidate();
+    }
+
+    /** Draws one page that is too large for a single Canvas bitmap as a
+     *  vertical stack of independent, FULL-resolution tiles. Stitching them
+     *  into one Bitmap would hit RecordingCanvas' size limit again; drawing
+     *  N ordinary bitmaps into one canvas is fine. */
+    public void setTiles(Bitmap[] tiles, Matrix matrix) {
+        mTiles = tiles;
+        mTileMode = tiles != null && tiles.length > 0;
+        if (matrix != null) {
+            mTileMatrix.set(matrix);
+        }
+        invalidate();
+    }
+
+    public void setTileMatrix(Matrix matrix) {
+        if (matrix != null) {
+            mTileMatrix.set(matrix);
+            invalidate();
+        }
+    }
+
+    public void clearTiles() {
+        mTiles = null;
+        mTileMode = false;
         invalidate();
     }
 
@@ -74,7 +104,28 @@ public class MangaStripView extends View {
         super.onDraw(canvas);
         final float vw = getWidth();
         final float vh = getHeight();
-        if (vw <= 0 || vh <= 0 || mSegments[2] == null) {
+        if (vw <= 0 || vh <= 0) {
+            return;
+        }
+        if (mTileMode && mTiles != null) {
+            canvas.save();
+            canvas.concat(mTileMatrix);
+            float top = 0.0f;
+            for (Bitmap tile : mTiles) {
+                if (tile == null || tile.isRecycled()) {
+                    break;
+                }
+                try {
+                    canvas.drawBitmap(tile, 0.0f, top, mPaint);
+                } catch (Throwable ignored) {
+                    // An oversized / recycled tile must never kill the reader.
+                }
+                top += tile.getHeight();
+            }
+            canvas.restore();
+            return;
+        }
+        if (mSegments[2] == null) {
             return;
         }
         final float s = mScale * mZoom;

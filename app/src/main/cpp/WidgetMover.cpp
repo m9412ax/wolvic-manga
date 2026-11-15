@@ -155,10 +155,16 @@ WidgetMover::HandleMove(const vrb::Vector& aStart, const vrb::Vector& aDirection
       delta.y() = 0.0f;
     }
 
-    // General case
-    const float maxX = 1.5f;
+    // General case. Manga surfaces are dragged through a separate floating
+    // grab bar: the controller ray hits that small bar, so anchorPoint is
+    // near zero and the anchor-based allowance (dx/dy) adds almost nothing.
+    // With the stock +/-1.0 m clamp the surface stops dead when dragged up.
+    // Give manga surfaces a much wider envelope while leaving browser
+    // windows (GENERAL/WINDOW) completely untouched.
+    const bool manga = m.moveBehaviour == WidgetMoveBehaviour::MANGA;
+    const float maxX = manga ? 3.5f : 1.5f;
     const float minX = -maxX;
-    const float maxY = 1.0f;
+    const float maxY = manga ? 2.6f : 1.0f;
     const float minY = -maxY;
     vrb::Vector translation = m.initialPlacement->translation;
     float x = translation.x() * WidgetPlacement::kWorldDPIRatio + delta.x();

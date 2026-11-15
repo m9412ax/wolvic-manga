@@ -2353,14 +2353,17 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             return;
         }
         boolean browserMode = (mMangaUiMode == UI_BROWSER);
+        // The settings dialog lives on the browser window. Manga panels are
+        // separate floating widgets placed *in front* of that window, so while
+        // the dialog is open they must step aside and the window must stay
+        // visible - otherwise the dialog is covered by the manga UI.
+        boolean dialogOpen = mTray.isSettingsWidgetVisible();
         WindowWidget focused = mWindows.getFocusedWindow();
         if (focused != null) {
-            // The browser window must hide in manga / reader modes so its page
-            // does not bleed through behind the manga panels.
-            focused.setVisible(browserMode);
+            focused.setVisible(browserMode || dialogOpen);
         }
         if (mNavigationBar != null) {
-            mNavigationBar.setVisible(browserMode);
+            mNavigationBar.setVisible(browserMode && !dialogOpen);
         }
         if (mTray != null) {
             // The tray is a child of the manga surface in manga / reader mode,
@@ -2368,47 +2371,76 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             // bar and the control bar together - exactly like a browser window.
             // Re-parent only when the target changes: the stored offset is
             // relative and must not be recomputed after the user has dragged.
-            UIWidget mangaSurface = browserMode ? null
+            UIWidget mangaSurface = (browserMode || dialogOpen) ? null
                     : (mMangaUiMode == UI_READER ? mMangaReader : mMangaLibrary);
             int wantedParent = mangaSurface != null ? mangaSurface.getHandle() : -1;
-            if (browserMode) {
-                if (mMangaTrayParentHandle != -1) {
-                    mTray.setMangaParent(null);
-                    mTray.setMangaDetached(false);
-                    if (mMangaDragBar != null) {
-                        mMangaDragBar.detach();
-                    }
-                    mMangaTrayParentHandle = -1;
+            if (mangaSurface == null) {
+                // Restore unconditionally. Previously this was gated on a
+                // remembered parent handle, which could be stale (-1) and left
+                // the tray parented to a hidden manga widget -> the control bar
+                // vanished after switching to the browser and there was no way
+                // back. setMangaParent/setMangaDetached are both idempotent.
+                mTray.setMangaParent(null);
+                mTray.setMangaDetached(false);
+                if (mMangaDragBar != null) {
+                    mMangaDragBar.detach();
                 }
+                mMangaTrayParentHandle = -1;
             } else if (mMangaTrayParentHandle != wantedParent) {
                 mTray.setMangaDetached(true);
-                if (mangaSurface != null) {
-                    mTray.setMangaParent(mangaSurface);
-                }
+                mTray.setMangaParent(mangaSurface);
                 if (mMangaDragBar != null) {
                     mMangaDragBar.attachTo(mangaSurface);
                 }
                 mMangaTrayParentHandle = wantedParent;
             }
             mTray.setVisible(true);
+            // setVisible(true) is a no-op when the flag is already true, so it
+            // may not push the freshly restored parentHandle to the native
+            // widget tree. Force one placement sync to guarantee the control
+            // bar really comes back after a hide/show cycle.
+            mTray.updateWidget();
             // Always keep the manga control bar (MODE_MANGA) so the user can move
             // between browser / shelf / reader at any time. Only the reader shows
             // the reader-specific bar. This guarantees the control bar is never
             // lost after switching to the browser.
-            mTray.setMangaMode(mMangaUiMode == UI_READER ? TrayWidget.MODE_READER
-                    : TrayWidget.MODE_MANGA);
+            mTray.setMangaMode(mMangaUiMode == UI_READER && !dialogOpen
+                    ? TrayWidget.MODE_READER : TrayWidget.MODE_MANGA);
             mTray.setMangaPage(mMangaPage);
         }
         if (mMangaLibrary != null) {
             // The shelf is only shown in library mode; it must stay hidden while a
             // page is open so only the image and the control bar remain.
-            mMangaLibrary.setVisible(mMangaUiMode == UI_LIBRARY);
+            mMangaLibrary.setVisible(mMangaUiMode == UI_LIBRARY && !dialogOpen);
         }
         if (mMangaReader != null) {
-            mMangaReader.setVisible(mMangaUiMode == UI_READER);
+            mMangaReader.setVisible(mMangaUiMode == UI_READER && !dialogOpen);
         }
         Log.i("MangaMode", "mode=" + mMangaUiMode + " page=" + mMangaPage
-                + " browserVisible=" + browserMode);
+                + " browserVisible=" + browserMode + " dialog=" + dialogOpen);
+    }
+
+    /** Called by TrayWidget when the merged settings dialog opens or closes.
+     *  applyUiMode() reads the dialog's LIVE visibility, so the result is
+     *  correct regardless of when the widget's own listener fires. */
+    public void onMangaSettingsVisibilityChanged(boolean visible) {
+        applyUiMode();
+    }
+
+    /** Keeps the tray and the floating grab bar at a fixed world position and
+     *  size when a canvas zoom grows the manga surface upwards. */
+    public void onMangaCanvasResized(float deltaParentY) {
+        // Only compensate while the tray/bar really are children of the manga
+        // surface. In browser mode (or with the settings dialog open) they are
+        // attached to the window and must stay where they are.
+        if (mMangaUiMode == UI_BROWSER || mTray == null
+                || mTray.isSettingsWidgetVisible()) {
+            return;
+        }
+        mTray.onMangaParentResized(deltaParentY);
+        if (mMangaDragBar != null) {
+            mMangaDragBar.onMangaParentResized(deltaParentY);
+        }
     }
 
     private void setUiMode(int mode) {

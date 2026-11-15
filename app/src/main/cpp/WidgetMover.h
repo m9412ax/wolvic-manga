@@ -27,7 +27,8 @@ typedef std::shared_ptr<WidgetMover> WidgetMoverPtr;
 enum class WidgetMoveBehaviour {
     GENERAL = 0,
     KEYBOARD = 1,
-    WINDOW = 2
+    WINDOW = 2,
+    MANGA = 3
 };
 
 class WidgetMover {
