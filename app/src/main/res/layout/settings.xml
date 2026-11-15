@@ -107,6 +107,43 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/chinaLicenseNumber" />
 
+        <!-- Two tabs share ONE settings surface: browser settings and all manga
+             settings. No separate manga-only settings page anymore. -->
+        <LinearLayout
+            android:id="@+id/settingsTabs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="2dp"
+            app:layout_constraintTop_toBottomOf="@id/buildText"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent">
+
+            <Button
+                android:id="@+id/browserTabButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="浏览器设置"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp"
+                android:background="#FF3A5A8A"
+                android:paddingLeft="26dp"
+                android:paddingRight="26dp" />
+
+            <Button
+                android:id="@+id/mangaTabButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="漫画设置"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFFFF"
+                android:textSize="16sp"
+                android:background="#FF2A2A33"
+                android:paddingLeft="26dp"
+                android:paddingRight="26dp" />
+        </LinearLayout>
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/whatsNewButton"
             style="@style/SettingsLinkButtonStyle"
@@ -127,117 +164,131 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:layout_marginStart="108dp"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="6dp"
             android:layout_marginEnd="118dp"
             android:scrollbars="none"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toBottomOf="@id/buildText">
+            app:layout_constraintTop_toBottomOf="@id/settingsTabs">
 
-            <HorizontalScrollView
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:fadingEdgeLength="100dp"
-                android:requiresFadingEdge="horizontal"
-                android:scrollbars="none">
+                android:orientation="vertical">
 
-                <RelativeLayout
+                <!-- TAB 1: the original browser settings -->
+                <HorizontalScrollView
+                    android:id="@+id/browserTabContent"
                     android:layout_width="wrap_content"
-                    android:layout_height="wrap_content">
+                    android:layout_height="wrap_content"
+                    android:fadingEdgeLength="100dp"
+                    android:requiresFadingEdge="horizontal"
+                    android:scrollbars="none">
 
-                    <LinearLayout
-                        android:id="@+id/first_row"
+                    <RelativeLayout
                         android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal">
+                        android:layout_height="wrap_content">
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/languageButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_language"
-                            app:honeycombButtonText="@string/settings_language"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        <LinearLayout
+                            android:id="@+id/first_row"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/displayButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_display"
-                            app:honeycombButtonText="@string/settings_display"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/languageButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_language"
+                                app:honeycombButtonText="@string/settings_language"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/privacyButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_privacypolicy"
-                            app:honeycombButtonText="@string/settings_privacy_security"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/displayButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_display"
+                                app:honeycombButtonText="@string/settings_display"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/developerOptionsButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_developeroptions"
-                            app:honeycombButtonText="@string/settings_developer_options"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/privacyButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_privacypolicy"
+                                app:honeycombButtonText="@string/settings_privacy_security"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/fxaButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_icon_settings_account"
-                            app:honeycombButtonText="@string/settings_fxa_account_sign_in"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width"
-                            app:honeycombButtonIconHover="false"
-                            app:visibleGone="@{BuildConfig.FLAVOR_backend != &quot;chromium&quot;}"/>
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/developerOptionsButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_developeroptions"
+                                app:honeycombButtonText="@string/settings_developer_options"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                    </LinearLayout>
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/fxaButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_icon_settings_account"
+                                app:honeycombButtonText="@string/settings_fxa_account_sign_in"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width"
+                                app:honeycombButtonIconHover="false"
+                                app:visibleGone="@{BuildConfig.FLAVOR_backend != &quot;chromium&quot;}"/>
 
-                    <LinearLayout
-                        android:id="@+id/second_row"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_below="@+id/first_row"
-                        android:layout_marginStart="65dp"
-                        android:layout_marginTop="-28dp"
-                        android:orientation="horizontal">
+                        </LinearLayout>
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/environmentButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_environment"
-                            app:honeycombButtonText="@string/developer_options_environments"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        <LinearLayout
+                            android:id="@+id/second_row"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_below="@+id/first_row"
+                            android:layout_marginStart="65dp"
+                            android:layout_marginTop="-28dp"
+                            android:orientation="horizontal">
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/controllerOptionsButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_controlleroptions"
-                            app:honeycombButtonIconOculus3dof="@drawable/ic_settings_controlleroptions_oculusvr_3dof"
-                            app:honeycombButtonIconOculus6dof="@drawable/ic_settings_controlleroptions_oculusvr_6dof"
-                            app:honeycombButtonText="@string/settings_controller_options"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/environmentButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_environment"
+                                app:honeycombButtonText="@string/developer_options_environments"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/addonsButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_icon_addons"
-                            app:honeycombButtonText="@string/url_addons_title"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width"
-                            app:visibleGone="@{BuildConfig.FLAVOR_backend != &quot;chromium&quot;}"/>
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/controllerOptionsButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_controlleroptions"
+                                app:honeycombButtonIconOculus3dof="@drawable/ic_settings_controlleroptions_oculusvr_3dof"
+                                app:honeycombButtonIconOculus6dof="@drawable/ic_settings_controlleroptions_oculusvr_6dof"
+                                app:honeycombButtonText="@string/settings_controller_options"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/helpButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_help"
-                            app:honeycombButtonText="@string/settings_help"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
-                    </LinearLayout>
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/addonsButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_icon_addons"
+                                app:honeycombButtonText="@string/url_addons_title"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width"
+                                app:visibleGone="@{BuildConfig.FLAVOR_backend != &quot;chromium&quot;}"/>
 
-                    <!-- Manga settings are a separate, labelled group so they
-                         do not get mixed into the browser's honeycomb rows. -->
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/helpButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_help"
+                                app:honeycombButtonText="@string/settings_help"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        </LinearLayout>
+                    </RelativeLayout>
+                </HorizontalScrollView>
+
+                <!-- TAB 2: all manga settings, including the keybinding editor -->
+                <LinearLayout
+                    android:id="@+id/mangaTabContent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
                     <TextView
                         android:id="@+id/mangaGroupLabel"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_below="@+id/second_row"
                         android:layout_marginTop="6dp"
                         android:text="漫画 / MANGA"
                         android:textColor="@color/azure"
@@ -248,8 +299,7 @@
                         android:id="@+id/manga_row"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:layout_below="@+id/mangaGroupLabel"
-                        android:layout_marginTop="-6dp"
+                        android:layout_marginTop="6dp"
                         android:orientation="horizontal">
 
                         <com.igalia.wolvic.ui.views.HoneycombButton
@@ -287,8 +337,15 @@
                             app:honeycombButtonText="高级"
                             app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
                     </LinearLayout>
-                </RelativeLayout>
-            </HorizontalScrollView>
+
+                    <!-- Hosts MangaSettingsPanel (keybindings + manga options). -->
+                    <FrameLayout
+                        android:id="@+id/mangaPanelHost"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp" />
+                </LinearLayout>
+            </LinearLayout>
         </ScrollView>
     </androidx.constraintlayout.widget.ConstraintLayout>
 </layout>

@@ -668,6 +668,20 @@ BrowserWorld::State::UpdateControllers(bool& aRelayoutWidgets) {
         VRBrowser::HandleMotionEvent(0, controller.index, jboolean(controller.focused), (jboolean) togglePressed, 0.0f, 0.0f);
       }
     }
+
+    // Wolvic consumes controller buttons inside the native layer and only
+    // forwards the Android BACK/B key to Java. Forward every raw button
+    // transition as well, so the manga keybinding editor can capture ANY
+    // controller key and display its real Android keycode.
+    const uint32_t changedButtons = controller.buttonState ^ controller.lastButtonState;
+    if (changedButtons) {
+      for (uint32_t bit = 1u; bit != 0u; bit <<= 1u) {
+        if (changedButtons & bit) {
+          VRBrowser::HandleControllerButton(controller.index, (jint) bit,
+              (jboolean) ((controller.buttonState & bit) != 0));
+        }
+      }
+    }
     controller.lastButtonState = controller.buttonState;
   }
   if ((context->GetTimestamp() - lastBatteryLevelUpdate) > 1.0) {

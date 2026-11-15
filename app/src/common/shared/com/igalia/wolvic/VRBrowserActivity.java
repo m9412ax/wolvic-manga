@@ -243,6 +243,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     private static final int UI_BROWSER = 2;
     private int mMangaUiMode = UI_LIBRARY;
     private String mMangaPage = "LIBRARY";
+    private int mLastNativeKey = 0;
+    private long mLastNativeKeyTime = 0L;
     private final Runnable mMangaBrowserBackHandler = this::showMangaLibraryFromBrowser;
     private boolean mMangaBrowserBackHandlerActive;
     private boolean mMangaMode = true;
@@ -1239,6 +1241,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @SuppressWarnings("unused")
     void handleScrollEvent(final int aHandle, final int aDevice, final float aX, final float aY) {
         runOnUiThread(() -> {
+            // Thumbstick axes arrive here as native scroll deltas (the reader
+            // widget rarely has focus in VR, so its OnGenericMotionListener
+            // never sees them). Route them from this top-level entry point.
+            MangaReaderWidget reader = mMangaReader;
+            if (reader != null && reader.isVisible()) {
+                reader.onControllerScroll(aX, aY);
+                return;
+            }
             Widget widget = mWidgets.get(aHandle);
             if (!isWidgetInputEnabled(widget)) {
                 return;
@@ -1254,6 +1264,47 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             float scrollDirection = mSettings.getScrollDirection() == SettingsStore.SCROLL_DIRECTION_NATURAL ? 1.0f : -1.0f;
             MotionEventGenerator.dispatchScroll(widget, aDevice, true,aX * scrollDirection, aY * scrollDirection);
         });
+    }
+
+    /** Raw OpenXR controller button transitions. Wolvic normally consumes these
+     *  entirely in native code (only Android BACK/B reaches Java), which is why
+     *  the keybinding editor could previously capture just one key. Mapping each
+     *  button bit to a stable Android keycode makes every controller key
+     *  capturable and bindable. */
+    @Keep
+    @SuppressWarnings("unused")
+    void handleControllerButton(final int aController, final int aButton, final boolean aPressed) {
+        final int keyCode = controllerButtonToKeyCode(aButton);
+        if (keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+            return;
+        }
+        runOnUiThread(() -> {
+            long now = System.currentTimeMillis();
+            if (aPressed && keyCode == mLastNativeKey && now - mLastNativeKeyTime < 120) {
+                return;
+            }
+            mLastNativeKey = keyCode;
+            mLastNativeKeyTime = now;
+            // dispatchMangaKey handles both capture mode and normal bindings.
+            dispatchMangaKey(new KeyEvent(
+                    aPressed ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode));
+        });
+    }
+
+    /** Values must match ControllerDelegate.h BUTTON_* bit flags. */
+    private static int controllerButtonToKeyCode(int button) {
+        switch (button) {
+            case 1 << 0: return KeyEvent.KEYCODE_BUTTON_R2;      // trigger
+            case 1 << 1: return KeyEvent.KEYCODE_BUTTON_R1;      // grip / squeeze
+            case 1 << 2: return KeyEvent.KEYCODE_BUTTON_THUMBL;  // touchpad / stick click
+            case 1 << 3: return KeyEvent.KEYCODE_BUTTON_MODE;    // menu / app
+            case 1 << 4: return KeyEvent.KEYCODE_BUTTON_A;
+            case 1 << 5: return KeyEvent.KEYCODE_BUTTON_B;
+            case 1 << 6: return KeyEvent.KEYCODE_BUTTON_X;
+            case 1 << 7: return KeyEvent.KEYCODE_BUTTON_Y;
+            case 1 << 8: return KeyEvent.KEYCODE_BUTTON_1;
+            default: return KeyEvent.KEYCODE_UNKNOWN;
+        }
     }
 
     @Keep
@@ -2288,6 +2339,41 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         }
     }
 
+    /** Opens the merged settings dialog directly on the manga tab. */
+    public void showMangaSettingsTab() {
+        if (mTray != null) {
+            mTray.showSettingsDialog(SettingsView.SettingViewType.MANGA);
+        }
+    }
+
+    /** Opens one of the manga settings sub pages from the manga tab. */
+    public void showMangaSettingsSubPage(String key) {
+        if (mTray == null || key == null) {
+            return;
+        }
+        final SettingsView.SettingViewType type;
+        switch (key) {
+            case "READER":
+                type = SettingsView.SettingViewType.MANGA_READER;
+                break;
+            case "SOURCES":
+                type = SettingsView.SettingViewType.MANGA_SOURCES;
+                break;
+            case "DOWNLOADS":
+                type = SettingsView.SettingViewType.MANGA_DOWNLOADS;
+                break;
+            case "BACKUP":
+                type = SettingsView.SettingViewType.MANGA_BACKUP;
+                break;
+            case "ADVANCED":
+                type = SettingsView.SettingViewType.MANGA_ADVANCED;
+                break;
+            default:
+                return;
+        }
+        mTray.showSettingsDialog(type);
+    }
+
     /** Single entry point for all manga actions coming from Wolvic's tray. */
     public void onMangaTrayAction(String action) {
         if (action == null) {
@@ -2318,20 +2404,9 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 setUiMode(mMangaUiMode == UI_BROWSER ? UI_LIBRARY : UI_BROWSER);
                 break;
             case "SETTINGS":
-                // The manga settings page in the shelf holds the custom
-                // keybinding editor. This used to open Wolvic's native settings
-                // dialog instead, which left the whole keybinding UI unreachable.
-                mMangaPage = "SETTINGS";
-                setUiMode(UI_LIBRARY);
-                if (mMangaLibrary != null) {
-                    mMangaLibrary.showPage("SETTINGS");
-                }
-                if (mTray != null) {
-                    mTray.setMangaPage("SETTINGS");
-                }
-                break;
             case "SYSTEM_SETTINGS":
-                // Explicit escape hatch to Wolvic's own settings dialog.
+                // One merged settings surface: the stock dialog with a browser
+                // tab (default) and a manga tab. No second-level manga page.
                 if (mTray != null) {
                     mTray.showSettingsDialog(SettingsView.SettingViewType.MAIN);
                 }

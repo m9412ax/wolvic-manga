@@ -23,6 +23,7 @@ void DispatchCreateWidget(jint aWidgetHandle, jobject aSurfaceTexture, jint aWid
 void DispatchCreateWidgetLayer(jint aWidgetHandle, jobject aSurface, jint aWidth, jint aHeight, const std::function<void()>& aFirstCompositeCallback);
 void HandleMotionEvent(jint aWidgetHandle, jint aController, jboolean aFocused, jboolean aPressed, jfloat aX, jfloat aY);
 void HandleScrollEvent(jint aWidgetHandle, jint aController, jfloat aX, jfloat aY);
+void HandleControllerButton(jint aController, jint aButton, jboolean aPressed);
 void HandleGesture(jint aType);
 void HandleResize(jint aWidgetHandle, jfloat aWorldWidth, jfloat aWorldHeight);
 void HandleMoveEnd(jint aWidgetHandle, jfloat aX, jfloat aY, jfloat aZ, jfloat aRotation);

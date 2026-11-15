@@ -18,6 +18,8 @@ const char* const kHandleMotionEventName = "handleMotionEvent";
 const char* const kHandleMotionEventSignature = "(IIZZFF)V";
 const char* const kHandleScrollEventName = "handleScrollEvent";
 const char* const kHandleScrollEventSignature = "(IIFF)V";
+const char* const kHandleControllerButtonName = "handleControllerButton";
+const char* const kHandleControllerButtonSignature = "(IIZ)V";
 const char* const kHandleGestureName = "handleGesture";
 const char* const kHandleGestureSignature = "(I)V";
 const char* const kHandleResizeName = "handleResize";
@@ -86,6 +88,7 @@ jmethodID sDispatchCreateWidget = nullptr;
 jmethodID sDispatchCreateWidgetLayer = nullptr;
 jmethodID sHandleMotionEvent = nullptr;
 jmethodID sHandleScrollEvent = nullptr;
+jmethodID sHandleControllerButton = nullptr;
 jmethodID sHandleGesture = nullptr;
 jmethodID sHandleResize = nullptr;
 jmethodID sHandleMoveEnd = nullptr;
@@ -140,6 +143,7 @@ VRBrowser::InitializeJava(JNIEnv* aEnv, jobject aActivity) {
   sDispatchCreateWidgetLayer = FindJNIMethodID(sEnv, sBrowserClass, kDispatchCreateWidgetLayerName, kDispatchCreateWidgetLayerSignature);
   sHandleMotionEvent = FindJNIMethodID(sEnv, sBrowserClass, kHandleMotionEventName, kHandleMotionEventSignature);
   sHandleScrollEvent = FindJNIMethodID(sEnv, sBrowserClass, kHandleScrollEventName, kHandleScrollEventSignature);
+  sHandleControllerButton = FindJNIMethodID(sEnv, sBrowserClass, kHandleControllerButtonName, kHandleControllerButtonSignature);
   sHandleGesture = FindJNIMethodID(sEnv, sBrowserClass, kHandleGestureName, kHandleGestureSignature);
   sHandleResize = FindJNIMethodID(sEnv, sBrowserClass, kHandleResizeName, kHandleResizeSignature);
   sHandleMoveEnd = FindJNIMethodID(sEnv, sBrowserClass, kHandleMoveEndName, kHandleMoveEndSignature);
@@ -193,6 +197,7 @@ VRBrowser::ShutdownJava() {
   sDispatchCreateWidgetLayer = nullptr;
   sHandleMotionEvent = nullptr;
   sHandleScrollEvent = nullptr;
+  sHandleControllerButton = nullptr;
   sHandleGesture = nullptr;
   sHandleResize = nullptr;
   sHandleMoveEnd = nullptr;
@@ -252,6 +257,13 @@ void
 VRBrowser::HandleScrollEvent(jint aWidgetHandle, jint aController, jfloat aX, jfloat aY) {
   if (!ValidateMethodID(sEnv, sActivity, sHandleScrollEvent, __FUNCTION__)) { return; }
   sEnv->CallVoidMethod(sActivity, sHandleScrollEvent, aWidgetHandle, aController, aX, aY);
+  CheckJNIException(sEnv, __FUNCTION__);
+}
+
+void
+VRBrowser::HandleControllerButton(jint aController, jint aButton, jboolean aPressed) {
+  if (!ValidateMethodID(sEnv, sActivity, sHandleControllerButton, __FUNCTION__)) { return; }
+  sEnv->CallVoidMethod(sActivity, sHandleControllerButton, aController, aButton, aPressed);
   CheckJNIException(sEnv, __FUNCTION__);
 }
 

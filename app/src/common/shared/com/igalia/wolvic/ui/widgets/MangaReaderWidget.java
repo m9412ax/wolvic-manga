@@ -108,6 +108,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mResizeModifier = false;   // a controller side button is held
     private float mAxisX = 0f;
     private float mAxisY = 0f;
+    private float mScrollAccumX = 0f;
+    private float mScrollAccumY = 0f;
+    private final Runnable mScrollDecay = () -> {
+        mScrollAccumX = 0f;
+        mScrollAccumY = 0f;
+    };
     private boolean mJoyActive = false;
     private boolean mJoyPageCooldown = false;
     private float mUserScale = 1.0f;           // user window-size multiplier
@@ -958,6 +964,51 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     // ------------------------------------------------------------- controller
+
+    /** Native thumbstick deltas (VRBrowser::HandleScrollEvent) land here.
+     *  Wolvic never forwards gamepad AXIS_X/Y to the widget's generic-motion
+     *  listener in VR, so this top-level route is the only reliable one. The
+     *  values are per-frame axis samples (roughly -1..1), not absolute stick
+     *  positions, so accumulate them for discrete page turns / zoom steps. */
+    public void onControllerScroll(float dx, float dy) {
+        if (mDestroyed || !isVisible()) {
+            return;
+        }
+        if (Math.abs(dx) < 0.001f && Math.abs(dy) < 0.001f) {
+            return;
+        }
+        mScrollAccumX += dx;
+        mScrollAccumY += dy;
+
+        if (mResizeModifier) {
+            mUserScale = clamp(mUserScale * (1.0f - dy * 0.012f), 0.4f, 3.0f);
+            WidgetPlacement p = getPlacement();
+            float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
+            p.translationZ = clamp(p.translationZ - dx * 3.0f, baseZ - 200.0f, baseZ + 400.0f);
+            applyUserScale();
+        } else {
+            int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
+            if (direction == 2) {
+                // Continuous vertical scroll mode.
+                mScrollY -= dy * 14.0f;
+                applyImageTransform();
+            } else if (Math.abs(mScrollAccumY) > 0.35f) {
+                zoomBy(mScrollAccumY > 0 ? 0.89f : 1.12f);
+                mScrollAccumY = 0f;
+            }
+        }
+
+        if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
+            pageDelta(mScrollAccumX > 0 ? -1 : 1);
+            mScrollAccumX = 0f;
+            mJoyPageCooldown = true;
+            mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
+        }
+
+        // A released stick stops sending events, so expire the accumulator.
+        mMainHandler.removeCallbacks(mScrollDecay);
+        mMainHandler.postDelayed(mScrollDecay, 220);
+    }
 
     private static boolean isResizeKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_BUTTON_R1

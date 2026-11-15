@@ -19,6 +19,7 @@ public abstract class SettingsView extends FrameLayout {
 
     public enum SettingViewType {
         MAIN,
+        MANGA,
         LANGUAGE,
         LANGUAGE_DISPLAY,
         LANGUAGE_CONTENT,

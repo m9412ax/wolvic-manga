@@ -312,6 +312,7 @@ public final class MangaSettings {
     public static final String ACTION_RESIZE_MOD = "resize_modifier";
 
     private static final String KEY_BINDINGS = "manga_key_bindings";
+    private static final String KEY_CONTROLLER_BINDINGS = "manga_controller_bindings_v1";
     private static final String[] ALL_ACTIONS = {
             ACTION_PREV_PAGE, ACTION_NEXT_PAGE, ACTION_PREV_FOLDER, ACTION_NEXT_FOLDER,
             ACTION_ZOOM_IN, ACTION_ZOOM_OUT, ACTION_RESET_POS, ACTION_TOGGLE_DOUBLE,
@@ -387,19 +388,29 @@ public final class MangaSettings {
         }
     }
 
-    /** First call seeds a sensible default set; subsequent calls are no-ops. */
+    /** Seeds a sensible default set, plus controller-native keys once. */
     public void ensureDefaultBindings() {
         String raw = prefs().getString(KEY_BINDINGS, null);
-        if (raw != null && !raw.isEmpty()) {
-            return;
+        if (raw == null || raw.isEmpty()) {
+            List<KeyBinding> defaults = new ArrayList<>();
+            defaults.add(new KeyBinding(ACTION_PREV_PAGE, android.view.KeyEvent.KEYCODE_DPAD_LEFT, SCOPE_READER));
+            defaults.add(new KeyBinding(ACTION_NEXT_PAGE, android.view.KeyEvent.KEYCODE_DPAD_RIGHT, SCOPE_READER));
+            defaults.add(new KeyBinding(ACTION_ZOOM_OUT, android.view.KeyEvent.KEYCODE_VOLUME_DOWN, SCOPE_READER));
+            defaults.add(new KeyBinding(ACTION_ZOOM_IN, android.view.KeyEvent.KEYCODE_VOLUME_UP, SCOPE_READER));
+            defaults.add(new KeyBinding(ACTION_RESIZE_MOD, android.view.KeyEvent.KEYCODE_BUTTON_R1, SCOPE_READER));
+            setBindings(defaults);
         }
-        List<KeyBinding> defaults = new ArrayList<>();
-        defaults.add(new KeyBinding(ACTION_PREV_PAGE, android.view.KeyEvent.KEYCODE_DPAD_LEFT, SCOPE_READER));
-        defaults.add(new KeyBinding(ACTION_NEXT_PAGE, android.view.KeyEvent.KEYCODE_DPAD_RIGHT, SCOPE_READER));
-        defaults.add(new KeyBinding(ACTION_ZOOM_OUT, android.view.KeyEvent.KEYCODE_VOLUME_DOWN, SCOPE_READER));
-        defaults.add(new KeyBinding(ACTION_ZOOM_IN, android.view.KeyEvent.KEYCODE_VOLUME_UP, SCOPE_READER));
-        defaults.add(new KeyBinding(ACTION_RESIZE_MOD, android.view.KeyEvent.KEYCODE_BUTTON_R1, SCOPE_READER));
-        setBindings(defaults);
+        // Native OpenXR buttons are now forwarded as these Android keycodes
+        // (see VRBrowserActivity.controllerButtonToKeyCode). Seed them once so
+        // the controller works out of the box; afterwards the user may edit or
+        // delete them freely.
+        if (!prefs().getBoolean(KEY_CONTROLLER_BINDINGS, false)) {
+            addBinding(new KeyBinding(ACTION_PREV_PAGE, android.view.KeyEvent.KEYCODE_BUTTON_X, SCOPE_READER));
+            addBinding(new KeyBinding(ACTION_NEXT_PAGE, android.view.KeyEvent.KEYCODE_BUTTON_A, SCOPE_READER));
+            addBinding(new KeyBinding(ACTION_ZOOM_OUT, android.view.KeyEvent.KEYCODE_BUTTON_Y, SCOPE_READER));
+            addBinding(new KeyBinding(ACTION_ZOOM_IN, android.view.KeyEvent.KEYCODE_BUTTON_THUMBL, SCOPE_READER));
+            prefs().edit().putBoolean(KEY_CONTROLLER_BINDINGS, true).apply();
+        }
     }
 
     public static String actionLabel(String action) {

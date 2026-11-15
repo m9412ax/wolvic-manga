@@ -34,6 +34,8 @@ import com.igalia.wolvic.audio.AudioEngine;
 import com.igalia.wolvic.browser.Accounts;
 import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.browser.engine.Session;
+import com.igalia.wolvic.manga.MangaKeyCapture;
+import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.databinding.SettingsBinding;
 import com.igalia.wolvic.db.SitePermission;
 import com.igalia.wolvic.search.CustomSearchEngine;
@@ -82,6 +84,10 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             BuildConfig.GIT_HASH + " (AC " + Build.VERSION + ")");
     private boolean mIsFirstVersionDetail;
 
+    private static final int TAB_BROWSER = 0;
+    private static final int TAB_MANGA = 1;
+    private int mActiveTab = TAB_BROWSER;
+
 
     public SettingsWidget(Context aContext) {
         super(aContext);
@@ -126,6 +132,51 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
         mViewMarginV = WidgetPlacement.convertDpToPixel(getContext(), mViewMarginV);
     }
 
+    /** Builds the two-tab settings surface and injects the shared manga panel. */
+    private void setupSettingsTabs() {
+        mBinding.browserTabButton.setOnClickListener(v -> selectSettingsTab(TAB_BROWSER));
+        mBinding.mangaTabButton.setOnClickListener(v -> selectSettingsTab(TAB_MANGA));
+
+        MangaSettingsPanel panel = new MangaSettingsPanel(getContext());
+        panel.setSubPageOpener(key -> {
+            switch (key) {
+                case "READER":
+                    showView(SettingsView.SettingViewType.MANGA_READER);
+                    break;
+                case "SOURCES":
+                    showView(SettingsView.SettingViewType.MANGA_SOURCES);
+                    break;
+                case "DOWNLOADS":
+                    showView(SettingsView.SettingViewType.MANGA_DOWNLOADS);
+                    break;
+                case "BACKUP":
+                    showView(SettingsView.SettingViewType.MANGA_BACKUP);
+                    break;
+                case "ADVANCED":
+                    showView(SettingsView.SettingViewType.MANGA_ADVANCED);
+                    break;
+                default:
+                    // LOCAL / SMB / WEBDAV / EXTENSIONS live on the shelf.
+                    Context context = getContext();
+                    if (context instanceof VRBrowserActivity) {
+                        ((VRBrowserActivity) context).onMangaTrayAction(key);
+                    }
+                    break;
+            }
+        });
+        mBinding.mangaPanelHost.addView(panel);
+        selectSettingsTab(mActiveTab);
+    }
+
+    private void selectSettingsTab(int tab) {
+        mActiveTab = tab;
+        final boolean manga = tab == TAB_MANGA;
+        mBinding.browserTabContent.setVisibility(manga ? View.GONE : View.VISIBLE);
+        mBinding.mangaTabContent.setVisibility(manga ? View.VISIBLE : View.GONE);
+        mBinding.browserTabButton.setBackgroundColor(manga ? 0xFF2A2A33 : 0xFF3A5A8A);
+        mBinding.mangaTabButton.setBackgroundColor(manga ? 0xFF3A5A8A : 0xFF2A2A33);
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     public void updateUI() {
         removeAllViews();
@@ -135,6 +186,8 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
         // Inflate this data binding layout
         mBinding = DataBindingUtil.inflate(inflater, R.layout.settings, this, true);
         mBinding.setSettingsmodel(mSettingsViewModel);
+
+        setupSettingsTabs();
 
         mBinding.backButton.setOnClickListener(v -> {
             if (mAudio != null) {
@@ -482,6 +535,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
     public void showView(SettingsView.SettingViewType aType, @Nullable Object extras) {
         switch (aType) {
             case MAIN:
+                mActiveTab = TAB_BROWSER;
+                showView((SettingsView) null);
+                break;
+            case MANGA:
+                mOpenDialog = SettingsView.SettingViewType.MANGA;
+                mActiveTab = TAB_MANGA;
                 showView((SettingsView) null);
                 break;
             case LANGUAGE:
@@ -614,6 +673,8 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
     // SettingsView.Delegate
     @Override
     public void onDismiss() {
+        // Never leave key-capture mode active when leaving the settings surface.
+        MangaKeyCapture.stop();
         if (mCurrentView != null) {
             if (!mCurrentView.isEditing()) {
                 if (isLanguagesSubView(mCurrentView)) {
