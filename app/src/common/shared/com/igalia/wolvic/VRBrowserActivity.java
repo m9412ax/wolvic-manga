@@ -1300,10 +1300,32 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     @SuppressWarnings("unused")
     void handleScrollEvent(final int aHandle, final int aDevice, final float aX, final float aY) {
         runOnUiThread(() -> {
+            // Stick directions are not Android KeyEvents: they arrive here as
+            // scroll deltas. While capturing, map them to the virtual stick
+            // keys so all four directions can be captured / bound.
+            if (MangaKeyCapture.active) {
+                MangaKeyCapture.feedStick(aX, aY);
+                return;
+            }
+            // A user-defined stick-direction binding takes precedence over the
+            // built-in paging / scrolling, but only when it actually exists -
+            // the stock controls stay untouched otherwise.
+            final int stick = dominantStickKey(aX, aY);
+            MangaReaderWidget reader = mMangaReader;
+            if (stick != 0 && reader != null && reader.isVisible()
+                    && hasStickBindingCached(stick)) {
+                long now = System.currentTimeMillis();
+                if (stick != mLastStickKey || now - mLastStickTime > 320L) {
+                    mLastStickKey = stick;
+                    mLastStickTime = now;
+                    dispatchMangaKey(new KeyEvent(KeyEvent.ACTION_DOWN, stick));
+                    dispatchMangaKey(new KeyEvent(KeyEvent.ACTION_UP, stick));
+                }
+                return;
+            }
             // Thumbstick axes arrive here as native scroll deltas (the reader
             // widget rarely has focus in VR, so its OnGenericMotionListener
             // never sees them). Route them from this top-level entry point.
-            MangaReaderWidget reader = mMangaReader;
             if (reader != null && reader.isVisible()) {
                 reader.onControllerScroll(aX, aY);
                 return;
@@ -1323,6 +1345,42 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             float scrollDirection = mSettings.getScrollDirection() == SettingsStore.SCROLL_DIRECTION_NATURAL ? 1.0f : -1.0f;
             MotionEventGenerator.dispatchScroll(widget, aDevice, true,aX * scrollDirection, aY * scrollDirection);
         });
+    }
+
+    private int mLastStickKey = 0;
+    private long mLastStickTime = 0L;
+    private long mStickCacheTime = 0L;
+    private final Set<Integer> mStickBindings = new HashSet<>();
+
+    /** Parsing the JSON binding list on every thumbstick frame would be
+     *  wasteful; bindings only change from the settings UI, so a short TTL is
+     *  plenty and keeps the reader's scroll path cheap. */
+    private boolean hasStickBindingCached(int key) {
+        long now = System.currentTimeMillis();
+        if (now - mStickCacheTime > 1500L) {
+            mStickCacheTime = now;
+            mStickBindings.clear();
+            for (MangaSettings.KeyBinding b : MangaSettings.get(this).getBindings()) {
+                for (int k : b.keys) {
+                    if (MangaSettings.isStickKey(k)) {
+                        mStickBindings.add(k);
+                    }
+                }
+            }
+        }
+        return mStickBindings.contains(key);
+    }
+
+    /** Dominant axis of a thumbstick sample, as one of the virtual stick keys. */
+    private static int dominantStickKey(float dx, float dy) {
+        float ax = Math.abs(dx);
+        float ay = Math.abs(dy);
+        if (Math.max(ax, ay) < 0.35f) {
+            return 0;
+        }
+        return ax >= ay
+                ? (dx > 0 ? MangaSettings.KEY_STICK_RIGHT : MangaSettings.KEY_STICK_LEFT)
+                : (dy > 0 ? MangaSettings.KEY_STICK_DOWN : MangaSettings.KEY_STICK_UP);
     }
 
     /** Raw OpenXR controller button transitions. Wolvic normally consumes these
@@ -2431,10 +2489,10 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
      *  size when a canvas zoom grows the manga surface upwards. */
     public void onMangaCanvasResized(float deltaParentY) {
         // Only compensate while the tray/bar really are children of the manga
-        // surface. In browser mode (or with the settings dialog open) they are
-        // attached to the window and must stay where they are.
-        if (mMangaUiMode == UI_BROWSER || mTray == null
-                || mTray.isSettingsWidgetVisible()) {
+        // surface. In browser mode they are attached to the window and must
+        // stay where they are. TrayWidget itself checks its own parent flag,
+        // so a stale dialog state can never suppress the re-pin.
+        if (mMangaUiMode == UI_BROWSER || mTray == null) {
             return;
         }
         mTray.onMangaParentResized(deltaParentY);
@@ -2578,6 +2636,11 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     /** Opens the reader as an independent floating window in front of the shelf. */
     public void openMangaReader(File folder) {
+        openMangaReader(folder, -1);
+    }
+
+    /** Opens the reader directly at a chosen page (thumbnail view / continue). */
+    public void openMangaReader(File folder, int startIndex) {
         if (folder == null) {
             return;
         }
@@ -2585,9 +2648,26 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mMangaReader = new MangaReaderWidget(this);
             mMangaReader.show(UIWidget.REQUEST_FOCUS);
         }
-        mMangaReader.setFolder(folder);
+        mMangaReader.setFolder(folder, startIndex);
+        MangaSettings.get(this).setLastReadFolder(folder.getAbsolutePath());
         setUiMode(UI_READER);
-        Log.i("MangaMode", "openReader " + folder.getAbsolutePath());
+        Log.i("MangaMode", "openReader " + folder.getAbsolutePath() + " at=" + startIndex);
+    }
+
+    /** Opens a folder at the page containing a specific file (thumbnail view). */
+    public void openMangaReader(File folder, String startFilePath) {
+        if (folder == null) {
+            return;
+        }
+        if (mMangaReader == null) {
+            mMangaReader = new MangaReaderWidget(this);
+            mMangaReader.show(UIWidget.REQUEST_FOCUS);
+        }
+        mMangaReader.setFolder(folder, startFilePath);
+        MangaSettings.get(this).setLastReadFolder(folder.getAbsolutePath());
+        setUiMode(UI_READER);
+        Log.i("MangaMode", "openReader " + folder.getAbsolutePath()
+                + " file=" + startFilePath);
     }
 
     public void closeMangaReader() {

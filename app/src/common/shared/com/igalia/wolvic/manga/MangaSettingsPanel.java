@@ -8,6 +8,7 @@ package com.igalia.wolvic.manga;
 import android.content.Context;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -128,7 +129,7 @@ public class MangaSettingsPanel extends LinearLayout {
                 if (keys.length() > 0) {
                     keys.append(" + ");
                 }
-                keys.append(KeyEvent.keyCodeToString(k)).append("(").append(k).append(")");
+                keys.append(MangaSettings.keyLabel(k));
             }
             label.setText(MangaSettings.actionLabel(b.action) + "  |  "
                     + keys + "  |  " + MangaSettings.scopeLabel(b.scope));
@@ -172,6 +173,16 @@ public class MangaSettingsPanel extends LinearLayout {
             }
             updateCaptureStatus();
         });
+        // Hovering the stop button means "I am about to confirm", so the
+        // trigger press must not be recorded as part of the chord.
+        mCaptureToggle.setOnHoverListener((v, event) -> {
+            boolean over = event.getAction() == MotionEvent.ACTION_HOVER_ENTER
+                    || event.getAction() == MotionEvent.ACTION_HOVER_MOVE;
+            setCaptureSuspended(MangaKeyCapture.active && over);
+            return false; // let the click through
+        });
+        mCaptureToggle.setOnFocusChangeListener((v, hasFocus) ->
+                setCaptureSuspended(MangaKeyCapture.active && hasFocus));
         top.addView(mCaptureToggle, new LinearLayout.LayoutParams(
                 0, LayoutParams.WRAP_CONTENT, 2f));
         Button clear = bigButton("清空按键");
@@ -191,7 +202,9 @@ public class MangaSettingsPanel extends LinearLayout {
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
         addInfo("① 按键捕获",
-                "点最上方「开始捕获」→ 按 1 个键即单键，按住多个键即组合键 → 捕获完点「停止捕获」。支持扳机 / 侧握 / A·B·X·Y / 摇杆按压 / 菜单键 / 系统按键。");
+                "点最上方「开始捕获」→ 按 1 个键即单键，按住多个键即组合键 → 捕获完把指针移到「停止捕获」再按扳机结束。"
+                        + "支持扳机 / 侧握 / A·B·X·Y / 摇杆按压 / 菜单键 / 系统按键，以及摇杆上·下·左·右四个方向。"
+                        + "指针停在「停止捕获」上时捕获自动暂停，确认用的扳机不会被记进快捷键。");
 
         // Scope sits immediately after capture so it is visible on the first
         // screen. Two explicit buttons with a clear selected state.
@@ -263,6 +276,14 @@ public class MangaSettingsPanel extends LinearLayout {
         updateCaptureStatus();
     }
 
+    private void setCaptureSuspended(boolean suspended) {
+        if (MangaKeyCapture.captureSuspended == suspended) {
+            return; // hover move fires every frame; avoid a redraw per frame
+        }
+        MangaKeyCapture.captureSuspended = suspended;
+        updateCaptureStatus();
+    }
+
     /** Refresh the always-visible status line and every selected state. This is
      *  also the capture callback, so a key press is visible immediately. */
     private void updateCaptureStatus() {
@@ -274,12 +295,14 @@ public class MangaSettingsPanel extends LinearLayout {
             if (key.length() > 0) {
                 key.append("  +  ");
             }
-            key.append(KeyEvent.keyCodeToString(code))
-                    .append(" (").append(code).append(")");
+            key.append(MangaSettings.keyLabel(code));
         }
         String keyText = key.length() == 0 ? "（尚未按键）" : key.toString();
         String state = MangaKeyCapture.active
-                ? "● 捕获中 — 现在按手柄键" : "○ 捕获已停止 / 未开始";
+                ? (MangaKeyCapture.captureSuspended
+                        ? "⏸ 指针在「停止捕获」上 — 按扳机结束，不会记录按键"
+                        : "● 捕获中 — 现在按手柄键或推动摇杆")
+                : "○ 捕获已停止 / 未开始";
         mStatusView.setText("状态：" + state
                 + "\n已捕获：" + keyText
                 + "\n功能：" + MangaSettings.actionLabel(MangaKeyCapture.flowAction)

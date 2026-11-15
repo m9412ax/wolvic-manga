@@ -73,6 +73,12 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     /** Cover decode budget from 设置 → 漫画 · 图源 → 封面解码尺寸. */
     private final int mTargetPx;
+    /** Compact rows for the bookshelf list view. */
+    private boolean mCompact = false;
+
+    public void setCompact(boolean compact) {
+        mCompact = compact;
+    }
 
     public MangaCoverAdapter(@NonNull Context context, @Nullable OnMangaClickListener listener,
                              @Nullable OnMangaLongClickListener longListener) {
@@ -103,6 +109,11 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     public void onBindViewHolder(@NonNull CoverViewHolder holder, int position) {
         final MangaItem item = mItems.get(position);
         holder.title.setText(item.title);
+        int heightDp = mCompact ? 96 : 200;
+        android.view.ViewGroup.LayoutParams lp = holder.cover.getLayoutParams();
+        lp.height = (int) (heightDp * mContext.getResources().getDisplayMetrics().density + 0.5f);
+        holder.cover.setLayoutParams(lp);
+        holder.title.setSingleLine(mCompact);
         loadCover(holder.cover, item.cover);
         holder.itemView.setOnClickListener(v -> {
             if (mListener != null) {

@@ -52,6 +52,10 @@ public final class MangaSettings {
     /** Persistent window/canvas size multiplier. Unlike the temporary image
      *  zoom, this survives page changes and restarts. */
     public static final String READER_CANVAS_SCALE = "reader_canvas_scale";
+    /** Video fit mode: 0 = fit screen, 1 = fit height, 2 = fit width. */
+    public static final String READER_VIDEO_FIT = "reader_video_fit";
+    /** Extra video zoom multiplier, adjustable in 0.5 steps. */
+    public static final String READER_VIDEO_ZOOM = "reader_video_zoom";
     /** Thumbstick vertical scroll multiplier in continuous (webtoon) mode.
      *  1.0 == the old hard-coded speed; 2.0 is the new default. */
     public static final String READER_SCROLL_SPEED = "reader_scroll_speed";
@@ -66,6 +70,17 @@ public final class MangaSettings {
     public static final String SOURCE_IMAGE_FORMATS = "source_image_formats";
     public static final String SOURCE_VIDEO_FORMATS = "source_video_formats";
     public static final String SOURCE_THUMB_PX = "source_thumb_px";
+    /** Bookshelf view: 0 = icon grid, 1 = compact list. */
+    public static final String LIBRARY_VIEW_MODE = "library_view_mode";
+    /** Thumbnail size multiplier inside a folder, persists between visits. */
+    public static final String FOLDER_THUMB_SCALE = "folder_thumb_scale";
+    /** Last browsed directory - restored on the next visit when no default
+     *  position was explicitly chosen. */
+    public static final String SOURCE_LAST_DIR = "source_last_dir";
+    /** Most recently read manga folder, used by the global "continue" button. */
+    public static final String LAST_READ_FOLDER = "last_read_folder";
+    /** Bookshelf entries (JSON array of absolute folder paths). */
+    public static final String BOOKSHELF_ITEMS = "bookshelf_items";
 
     public static final String WEBDAV_URL = "webdav_url";
     public static final String WEBDAV_USER = "webdav_user";
@@ -307,6 +322,79 @@ public final class MangaSettings {
         }
     }
 
+    // ------------------------------------------- bookshelf / navigation
+
+    /** Per-source default directory ("LOCAL", "SMB", "WEBDAV"). */
+    public String defaultDir(String source) {
+        return prefs().getString("default_dir:" + source, "");
+    }
+
+    public void setDefaultDir(String source, String path) {
+        prefs().edit().putString("default_dir:" + source, path == null ? "" : path).apply();
+    }
+
+    public String lastDir() {
+        return prefs().getString(SOURCE_LAST_DIR, "");
+    }
+
+    public void setLastDir(String path) {
+        prefs().edit().putString(SOURCE_LAST_DIR, path == null ? "" : path).apply();
+    }
+
+    public String lastReadFolder() {
+        return prefs().getString(LAST_READ_FOLDER, "");
+    }
+
+    public void setLastReadFolder(String path) {
+        prefs().edit().putString(LAST_READ_FOLDER, path == null ? "" : path).apply();
+    }
+
+    public List<String> bookshelf() {
+        List<String> out = new ArrayList<>();
+        String raw = prefs().getString(BOOKSHELF_ITEMS, null);
+        if (raw == null) {
+            return out;
+        }
+        try {
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                out.add(arr.getString(i));
+            }
+        } catch (JSONException ignored) {
+        }
+        return out;
+    }
+
+    public boolean isInBookshelf(String path) {
+        return path != null && bookshelf().contains(path);
+    }
+
+    public void addToBookshelf(String path) {
+        if (path == null || path.isEmpty()) {
+            return;
+        }
+        List<String> list = bookshelf();
+        if (!list.contains(path)) {
+            list.add(path);
+            writeBookshelf(list);
+        }
+    }
+
+    public void removeFromBookshelf(String path) {
+        List<String> list = bookshelf();
+        if (list.remove(path)) {
+            writeBookshelf(list);
+        }
+    }
+
+    private void writeBookshelf(List<String> list) {
+        JSONArray arr = new JSONArray();
+        for (String path : list) {
+            arr.put(path);
+        }
+        prefs().edit().putString(BOOKSHELF_ITEMS, arr.toString()).apply();
+    }
+
     // --------------------------------------------------- custom key bindings
 
     /** Scope: GLOBAL bindings fire in both the library and the reader.
@@ -330,6 +418,69 @@ public final class MangaSettings {
     public static final String ACTION_TOGGLE_DOUBLE = "toggle_double";
     /** Hold modifier: while this key is down the joystick resizes/repositions the window. */
     public static final String ACTION_RESIZE_MOD = "resize_modifier";
+
+    /** Virtual keycodes for the four thumbstick directions. Stick axes arrive
+     *  through VRBrowser::HandleScrollEvent rather than as Android KeyEvents,
+     *  so they need stable identifiers of their own to be capturable and
+     *  bindable. Values are far above any real Android keycode. */
+    public static final int KEY_STICK_LEFT = 1001;
+    public static final int KEY_STICK_RIGHT = 1002;
+    public static final int KEY_STICK_UP = 1003;
+    public static final int KEY_STICK_DOWN = 1004;
+
+    public static boolean isStickKey(int code) {
+        return code >= KEY_STICK_LEFT && code <= KEY_STICK_DOWN;
+    }
+
+    /** Human-readable name for every key we can capture. Replaces the raw
+     *  KEYCODE_BUTTON_A(97) style text in the shortcut editor. */
+    public static String keyLabel(int code) {
+        switch (code) {
+            case KEY_STICK_LEFT: return "摇杆 ← 左";
+            case KEY_STICK_RIGHT: return "摇杆 → 右";
+            case KEY_STICK_UP: return "摇杆 ↑ 上";
+            case KEY_STICK_DOWN: return "摇杆 ↓ 下";
+            case android.view.KeyEvent.KEYCODE_BUTTON_A: return "A 键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_B: return "B 键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_X: return "X 键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_Y: return "Y 键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_R1: return "侧握键(侧边)";
+            case android.view.KeyEvent.KEYCODE_BUTTON_L1: return "左侧键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_R2: return "扳机键(确认)";
+            case android.view.KeyEvent.KEYCODE_BUTTON_L2: return "左扳机键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_THUMBL: return "左摇杆按下";
+            case android.view.KeyEvent.KEYCODE_BUTTON_THUMBR: return "右摇杆按下";
+            case android.view.KeyEvent.KEYCODE_BUTTON_MODE: return "菜单键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_1: return "附加键 1";
+            case android.view.KeyEvent.KEYCODE_BUTTON_2: return "附加键 2";
+            case android.view.KeyEvent.KEYCODE_BUTTON_START: return "开始键";
+            case android.view.KeyEvent.KEYCODE_BUTTON_SELECT: return "选择键";
+            case android.view.KeyEvent.KEYCODE_DPAD_LEFT: return "方向键 ←";
+            case android.view.KeyEvent.KEYCODE_DPAD_RIGHT: return "方向键 →";
+            case android.view.KeyEvent.KEYCODE_DPAD_UP: return "方向键 ↑";
+            case android.view.KeyEvent.KEYCODE_DPAD_DOWN: return "方向键 ↓";
+            case android.view.KeyEvent.KEYCODE_VOLUME_UP: return "音量 +";
+            case android.view.KeyEvent.KEYCODE_VOLUME_DOWN: return "音量 −";
+            case android.view.KeyEvent.KEYCODE_BACK: return "返回键";
+            case android.view.KeyEvent.KEYCODE_ENTER: return "确认键";
+            default: {
+                String raw = android.view.KeyEvent.keyCodeToString(code);
+                return raw.startsWith("KEYCODE_") ? raw.substring(8).replace('_', ' ') : raw;
+            }
+        }
+    }
+
+    /** True when at least one binding uses the given virtual stick direction. */
+    public boolean hasStickBinding(int stickKey) {
+        for (KeyBinding b : getBindings()) {
+            for (int k : b.keys) {
+                if (k == stickKey) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     private static final String KEY_BINDINGS = "manga_key_bindings";
     private static final String KEY_CONTROLLER_BINDINGS = "manga_controller_bindings_v1";

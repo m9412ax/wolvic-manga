@@ -687,6 +687,11 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
             return;
         }
         p.translationY -= deltaParentY;
+        // Re-pin every placement field that could make the control bar appear
+        // to grow/shrink together with the canvas. These are absolute values,
+        // never percentages of the parent surface.
+        p.parentAnchorX = 0.5f;
+        p.parentAnchorY = 0.5f;
         if (mBaseTrayWorldWidth > 0f) {
             p.worldWidth = mBaseTrayWorldWidth;
             p.width = mBaseTrayWidth;

@@ -20,6 +20,7 @@ import android.os.Looper;
 import android.util.Log;
 import android.util.LruCache;
 import android.view.GestureDetector;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -34,6 +35,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -91,6 +93,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private MediaPlayer mMediaPlayer;
     private Surface mVideoSurface;
 
+    // Video control bar (only visible while a video page is open). It sits at
+    // the bottom of the picture panel, immediately above the tray control bar.
+    private LinearLayout mVideoBar;
+    private Button mVideoPlayButton;
+    private Button mVideoFitButton;
+    private TextView mVideoZoomText;
+    private TextView mVideoTime;
+    private SeekBar mVideoSeek;
+    private int mVideoFitMode = 0;
+    private float mVideoZoom = 1.0f;
+    private int mVideoWidth = 0;
+    private int mVideoHeight = 0;
+    private boolean mVideoSeekDragging = false;
+    private final Runnable mVideoTick = this::updateVideoProgress;
+
     private final Matrix mMatrix = new Matrix();
     private float mZoom = 1.0f;
     private float mScrollY = 0.0f;
@@ -142,6 +159,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Native dimensions of the current page, even when it is tiled. */
     private int mDisplayWidth = 0;
     private int mDisplayHeight = 0;
+    /** Coalesces the per-frame canvas resize requests from a held thumbstick.
+     *  Rebuilding the widget's SurfaceTexture on every frame is what made
+     *  zooming crawl and flicker. */
+    private boolean mScaleUpdatePending = false;
+    private final Runnable mScaleUpdate = () -> {
+        mScaleUpdatePending = false;
+        applyUserScale();
+    };
+    private long mLastZoomHint = 0L;
     private final Runnable mJoyTick = this::joyTick;
 
     public MangaReaderWidget(Context aContext) {
@@ -179,6 +205,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         setupReaderDrag();
         mVideoTexture.setSurfaceTextureListener(this);
+        mVideoFitMode = Math.max(0, Math.min(VIDEO_FIT_LABELS.length - 1,
+                mSettings.integer(MangaSettings.READER_VIDEO_FIT)));
+        mVideoZoom = clamp(mSettings.getFloat(MangaSettings.READER_VIDEO_ZOOM, 1.0f),
+                0.5f, 4.0f);
+        setupVideoBar();
 
         int cacheKb = Math.max(16, mSettings.integer(MangaSettings.CACHE_MB)) * 1024;
         mCache = new LruCache<String, Bitmap>(cacheKb) {
@@ -336,6 +367,28 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     // ----------------------------------------------------------- content
 
     public void setFolder(File folder) {
+        setFolder(folder, -1);
+    }
+
+    /** Opens a folder at the page matching a concrete file. Matching by path
+     *  (not by list position) survives the reader's own video-first sorting
+     *  and recursive chapter collection. */
+    public void setFolder(File folder, String startFilePath) {
+        setFolder(folder, -1);
+        if (startFilePath == null) {
+            return;
+        }
+        for (int i = 0; i < mPages.size(); i++) {
+            if (mPages.get(i).getAbsolutePath().equals(startFilePath)) {
+                showPage(i);
+                return;
+            }
+        }
+    }
+
+    /** Opens a folder directly at a chosen page (used by the thumbnail view
+     *  and "continue reading"). startIndex < 0 restores saved progress. */
+    public void setFolder(File folder, int startIndex) {
         stopVideo(true);
         cancelAuto();
         mLoadGeneration++;
@@ -371,8 +424,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPages.addAll(all);
         }
 
-        int saved = folder == null || !mSettings.bool(MangaSettings.PROGRESS_ENABLED)
-                ? 0 : progressPrefs().getInt(pageProgressKey(), 0);
+        int saved = startIndex >= 0 ? startIndex
+                : (folder == null || !mSettings.bool(MangaSettings.PROGRESS_ENABLED)
+                        ? 0 : progressPrefs().getInt(pageProgressKey(), 0));
         Log.i(TAG, "setFolder pages=" + mPages.size() + " saved=" + saved);
         showPage(Math.max(0, Math.min(saved, Math.max(0, mPages.size() - 1))));
     }
@@ -444,6 +498,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
             setStripVisible(false);
+            showVideoBar(true);
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
                 playVideo(page);
             } else {
@@ -452,6 +507,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
 
+        showVideoBar(false);
         mVideoTexture.setVisibility(GONE);
         // An oversized page is shown as full-resolution tiles rather than one
         // downsampled bitmap, so zooming in never loses text detail.
@@ -1224,7 +1280,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mZoom = clamp(mZoom * factor, 0.2f, 8.0f);
         markZoomGesture();
         applyImageTransform();
-        showHint("图片缩放：" + Math.round(mZoom * 100) + "%（切页重置）");
+        showZoomHint("图片缩放：" + Math.round(mZoom * 100) + "%（切页重置）");
+    }
+
+    /** Hint text changes force a full widget redraw. Throttle it so a stream
+     *  of zoom steps cannot make the picture flicker. */
+    private void showZoomHint(String text) {
+        long now = System.currentTimeMillis();
+        if (now - mLastZoomHint >= 250L) {
+            mLastZoomHint = now;
+            showHint(text);
+        }
+    }
+
+    /** Coalesce canvas resizes coming from a continuously held thumbstick. */
+    private void requestUserScale() {
+        if (mScaleUpdatePending) {
+            return;
+        }
+        mScaleUpdatePending = true;
+        mMainHandler.postDelayed(mScaleUpdate, 80L);
     }
 
     /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
@@ -1234,7 +1309,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mUserScale = clamp(mUserScale * factor, 0.4f, 3.0f);
         mSettings.put(MangaSettings.READER_CANVAS_SCALE, mUserScale);
         applyUserScale();
-        showHint("画布大小：" + Math.round(mUserScale * 100) + "%（持久）");
+        showZoomHint("画布大小：" + Math.round(mUserScale * 100) + "%（持久）");
     }
 
     /** Re-apply the default placement, window size and image zoom. */
@@ -1416,6 +1491,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mScrollAccumX += dx;
         mScrollAccumY += dy;
 
+        // On a video page the horizontal stick seeks +/-5 s instead of paging.
+        if (isVideoPage() && !mResizeModifier) {
+            if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
+                seekVideo(mScrollAccumX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                mScrollAccumX = 0f;
+                mJoyPageCooldown = true;
+                mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
+            }
+            mScrollAccumY = 0f;
+            mMainHandler.removeCallbacks(mScrollDecay);
+            mMainHandler.postDelayed(mScrollDecay, 220);
+            return;
+        }
+
         // While a resize / zoom gesture is active the stick's unavoidable
         // horizontal component must NOT be interpreted as a page turn.
         boolean pagingSuspended = mResizeModifier || zoomGestureActive();
@@ -1425,7 +1514,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             WidgetPlacement p = getPlacement();
             float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
             p.translationZ = clamp(p.translationZ - dx * 3.0f, baseZ - 200.0f, baseZ + 400.0f);
-            applyUserScale();
+            requestUserScale();
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
@@ -1527,6 +1616,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mJoyActive = false;
             return;
         }
+        if (isVideoPage() && !mResizeModifier) {
+            if (Math.abs(mAxisX) > dead && !mJoyPageCooldown) {
+                seekVideo(mAxisX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                mJoyPageCooldown = true;
+                mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
+            }
+            mMainHandler.postDelayed(mJoyTick, 120);
+            return;
+        }
         if (mResizeModifier) {
             // Hold a controller side button + joystick to resize / reposition window.
             markZoomGesture();
@@ -1534,7 +1632,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             WidgetPlacement p = getPlacement();
             float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
             p.translationZ = clamp(p.translationZ - mAxisX * 8.0f, baseZ - 200.0f, baseZ + 400.0f);
-            applyUserScale();
+            requestUserScale();
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
@@ -1590,9 +1688,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  its centre moves up during a canvas zoom, their relative translation
      *  must be corrected by the same amount so they stay put on screen. */
     private void notifyCanvasResized(float deltaParentY) {
-        if (Math.abs(deltaParentY) < 0.01f) {
-            return;
-        }
+        // Always notify, even for a zero delta: the tray/bar dimensions are
+        // re-pinned on every call, which is what keeps the control bar fixed.
         Context context = getContext();
         if (context instanceof VRBrowserActivity) {
             ((VRBrowserActivity) context).onMangaCanvasResized(deltaParentY);
@@ -1633,6 +1730,266 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     // -------------------------------------------------------------- video
 
+    /** A compact status/control strip shown only for video pages. It is built
+     *  in code (no new layout ids) and sits at the bottom of the picture panel,
+     *  directly above the tray control bar. */
+    private static final int VIDEO_SEEK_STEP_MS = 5000;
+    private static final String[] VIDEO_FIT_LABELS = {
+            "等比适应屏幕", "等比适应高度", "等比适应宽度"};
+
+    private void setupVideoBar() {
+        LinearLayout bar = new LinearLayout(getContext());
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackgroundColor(0xE6202028);
+        bar.setPadding(dp(10), dp(6), dp(10), dp(6));
+        bar.setClickable(true);
+
+        // Two short rows instead of one long one: nine buttons in a single
+        // line get clipped by the VR panel width.
+        LinearLayout row1 = new LinearLayout(getContext());
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        row1.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout row2 = new LinearLayout(getContext());
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bar.addView(row1, rowLp);
+        bar.addView(row2, rowLp);
+
+        mVideoPlayButton = videoButton("▶ 播放");
+        mVideoPlayButton.setOnClickListener(v -> toggleVideoPlay());
+        row1.addView(mVideoPlayButton);
+
+        Button back = videoButton("« 5秒");
+        back.setOnClickListener(v -> seekVideo(-VIDEO_SEEK_STEP_MS));
+        row1.addView(back);
+
+        Button forward = videoButton("5秒 »");
+        forward.setOnClickListener(v -> seekVideo(VIDEO_SEEK_STEP_MS));
+        row1.addView(forward);
+
+        mVideoTime = new TextView(getContext());
+        mVideoTime.setText("00:00 / 00:00");
+        mVideoTime.setTextColor(0xFFE0E0E8);
+        mVideoTime.setTextSize(15f);
+        mVideoTime.setPadding(dp(10), 0, dp(10), 0);
+        row1.addView(mVideoTime);
+
+        mVideoSeek = new SeekBar(getContext());
+        mVideoSeek.setMax(1000);
+        mVideoSeek.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        mVideoSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                MediaPlayer player = mMediaPlayer;
+                if (player != null) {
+                    try {
+                        player.seekTo((int) (player.getDuration() * (long) progress / 1000L));
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                mVideoSeekDragging = true;
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                mVideoSeekDragging = false;
+            }
+        });
+        row1.addView(mVideoSeek);
+
+        mVideoFitButton = videoButton(VIDEO_FIT_LABELS[mVideoFitMode]);
+        mVideoFitButton.setOnClickListener(v -> cycleVideoFit());
+        row2.addView(mVideoFitButton);
+
+        Button zoomOut = videoButton("缩放 −");
+        zoomOut.setOnClickListener(v -> adjustVideoZoom(-0.5f));
+        row2.addView(zoomOut);
+
+        Button zoomIn = videoButton("缩放 +");
+        zoomIn.setOnClickListener(v -> adjustVideoZoom(0.5f));
+        row2.addView(zoomIn);
+
+        mVideoZoomText = new TextView(getContext());
+        mVideoZoomText.setTextColor(0xFFFFD080);
+        mVideoZoomText.setTextSize(15f);
+        mVideoZoomText.setPadding(dp(6), 0, dp(6), 0);
+        row2.addView(mVideoZoomText);
+
+        TextView tip = new TextView(getContext());
+        tip.setText("视频页：摇杆 ← → 快退/快进 5 秒");
+        tip.setTextColor(0xFF9A9AA8);
+        tip.setTextSize(14f);
+        row2.addView(tip);
+
+        bar.setVisibility(GONE);
+        addView(bar, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
+        mVideoBar = bar;
+        updateVideoControls();
+    }
+
+    private Button videoButton(String text) {
+        Button b = new Button(getContext());
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(15f);
+        b.setTextColor(0xFFFFFFFF);
+        b.setBackgroundColor(0xFF33333F);
+        b.setMinWidth(dp(96));
+        b.setMinimumWidth(dp(96));
+        b.setMinHeight(dp(48));
+        b.setPadding(dp(6), 0, dp(6), 0);
+        return b;
+    }
+
+    private void showVideoBar(boolean visible) {
+        if (mVideoBar == null) {
+            return;
+        }
+        mVideoBar.setVisibility(visible ? VISIBLE : GONE);
+        mMainHandler.removeCallbacks(mVideoTick);
+        if (visible) {
+            updateVideoControls();
+            mMainHandler.postDelayed(mVideoTick, 400L);
+        }
+    }
+
+    private void updateVideoControls() {
+        if (mVideoBar == null) {
+            return;
+        }
+        if (mVideoPlayButton != null) {
+            mVideoPlayButton.setText(isVideoPlaying() ? "⏸ 暂停" : "▶ 播放");
+        }
+        if (mVideoFitButton != null) {
+            mVideoFitButton.setText(VIDEO_FIT_LABELS[mVideoFitMode]);
+        }
+        if (mVideoZoomText != null) {
+            mVideoZoomText.setText(mVideoZoom + "×");
+        }
+    }
+
+    private void updateVideoProgress() {
+        if (mVideoBar == null || mVideoBar.getVisibility() != VISIBLE) {
+            return;
+        }
+        MediaPlayer player = mMediaPlayer;
+        if (player != null && !mVideoSeekDragging) {
+            try {
+                int duration = player.getDuration();
+                int position = player.getCurrentPosition();
+                if (duration > 0) {
+                    mVideoSeek.setProgress((int) (position * 1000L / duration));
+                }
+                if (mVideoTime != null) {
+                    mVideoTime.setText(formatTime(position) + " / " + formatTime(duration));
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        updateVideoControls();
+        mMainHandler.postDelayed(mVideoTick, 400L);
+    }
+
+    private static String formatTime(int millis) {
+        int total = Math.max(0, millis) / 1000;
+        return String.format(Locale.ROOT, "%02d:%02d", total / 60, total % 60);
+    }
+
+    private void toggleVideoPlay() {
+        MediaPlayer player = mMediaPlayer;
+        if (player == null) {
+            return;
+        }
+        try {
+            if (player.isPlaying()) {
+                player.pause();
+            } else {
+                player.start();
+            }
+        } catch (Exception ignored) {
+        }
+        updateVideoControls();
+    }
+
+    private void seekVideo(int deltaMs) {
+        MediaPlayer player = mMediaPlayer;
+        if (player == null) {
+            return;
+        }
+        try {
+            int duration = player.getDuration();
+            int position = Math.max(0, Math.min(duration,
+                    player.getCurrentPosition() + deltaMs));
+            player.seekTo(position);
+        } catch (Exception ignored) {
+        }
+        updateVideoControls();
+    }
+
+    private void cycleVideoFit() {
+        mVideoFitMode = (mVideoFitMode + 1) % VIDEO_FIT_LABELS.length;
+        mSettings.put(MangaSettings.READER_VIDEO_FIT, mVideoFitMode);
+        applyVideoTransform();
+        updateVideoControls();
+        showZoomHint("视频缩放：" + VIDEO_FIT_LABELS[mVideoFitMode]);
+    }
+
+    private void adjustVideoZoom(float delta) {
+        mVideoZoom = clamp(mVideoZoom + delta, 0.5f, 4.0f);
+        mSettings.put(MangaSettings.READER_VIDEO_ZOOM, mVideoZoom);
+        applyVideoTransform();
+        updateVideoControls();
+        showZoomHint("视频倍率：" + mVideoZoom + "×");
+    }
+
+    /** Applies one of the three proportional fit modes plus the 0.5-step zoom
+     *  multiplier to the TextureView without changing its aspect ratio. */
+    private void applyVideoTransform() {
+        if (mVideoWidth <= 0 || mVideoHeight <= 0
+                || mVideoTexture.getWidth() <= 0 || mVideoTexture.getHeight() <= 0) {
+            return;
+        }
+        float vw = mVideoTexture.getWidth();
+        float vh = mVideoTexture.getHeight();
+        float bw = mVideoWidth;
+        float bh = mVideoHeight;
+        float scale;
+        switch (mVideoFitMode) {
+            case 1:
+                scale = vh / bh;
+                break;
+            case 2:
+                scale = vw / bw;
+                break;
+            default:
+                scale = Math.min(vw / bw, vh / bh);
+                break;
+        }
+        scale *= mVideoZoom;
+        Matrix matrix = new Matrix();
+        matrix.setScale(scale, scale);
+        matrix.postTranslate((vw - bw * scale) / 2f, (vh - bh * scale) / 2f);
+        mVideoTexture.setTransform(matrix);
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
     private void playVideo(File page) {
         if (mVideoSurface == null || !mVideoSurface.isValid() || mDestroyed) {
             showHint("视频画面尚未就绪");
@@ -1645,6 +2002,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (player != mMediaPlayer || mDestroyed) {
                 return;
             }
+            mVideoWidth = mp.getVideoWidth();
+            mVideoHeight = mp.getVideoHeight();
+            applyVideoTransform();
+            updateVideoControls();
             if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)
                     && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
                     && mSettings.bool(MangaSettings.READER_VIDEO_RESUME)) {
@@ -1654,6 +2015,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 }
             }
             mp.start();
+        });
+        player.setOnVideoSizeChangedListener((mp, width, height) -> {
+            if (player == mMediaPlayer && !mDestroyed && width > 0 && height > 0) {
+                mVideoWidth = width;
+                mVideoHeight = height;
+                applyVideoTransform();
+            }
         });
         player.setOnCompletionListener(mp -> {
             if (player != mMediaPlayer || mDestroyed) {
@@ -1702,6 +2070,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         try {
             player.setOnPreparedListener(null);
             player.setOnCompletionListener(null);
+            player.setOnVideoSizeChangedListener(null);
             player.setOnErrorListener(null);
             player.reset();
             player.release();
@@ -1798,6 +2167,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+        applyVideoTransform();
     }
 
     @Override

@@ -8,10 +8,12 @@ package com.igalia.wolvic.ui.widgets;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.graphics.Bitmap;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -24,6 +26,8 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.GridLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -75,6 +79,7 @@ public class MangaLibraryWidget extends UIWidget {
         SMB("SMB 共享"),
         WEBDAV("网盘 WebDAV"),
         EXTENSIONS("漫画源扩展"),
+        FOLDER("文件夹"),
         SETTINGS("设置");
 
         final String label;
@@ -100,6 +105,10 @@ public class MangaLibraryWidget extends UIWidget {
     private MangaSettings mSettings;
     private File mRoot;
     private File mLocalDir;
+    /** Folder currently shown in the thumbnail / detail view. */
+    private File mFolderDir;
+    private boolean mFolderDetail;
+    private float mFolderThumbScale = 1.0f;
     private boolean mPermissionRequested;
 
     private String mWebDavUrl = "";
@@ -141,13 +150,19 @@ public class MangaLibraryWidget extends UIWidget {
             });
         }
 
+        mFolderThumbScale = Math.max(0.5f, Math.min(2.0f,
+                mSettings.getFloat(MangaSettings.FOLDER_THUMB_SCALE, 1.0f)));
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
-        mAdapter = new MangaCoverAdapter(getContext(), this::openReader, this::resetProgress);
+        mAdapter = new MangaCoverAdapter(getContext(), this::openFolder, this::resetProgress);
+        mAdapter.setCompact(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1);
         mGrid.setAdapter(mAdapter);
+        setupLibraryToolbar();
         setupPanelDrag();
 
         mRoot = new File(mSettings.text(MangaSettings.SOURCE_ROOT));
-        mLocalDir = Environment.getExternalStorageDirectory();
+        String last = mSettings.lastDir();
+        mLocalDir = (!last.isEmpty() && new File(last).isDirectory())
+                ? new File(last) : Environment.getExternalStorageDirectory();
         mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
 
         mPageViews.put(MangaPage.LIBRARY, mLibraryPage);
@@ -329,6 +344,9 @@ public class MangaLibraryWidget extends UIWidget {
             case EXTENSIONS:
                 fillExtensionsPage(content);
                 break;
+            case FOLDER:
+                fillFolderPage(content);
+                break;
             case SETTINGS:
                 fillSettingsPage(content);
                 break;
@@ -365,6 +383,9 @@ public class MangaLibraryWidget extends UIWidget {
     // --------------------------------------------------------- bookshelf
 
     private int spanCount() {
+        if (mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1) {
+            return 1;
+        }
         return Math.max(2, Math.min(6, mSettings.integer(MangaSettings.SOURCE_SPAN_COUNT)));
     }
 
@@ -413,7 +434,20 @@ public class MangaLibraryWidget extends UIWidget {
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
 
         List<File> dirs = new ArrayList<>();
-        collectChapterDirs(mRoot, mSettings.bool(MangaSettings.SOURCE_RECURSIVE), 0, dirs);
+        File[] roots = mRoot.listFiles();
+        if (roots != null) {
+            for (File child : roots) {
+                if (child.isDirectory()) {
+                    dirs.add(child);
+                }
+            }
+        }
+        for (String saved : mSettings.bookshelf()) {
+            File extra = new File(saved);
+            if (extra.isDirectory() && !dirs.contains(extra)) {
+                dirs.add(extra);
+            }
+        }
         dirs.sort((a, b) -> mSettings.bool(MangaSettings.SOURCE_NATURAL_SORT)
                 ? MangaCoverAdapter.naturalCompare(a.getName(), b.getName())
                 : a.getName().compareToIgnoreCase(b.getName()));
@@ -426,8 +460,8 @@ public class MangaLibraryWidget extends UIWidget {
             if (!includeHidden && dir.getName().startsWith(".")) {
                 continue;
             }
-            File cover = findFirstMedia(dir, images);
-            boolean hasVideo = containsMedia(dir, videos);
+            File cover = findCoverRecursive(dir, images, 2);
+            boolean hasVideo = hasMediaRecursive(dir, videos, 2);
             if (cover == null && !hasVideo) {
                 continue;
             }
@@ -494,22 +528,402 @@ public class MangaLibraryWidget extends UIWidget {
         }
     }
 
+    // ---------------------------------------------- bookshelf toolbar
+
+    private void setupLibraryToolbar() {
+        LinearLayout bar = new LinearLayout(getContext());
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        mLibraryPage.addView(bar, 0, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        Button viewToggle = new Button(getContext());
+        viewToggle.setAllCaps(false);
+        viewToggle.setTextSize(16f);
+        viewToggle.setTextColor(0xFFFFFFFF);
+        viewToggle.setBackgroundColor(0xFF2A3A5A);
+        viewToggle.setMinWidth(dp(160));
+        viewToggle.setText(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1
+                ? "▦ 切换图标视图" : "☰ 切换列表视图");
+        viewToggle.setOnClickListener(v -> {
+            int next = mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1 ? 0 : 1;
+            mSettings.put(MangaSettings.LIBRARY_VIEW_MODE, next);
+            mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
+            mAdapter.setCompact(next == 1);
+            mAdapter.notifyDataSetChanged();
+            viewToggle.setText(next == 1 ? "▦ 切换图标视图" : "☰ 切换列表视图");
+        });
+        bar.addView(viewToggle);
+
+        Button cont = new Button(getContext());
+        cont.setText("▶ 继续阅读");
+        cont.setAllCaps(false);
+        cont.setTextSize(16f);
+        cont.setTextColor(0xFFFFFFFF);
+        cont.setBackgroundColor(0xFF2A5A3A);
+        cont.setMinWidth(dp(160));
+        cont.setOnClickListener(v -> {
+            String path = mSettings.lastReadFolder();
+            File folder = path.isEmpty() ? null : new File(path);
+            if (folder == null || !folder.isDirectory()) {
+                Toast.makeText(getContext(), "还没有阅读记录", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            continueReading(folder);
+        });
+        bar.addView(cont);
+    }
+
+    // ------------------------------------------- folder / bookshelf views
+
+    /** A bookshelf entry is one manga; its sub-folders are chapters. Entries
+     *  already on the bookshelf open their detail card first. */
+    private void openFolder(File folder) {
+        if (folder == null) {
+            return;
+        }
+        mFolderDir = folder;
+        mFolderDetail = mSettings.isInBookshelf(folder.getAbsolutePath());
+        switchPage(MangaPage.FOLDER);
+    }
+
+    private void openReaderAt(File folder, File file) {
+        if (folder == null) {
+            return;
+        }
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).openMangaReader(folder,
+                    file == null ? null : file.getAbsolutePath());
+        }
+    }
+
+    private void continueReading(File folder) {
+        if (folder == null) {
+            return;
+        }
+        int saved = progressPrefs().getInt("page:" + folder.getAbsolutePath(), 0);
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).openMangaReader(folder, saved);
+        }
+    }
+
+    private SharedPreferences progressPrefs() {
+        return getContext().getSharedPreferences(
+                MangaSettings.PROGRESS_PREFS, Context.MODE_PRIVATE);
+    }
+
+    private int folderColumns() {
+        return Math.max(2, Math.min(8,
+                Math.round(5.0f / Math.max(0.4f, mFolderThumbScale))));
+    }
+
+    private void adjustFolderThumb(float delta) {
+        mFolderThumbScale = Math.max(0.5f, Math.min(2.0f,
+                Math.round((mFolderThumbScale + delta) * 10f) / 10f));
+        mSettings.put(MangaSettings.FOLDER_THUMB_SCALE, mFolderThumbScale);
+        refreshPage(MangaPage.FOLDER);
+    }
+
+    /** Generic per-source "default position" controls. The same helper can be
+     *  used by SMB / WebDAV once those sources get a real browser. */
+    private void addDefaultDirControls(LinearLayout content, String source, File current) {
+        String def = mSettings.defaultDir(source);
+        addInfo(content, "默认位置 · " + source,
+                def.isEmpty() ? "未设置（下次进入默认恢复到上次退出的位置）" : def);
+        LinearLayout row = addRow(content);
+        addButton(row, "★ 跳到默认位置", v -> {
+            String target = mSettings.defaultDir(source);
+            if (target.isEmpty()) {
+                Toast.makeText(getContext(), "尚未设置默认位置", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            File dir = new File(target);
+            if (!dir.isDirectory()) {
+                Toast.makeText(getContext(), "默认位置已不存在", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            mLocalDir = dir;
+            mSettings.setLastDir(dir.getAbsolutePath());
+            mFolderDir = dir;
+            mFolderDetail = false;
+            switchPage(MangaPage.FOLDER);
+        });
+        addButton(row, "设为默认位置", v -> {
+            if (current == null) {
+                return;
+            }
+            mSettings.setDefaultDir(source, current.getAbsolutePath());
+            Toast.makeText(getContext(), "已设为默认位置：" + current.getName(),
+                    Toast.LENGTH_SHORT).show();
+            refreshPage(mCurrentPage);
+        });
+        addButton(row, "清除默认", v -> {
+            mSettings.setDefaultDir(source, "");
+            refreshPage(mCurrentPage);
+        });
+    }
+
+    private void fillFolderPage(LinearLayout content) {
+        final File folder = mFolderDir;
+        if (folder == null || !folder.isDirectory()) {
+            addInfo(content, "文件夹", "目录不可用，请从书架或本地文件夹重新进入。");
+            return;
+        }
+        final String path = folder.getAbsolutePath();
+        addInfo(content, "📁 " + folder.getName(), path);
+
+        LinearLayout actions = addRow(content);
+        File parent = folder.getParentFile();
+        if (parent != null) {
+            addButton(actions, "返回上级", v -> {
+                mFolderDir = parent;
+                mFolderDetail = false;
+                refreshPage(MangaPage.FOLDER);
+            });
+        }
+        addButton(actions, "▶ 继续阅读", v -> continueReading(folder));
+        addButton(actions, "打开首页", v -> openReaderAt(folder, null));
+        if (mSettings.isInBookshelf(path)) {
+            addButton(actions, "从书架移除", v -> {
+                mSettings.removeFromBookshelf(path);
+                mFolderDetail = false;
+                refreshPage(MangaPage.FOLDER);
+            });
+        } else {
+            addButton(actions, "＋ 加入书架", v -> {
+                mSettings.addToBookshelf(path);
+                refreshPage(MangaPage.FOLDER);
+            });
+        }
+        addButton(actions, "设为默认位置", v -> {
+            mSettings.setDefaultDir("LOCAL", path);
+            Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
+        });
+
+        if (mFolderDetail) {
+            int saved = progressPrefs().getInt("page:" + path, 0);
+            addInfo(content, "漫画详情",
+                    "已加入书架。一个文件夹即一部漫画，里面的子文件夹作为章节。"
+                            + "上次阅读到第 " + (saved + 1) + " 页。");
+            LinearLayout detail = addRow(content);
+            addButton(detail, "▶ 继续阅读（第 " + (saved + 1) + " 页）",
+                    v -> continueReading(folder));
+            addButton(detail, "浏览文件 / 章节", v -> {
+                mFolderDetail = false;
+                refreshPage(MangaPage.FOLDER);
+            });
+            listChapters(content, folder);
+            return;
+        }
+
+        listChapters(content, folder);
+        listFolderFiles(content, folder);
+
+        LinearLayout zoom = addRow(content);
+        addButton(zoom, "缩略图 −", v -> adjustFolderThumb(-0.2f));
+        addButton(zoom, "缩略图 ＋", v -> adjustFolderThumb(0.2f));
+        addInfo(content, "缩略图大小",
+                "当前 " + mFolderThumbScale + "×，每行 " + folderColumns()
+                        + " 个；大小设置会保存，下次进入自动同步。");
+    }
+
+    private void listChapters(LinearLayout content, File folder) {
+        File[] children = folder.listFiles();
+        List<File> dirs = new ArrayList<>();
+        if (children != null) {
+            for (File child : children) {
+                if (child.isDirectory()) {
+                    dirs.add(child);
+                }
+            }
+        }
+        dirs.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
+        if (dirs.isEmpty()) {
+            return;
+        }
+        addInfo(content, "章节（子文件夹）", "共 " + dirs.size() + " 个，点击进入该章节。");
+        int shown = 0;
+        for (File chapter : dirs) {
+            if (shown++ >= MAX_LOCAL_ROWS) {
+                addInfo(content, "提示", "仅显示前 " + MAX_LOCAL_ROWS + " 个章节。");
+                break;
+            }
+            Button row = new Button(getContext());
+            row.setText("📂 " + chapter.getName());
+            row.setAllCaps(false);
+            row.setTextSize(17f);
+            row.setTextColor(0xFFFFFFFF);
+            row.setBackgroundColor(0xFF232C38);
+            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            row.setMinHeight(dp(50));
+            row.setOnClickListener(v -> {
+                mFolderDir = chapter;
+                mFolderDetail = false;
+                refreshPage(MangaPage.FOLDER);
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(0, dp(3), 0, dp(3));
+            content.addView(row, lp);
+        }
+    }
+
+    private void listFolderFiles(LinearLayout content, File folder) {
+        File[] children = folder.listFiles();
+        List<File> media = new ArrayList<>();
+        if (children != null) {
+            for (File child : children) {
+                if (child.isFile() && isMedia(child.getName())) {
+                    media.add(child);
+                }
+            }
+        }
+        media.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
+        if (media.isEmpty()) {
+            addInfo(content, "文件", "此目录没有图片或视频，可进入上方章节。");
+            return;
+        }
+        addInfo(content, "文件缩略图",
+                "共 " + media.size() + " 个文件，点击缩略图直接跳到该页打开。");
+        final int cols = folderColumns();
+        final int cellHeight = (int) (140 * mFolderThumbScale);
+        final int limit = Math.min(media.size(), 120);
+        GridLayout grid = new GridLayout(getContext());
+        grid.setColumnCount(cols);
+        grid.setUseDefaultMargins(false);
+        for (int i = 0; i < limit; i++) {
+            final File file = media.get(i);
+            LinearLayout cell = new LinearLayout(getContext());
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setBackgroundColor(0xFF24242C);
+            cell.setPadding(dp(4), dp(4), dp(4), dp(4));
+            cell.setClickable(true);
+
+            ImageView thumb = new ImageView(getContext());
+            thumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            thumb.setBackgroundColor(0xFF303038);
+            cell.addView(thumb, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(cellHeight)));
+
+            TextView label = new TextView(getContext());
+            label.setText((i + 1) + ". " + file.getName());
+            label.setTextColor(0xFFE0E0E8);
+            label.setTextSize(13f);
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            cell.addView(label);
+
+            GridLayout.LayoutParams gp = new GridLayout.LayoutParams(
+                    GridLayout.spec(i / cols, 1f), GridLayout.spec(i % cols, 1f));
+            gp.setMargins(dp(4), dp(4), dp(4), dp(4));
+            cell.setLayoutParams(gp);
+            cell.setOnClickListener(v -> openReaderAt(folder, file));
+            loadThumb(thumb, file);
+            grid.addView(cell);
+        }
+        content.addView(grid, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        if (media.size() > limit) {
+            addInfo(content, "提示",
+                    "缩略图仅显示前 " + limit + " 个文件，其余页可用阅读器跳页对话框访问。");
+        }
+    }
+
+    private void loadThumb(ImageView view, File file) {
+        view.setTag(file.getAbsolutePath());
+        if (!MangaSettings.hasExtension(file.getName(), mSettings.imageExtensions())) {
+            return; // video files keep the placeholder tile
+        }
+        final String path = file.getAbsolutePath();
+        mIoExecutor.execute(() -> {
+            final Bitmap bitmap = MangaCoverAdapter.decodeScaled(file, 240, 240);
+            mMain.post(() -> {
+                if (bitmap == null) {
+                    return;
+                }
+                if (path.equals(view.getTag())) {
+                    view.setImageBitmap(bitmap);
+                } else {
+                    bitmap.recycle();
+                }
+            });
+        });
+    }
+
+    private File findCoverRecursive(File dir, String[] images, int depth) {
+        File direct = findFirstMedia(dir, images);
+        if (direct != null || depth <= 0) {
+            return direct;
+        }
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return null;
+        }
+        List<File> subDirs = new ArrayList<>();
+        for (File child : children) {
+            if (child.isDirectory()) {
+                subDirs.add(child);
+            }
+        }
+        subDirs.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
+        for (File sub : subDirs) {
+            File found = findCoverRecursive(sub, images, depth - 1);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasMediaRecursive(File dir, String[] extensions, int depth) {
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return false;
+        }
+        List<File> subDirs = new ArrayList<>();
+        for (File child : children) {
+            if (child.isFile() && MangaSettings.hasExtension(child.getName(), extensions)) {
+                return true;
+            }
+            if (child.isDirectory()) {
+                subDirs.add(child);
+            }
+        }
+        if (depth <= 0) {
+            return false;
+        }
+        for (File sub : subDirs) {
+            if (hasMediaRecursive(sub, extensions, depth - 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------- local
 
     private void fillLocalPage(LinearLayout content) {
         addInfo(content, "本地文件浏览", "进入含图片或视频的目录后可直接在阅读器中打开。");
         addInfo(content, "当前目录", mLocalDir == null ? "不可用" : mLocalDir.getAbsolutePath());
+        addDefaultDirControls(content, "LOCAL", mLocalDir);
 
         LinearLayout actions = addRow(content);
         addButton(actions, "返回上级", v -> {
             File parent = mLocalDir != null ? mLocalDir.getParentFile() : null;
             if (parent != null) {
                 mLocalDir = parent;
+                mSettings.setLastDir(parent.getAbsolutePath());
                 refreshPage(MangaPage.LOCAL);
             }
         });
         addButton(actions, "漫画根目录", v -> {
             mLocalDir = mRoot;
+            mSettings.setLastDir(mRoot.getAbsolutePath());
             refreshPage(MangaPage.LOCAL);
         });
         addButton(actions, "打开阅读器", v -> openReader(mLocalDir));
@@ -555,7 +969,12 @@ public class MangaLibraryWidget extends UIWidget {
             row.setMinHeight(dp(52));
             row.setOnClickListener(v -> {
                 mLocalDir = dir;
-                refreshPage(MangaPage.LOCAL);
+                mSettings.setLastDir(dir.getAbsolutePath());
+                // Entering a folder from the local browser always opens the
+                // thumbnail view (bookshelf entries show their detail card).
+                mFolderDir = dir;
+                mFolderDetail = false;
+                switchPage(MangaPage.FOLDER);
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -568,6 +987,8 @@ public class MangaLibraryWidget extends UIWidget {
     // -------------------------------------------------------------- SMB
 
     private void fillSmbPage(LinearLayout content) {
+        addDefaultDirControls(content, "SMB",
+                new File(mSettings.text(MangaSettings.SMB_MOUNT)));
         addInfo(content, "SMB 共享", "配置保存在「设置 → 漫画 · 图源 → SMB 共享」。");
         addInfo(content, "协议状态",
                 "本版本未内置 SMB 协议栈；可以直接打开系统已挂载的 SMB 本地路径，或使用网盘 WebDAV 页。");
@@ -618,6 +1039,8 @@ public class MangaLibraryWidget extends UIWidget {
     // ----------------------------------------------------------- WebDAV
 
     private void fillWebDavPage(LinearLayout content) {
+        addDefaultDirControls(content, "WEBDAV",
+                new File(mSettings.text(MangaSettings.DOWNLOAD_DIR)));
         addInfo(content, "网盘 WebDAV",
                 "真实 PROPFIND 列目录 + HTTP GET 下载；配置、格式过滤、并发与仅 WiFi 均取自漫画设置。");
         addInfo(content, "当前目录", mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);
@@ -1143,6 +1566,8 @@ public class MangaLibraryWidget extends UIWidget {
             }
             WidgetPlacement p = getPlacement();
             p.translationY -= deltaParentY;
+            p.parentAnchorX = 0.5f;
+            p.parentAnchorY = 0.5f;
             // Pin the original quad: the control bar / grab bar must never
             // scale together with the manga canvas.
             p.worldWidth = 0.8f;

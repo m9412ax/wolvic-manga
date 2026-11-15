@@ -108,6 +108,16 @@ public class MangaStripView extends View {
             return;
         }
         if (mTileMode && mTiles != null) {
+            // Only rasterise the strips that intersect the viewport. Without
+            // this, zooming into a 30 000 px page re-drew every full-resolution
+            // strip on every frame (very slow, and the repeated surface updates
+            // showed up as flicker).
+            float[] values = new float[9];
+            mTileMatrix.getValues(values);
+            float sy = values[Matrix.MSCALE_Y] != 0f ? values[Matrix.MSCALE_Y] : 1f;
+            float ty = values[Matrix.MTRANS_Y];
+            float visibleTop = -ty / sy;
+            float visibleBottom = (vh - ty) / sy;
             canvas.save();
             canvas.concat(mTileMatrix);
             float top = 0.0f;
@@ -115,12 +125,15 @@ public class MangaStripView extends View {
                 if (tile == null || tile.isRecycled()) {
                     break;
                 }
-                try {
-                    canvas.drawBitmap(tile, 0.0f, top, mPaint);
-                } catch (Throwable ignored) {
-                    // An oversized / recycled tile must never kill the reader.
+                float h = tile.getHeight();
+                if (top + h > visibleTop && top < visibleBottom) {
+                    try {
+                        canvas.drawBitmap(tile, 0.0f, top, mPaint);
+                    } catch (Throwable ignored) {
+                        // An oversized / recycled tile must never kill the reader.
+                    }
                 }
-                top += tile.getHeight();
+                top += h;
             }
             canvas.restore();
             return;
