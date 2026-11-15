@@ -238,7 +238,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     WebXRInterstitialWidget mWebXRInterstitial;
     private MangaLibraryWidget mMangaLibrary;
     private MangaReaderWidget mMangaReader;
-    private MangaDragBarWidget mMangaDragBar;
+    private MangaLibraryWidget.MangaDragBarWidget mMangaDragBar;
     /** Handle of the manga surface the tray is currently parented to; -1 when
      *  the tray is attached to the browser window. */
     private int mMangaTrayParentHandle = -1;
@@ -531,7 +531,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mMangaMode = true;
         mMangaLibrary = new MangaLibraryWidget(this);
         // The floating grab bar registers itself the first time it is attached.
-        mMangaDragBar = new MangaDragBarWidget(this);
+        mMangaDragBar = new MangaLibraryWidget.MangaDragBarWidget(this);
         // show() performs the initial addWidget once the placement is visible.
         mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
         applyUiMode();

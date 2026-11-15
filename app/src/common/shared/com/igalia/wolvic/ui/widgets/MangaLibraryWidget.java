@@ -1031,4 +1031,123 @@ public class MangaLibraryWidget extends UIWidget {
         }
         return false;
     }
+
+    /** Floating grab bar: see VRBrowserActivity.applyUiMode(). */
+    public static class MangaDragBarWidget extends UIWidget {
+
+        private UIWidget mTarget;
+        private boolean mAdded;
+
+        public MangaDragBarWidget(Context aContext) {
+            super(aContext);
+            buildView();
+        }
+
+        private void buildView() {
+            setBackgroundColor(0x00000000);
+
+            LinearLayout bar = new LinearLayout(getContext());
+            bar.setOrientation(LinearLayout.HORIZONTAL);
+            bar.setGravity(Gravity.CENTER);
+            bar.setBackgroundColor(0xCC2A2A33);
+
+            View grip = new View(getContext());
+            grip.setBackgroundColor(0xFFFFFFFF);
+            LinearLayout.LayoutParams gripParams = new LinearLayout.LayoutParams(dp(96), dp(6));
+            gripParams.setMargins(0, 0, dp(12), 0);
+            bar.addView(grip, gripParams);
+
+            TextView label = new TextView(getContext());
+            label.setText("拖动移动窗口");
+            label.setTextColor(0xFFD0D0DC);
+            label.setTextSize(14f);
+            bar.addView(label);
+
+            addView(bar, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+
+            bar.setOnTouchListener((view, event) -> {
+                if (mTarget == null || mWidgetManager == null) {
+                    return true;
+                }
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        mWidgetManager.startWidgetMove(mTarget,
+                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_GENERAL);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        mWidgetManager.finishWidgetMove();
+                        return true;
+                    default:
+                        // The native mover runs in the render loop; no Java deltas.
+                        return true;
+                }
+            });
+        }
+
+        @Override
+        protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
+            aPlacement.width = dp(320);
+            aPlacement.height = dp(30);
+            aPlacement.worldWidth = 0.8f;
+            aPlacement.anchorX = 0.5f;
+            aPlacement.anchorY = 0.5f;
+            aPlacement.parentAnchorX = 0.5f;
+            aPlacement.parentAnchorY = 0.5f;
+            aPlacement.parentHandle = -1;
+            aPlacement.translationX = 0f;
+            aPlacement.translationY = 0f;
+            aPlacement.translationZ = 0f;
+            aPlacement.cylinder = false;
+            aPlacement.visible = false;
+        }
+
+        /** Re-parent under the given manga surface and place the bar just below
+         *  that surface's bottom edge, in the gap above the tray. */
+        public void attachTo(UIWidget target) {
+            if (target == null) {
+                detach();
+                return;
+            }
+            mTarget = target;
+            WidgetPlacement t = target.getPlacement();
+            WidgetPlacement p = getPlacement();
+            float targetWorldHeight = t.worldWidth
+                    * ((float) t.height / (float) Math.max(1, t.width)) * 360.0f;
+            float barWorldHeight = p.worldWidth
+                    * ((float) p.height / (float) Math.max(1, p.width)) * 360.0f;
+
+            p.parentHandle = target.getHandle();
+            p.parentAnchorX = 0.5f;
+            p.parentAnchorY = 0.5f;
+            p.translationX = 0f;
+            p.translationY = -(targetWorldHeight * 0.5f) - (barWorldHeight * 0.5f) - 6f;
+            p.translationZ = 0f;
+            p.visible = true;
+
+            if (!mAdded) {
+                mAdded = true;
+                mWidgetManager.addWidget(this);
+            } else {
+                mWidgetManager.updateWidget(this);
+            }
+        }
+
+        public void detach() {
+            mTarget = null;
+            WidgetPlacement p = getPlacement();
+            p.visible = false;
+            p.parentHandle = -1;
+            if (mAdded && mWidgetManager != null) {
+                mWidgetManager.updateWidget(this);
+            }
+        }
+
+        private int dp(int value) {
+            return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+        }
+    }
+
 }
