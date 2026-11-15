@@ -106,6 +106,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private int mVideoWidth = 0;
     private int mVideoHeight = 0;
     private boolean mVideoSeekDragging = false;
+    private boolean mVideoIdentityTransform = false;
     private final Runnable mVideoTick = this::updateVideoProgress;
 
     private final Matrix mMatrix = new Matrix();
@@ -164,8 +165,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  zooming crawl and flicker. */
     private boolean mScaleUpdatePending = false;
     private final Runnable mScaleUpdate = () -> {
-        mScaleUpdatePending = false;
-        applyUserScale();
+        try {
+            applyUserScale();
+        } finally {
+            // Never leave the flag stuck: a removed callback used to make all
+            // later zoom requests no-ops until the reader was re-opened.
+            mScaleUpdatePending = false;
+        }
     };
     private long mLastZoomHint = 0L;
     private final Runnable mJoyTick = this::joyTick;
@@ -198,7 +204,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
         mPageImage.setScaleType(ImageView.ScaleType.MATRIX);
         mPageImage.addOnLayoutChangeListener(
-                (v, l, t, r, b, ol, ot, or_, ob) -> applyImageTransform());
+                (v, l, t, r, b, ol, ot, or_, ob) -> {
+                    applyImageTransform();
+                    if (isVideoPage()) {
+                        applyVideoTransform();
+                    }
+                });
         if (mStripView != null) {
             mStripView.addOnLayoutChangeListener(
                     (v, l, t, r, b, ol, ot, or_, ob) -> updateStripTransform());
@@ -342,8 +353,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         Context context = getContext();
         int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
-        aPlacement.width = (int) (windowWidth * 0.78f) + mBorderWidth * 2;
-        aPlacement.height = (int) (windowHeight * 0.82f) + mBorderWidth * 2;
+        int netWidth = (int) (windowWidth * 0.78f);
+        aPlacement.width = netWidth + mBorderWidth * 2;
+        // This runs from the UIWidget constructor, before initialize() has set
+        // mSettings, so read the preferences through a temporary instance.
+        MangaSettings initSettings = MangaSettings.get(context);
+        if (initSettings.integer(MangaSettings.READER_DIRECTION) == 2) {
+            float aspect = MangaSettings.aspectRatio(clampAspect(
+                    initSettings.integer(MangaSettings.READER_CONTINUOUS_ASPECT)));
+            aPlacement.height = Math.round(netWidth / aspect) + mBorderWidth * 2;
+        } else {
+            aPlacement.height = (int) (windowHeight * 0.82f) + mBorderWidth * 2;
+        }
         aPlacement.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
         // Anchor the reader by its BOTTOM so it always sits a fixed gap above the
@@ -981,6 +1002,27 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mStripView.setOffset(mStripOffset);
     }
 
+    /** Thumbstick scrolling is expressed in CONTENT pixels so one notch always
+     *  moves the same amount of comic (e.g. one line of dialogue) regardless of
+     *  canvas or image zoom. scrollContinuous() itself takes VIEW pixels. */
+    private void scrollContinuousStick(float deltaContent) {
+        float scale = mStripScale * mZoom;
+        if (scale <= 0.001f) {
+            scale = 1f;
+        }
+        scrollContinuous(deltaContent * scale);
+    }
+
+    /** Same compensation for the non-strip vertical mode (mScrollY is in view
+     *  pixels while the image is drawn through a Matrix). */
+    private float imageScaleFactor() {
+        if (mDisplayWidth <= 0 || mPageImage.getWidth() <= 0) {
+            return 1f;
+        }
+        return Math.max(0.05f,
+                (mPageImage.getWidth() / (float) mDisplayWidth) * mZoom);
+    }
+
     private boolean isVideoIndex(int index) {
         return index >= 0 && index < mPages.size()
                 && MangaSettings.hasExtension(mPages.get(index).getName(),
@@ -1176,6 +1218,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int value = (mSettings.integer(MangaSettings.READER_DIRECTION) + 1) % 3;
         mSettings.put(MangaSettings.READER_DIRECTION, value);
         mScrollY = 0.0f;
+        mStripOffset = 0.0f;
+        if (value == 2 && mDoublePage) {
+            mDoublePage = false;
+            mSettings.put(MangaSettings.READER_DOUBLE_PAGE, false);
+        }
+        // Continuous mode has its own canvas aspect (1:1 by default).
+        reapplyCanvasSize();
         String[] names = {"从左到右", "从右到左", "纵向连续"};
         showHint("阅读方向：" + names[value]);
         if (!mPages.isEmpty()) {
@@ -1262,11 +1311,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     // ----------------------------------------------------- double page / joystick
 
-    /** Toggles two-up (double page) reading and reloads the current spread. */
+    /** Toggles two-up reading. Double-page spreads and the vertical long strip
+     *  are mutually exclusive: enabling it leaves continuous mode and starts
+     *  again in the default left-to-right direction. */
     public void toggleDoublePage() {
         mDoublePage = !mDoublePage;
         mSettings.put(MangaSettings.READER_DOUBLE_PAGE, mDoublePage);
-        showHint(mDoublePage ? "双页：开" : "双页：关");
+        if (mDoublePage && mSettings.integer(MangaSettings.READER_DIRECTION) == 2) {
+            mSettings.put(MangaSettings.READER_DIRECTION, 0);
+            mScrollY = 0f;
+            mStripOffset = 0f;
+            clearStripSegments();
+            mStripView.clearTiles();
+            showHint("双页：开（已退出连续模式，从左到右）");
+        } else {
+            showHint(mDoublePage ? "双页：开" : "双页：关");
+        }
+        reapplyCanvasSize();
         if (!mPages.isEmpty()) {
             showPage(mIndex);
         }
@@ -1293,13 +1354,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /** Coalesce canvas resizes coming from a continuously held thumbstick. */
+    /** Coalesce all resize requests from one frame into a single placement
+     *  update. post() applies on the very next frame (visibly immediate), while
+     *  a delayed merge made zoom appear to "not take effect" until reopening. */
     private void requestUserScale() {
         if (mScaleUpdatePending) {
             return;
         }
         mScaleUpdatePending = true;
-        mMainHandler.postDelayed(mScaleUpdate, 80L);
+        mMainHandler.post(mScaleUpdate);
     }
 
     /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
@@ -1325,17 +1388,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
         WidgetPlacement p = getPlacement();
         float previousY = p.translationY;
+        float previousZ = p.translationZ;
         p.worldWidth = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
-        p.width = (int) (windowWidth * 0.78f) + mBorderWidth * 2;
-        p.height = (int) (windowHeight * 0.82f) + mBorderWidth * 2;
+        int netWidth = (int) (windowWidth * 0.78f);
+        p.width = netWidth + mBorderWidth * 2;
+        p.height = canvasHeight(netWidth, windowHeight, 1.0f);
         float readerWorldHeight = p.worldWidth
                 * ((float) p.height / (float) p.width) * 360.0f;
         float trayY = WidgetPlacement.unitFromMeters(context, R.dimen.tray_world_y);
         p.translationY = (trayY + 60.0f) + readerWorldHeight * 0.5f;
         p.translationZ = WidgetPlacement.getWindowWorldZMeters(context) + 220.0f;
         mWidgetManager.updateWidget(this);
-        notifyCanvasResized(p.translationY - previousY);
+        notifyCanvasResized(p.translationY - previousY, p.translationZ - previousZ);
         applyImageTransform();
         showHint("已重置位置/大小");
     }
@@ -1434,12 +1499,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (bmA != null && index + 1 < mPages.size()) {
                 Bitmap bmB = decodePage(mPages.get(index + 1));
                 if (bmB != null) {
-                    boolean aPortrait = bmA.getHeight() >= bmA.getWidth();
-                    boolean bPortrait = bmB.getHeight() >= bmB.getWidth();
-                    // Two portrait pages side by side; a landscape page forces single.
-                    if (aPortrait && bPortrait) {
-                        return combineSideBySide(bmA, bmB);
-                    }
+                    // Two image pages always form a spread. The old portrait
+                    // check silently fell back to a single page for landscape
+                    // comics, which looked like "double page does nothing".
+                    return combineSideBySide(bmA, bmB);
                 }
             }
             return bmA;
@@ -1494,7 +1557,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // On a video page the horizontal stick seeks +/-5 s instead of paging.
         if (isVideoPage() && !mResizeModifier) {
             if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
-                seekVideo(mScrollAccumX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                // Keep the same sign convention as image paging
+                // (pageDelta(mScrollAccumX > 0 ? -1 : 1)): pushing right must
+                // advance the video, not rewind it.
+                seekVideo(mScrollAccumX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
                 mScrollAccumX = 0f;
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
@@ -1511,9 +1577,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mResizeModifier) {
             markZoomGesture();
             mUserScale = clamp(mUserScale * (1.0f - dy * 0.012f), 0.4f, 3.0f);
-            WidgetPlacement p = getPlacement();
-            float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
-            p.translationZ = clamp(p.translationZ - dx * 3.0f, baseZ - 200.0f, baseZ + 400.0f);
+            // Deliberately do NOT touch translationZ: the tray and grab bar are
+            // children of this surface, so moving it in depth made the control
+            // bar grow/shrink together with the canvas.
             requestUserScale();
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
@@ -1521,9 +1587,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // Seamless long-strip scroll: dy > 0 scrolls down into the
                 // next page, dy < 0 scrolls up into the previous page's tail.
                 if (isContinuous()) {
-                    scrollContinuous(-dy * 14.0f * scrollSpeed());
+                    scrollContinuousStick(-dy * 14.0f * scrollSpeed());
                 } else {
-                    mScrollY -= dy * 14.0f * scrollSpeed();
+                    mScrollY -= dy * 14.0f * scrollSpeed() * imageScaleFactor();
                     applyImageTransform();
                 }
             } else if (Math.abs(mScrollAccumY) > 0.35f) {
@@ -1618,7 +1684,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (isVideoPage() && !mResizeModifier) {
             if (Math.abs(mAxisX) > dead && !mJoyPageCooldown) {
-                seekVideo(mAxisX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                seekVideo(mAxisX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
             }
@@ -1629,18 +1695,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // Hold a controller side button + joystick to resize / reposition window.
             markZoomGesture();
             mUserScale = clamp(mUserScale * (1.0f - mAxisY * 0.05f), 0.4f, 3.0f);
-            WidgetPlacement p = getPlacement();
-            float baseZ = WidgetPlacement.getWindowWorldZMeters(getContext()) + 220.0f;
-            p.translationZ = clamp(p.translationZ - mAxisX * 8.0f, baseZ - 200.0f, baseZ + 400.0f);
+            // No Z move: see onControllerScroll - it drags the child control bar.
             requestUserScale();
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
                 // Vertical continuous scroll, like swiping a long image.
                 if (isContinuous()) {
-                    scrollContinuous(-mAxisY * 50.0f * scrollSpeed());
+                    scrollContinuousStick(-mAxisY * 50.0f * scrollSpeed());
                 } else {
-                    mScrollY -= mAxisY * 50.0f * scrollSpeed();
+                    mScrollY -= mAxisY * 50.0f * scrollSpeed() * imageScaleFactor();
                     applyImageTransform();
                 }
             } else if (!mJoyPageCooldown && !zoomGestureActive()) {
@@ -1666,33 +1730,63 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         float baseWorld = WidgetPlacement.floatDimension(context, R.dimen.window_world_width)
                 * (float) windowWidth / (float) SettingsStore.WINDOW_WIDTH_DEFAULT * 0.60f;
 
+        // Single point of persistence: buttons, thumbstick and startup restore
+        // all pass through here, so the canvas size always survives a restart.
+        mSettings.put(MangaSettings.READER_CANVAS_SCALE, mUserScale);
+
         // Remember the CURRENT bottom edge (which may have been moved by a
         // drag) and keep it pinned: zooming grows the canvas upwards only, so
         // it can never slide down behind the grab bar / control bar.
         float previousY = p.translationY;
+        float previousZ = p.translationZ;
         float previousHeight = p.worldWidth
                 * ((float) p.height / (float) Math.max(1, p.width)) * 360.0f;
         float bottomY = previousY - previousHeight * 0.5f;
 
+        int netWidth = (int) (windowWidth * 0.78f * mUserScale);
         p.worldWidth = baseWorld * mUserScale;
-        p.width = (int) (windowWidth * 0.78f * mUserScale) + mBorderWidth * 2;
-        p.height = (int) (windowHeight * 0.82f * mUserScale) + mBorderWidth * 2;
+        p.width = netWidth + mBorderWidth * 2;
+        p.height = canvasHeight(netWidth, windowHeight, mUserScale);
         float readerWorldHeight = p.worldWidth
                 * ((float) p.height / (float) p.width) * 360.0f;
         p.translationY = bottomY + readerWorldHeight * 0.5f;
         mWidgetManager.updateWidget(this);
-        notifyCanvasResized(p.translationY - previousY);
+        notifyCanvasResized(p.translationY - previousY, p.translationZ - previousZ);
+    }
+
+    /** Continuous (webtoon) mode uses a configurable canvas aspect - 1:1 by
+     *  default - instead of the browser window's 16:9, which made comic pages
+     *  look wider than tall. Single/double page modes keep the stock ratio. */
+    private int canvasHeight(int netWidth, int windowHeight, float scale) {
+        if (isContinuous()) {
+            float aspect = MangaSettings.aspectRatio(clampAspect(
+                    mSettings.integer(MangaSettings.READER_CONTINUOUS_ASPECT)));
+            return Math.round(netWidth / aspect) + mBorderWidth * 2;
+        }
+        return (int) (windowHeight * 0.82f * scale) + mBorderWidth * 2;
+    }
+
+    private static int clampAspect(int index) {
+        return Math.max(0, Math.min(MangaSettings.ASPECT_LABELS.length - 1, index));
+    }
+
+    /** Lets the settings panel apply a newly chosen aspect immediately. */
+    public void reapplyCanvasSize() {
+        if (!mDestroyed) {
+            applyUserScale();
+        }
     }
 
     /** The tray and the floating grab bar are children of this surface. When
-     *  its centre moves up during a canvas zoom, their relative translation
-     *  must be corrected by the same amount so they stay put on screen. */
-    private void notifyCanvasResized(float deltaParentY) {
+     *  its centre moves during a canvas zoom, their relative translation must
+     *  be corrected by the same amount in BOTH axes so they stay put on screen.
+     *  A Z change is what made the control bar look bigger/smaller before. */
+    private void notifyCanvasResized(float deltaParentY, float deltaParentZ) {
         // Always notify, even for a zero delta: the tray/bar dimensions are
         // re-pinned on every call, which is what keeps the control bar fixed.
         Context context = getContext();
         if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).onMangaCanvasResized(deltaParentY);
+            ((VRBrowserActivity) context).onMangaCanvasResized(deltaParentY, deltaParentZ);
         }
     }
 
@@ -1956,34 +2050,52 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         showZoomHint("视频倍率：" + mVideoZoom + "×");
     }
 
-    /** Applies one of the three proportional fit modes plus the 0.5-step zoom
-     *  multiplier to the TextureView without changing its aspect ratio. */
+    /** Makes the TextureView ITSELF match the video's aspect ratio instead of
+     *  relying on a transform matrix. TextureView stretches its SurfaceTexture
+     *  buffer across the whole View by default, so a View whose width/height
+     *  ratio equals the video's is the only reliable way to avoid distortion.
+     *  Gravity.CENTER also keeps it centred after any canvas resize. */
     private void applyVideoTransform() {
-        if (mVideoWidth <= 0 || mVideoHeight <= 0
-                || mVideoTexture.getWidth() <= 0 || mVideoTexture.getHeight() <= 0) {
+        if (mVideoWidth <= 0 || mVideoHeight <= 0) {
             return;
         }
-        float vw = mVideoTexture.getWidth();
-        float vh = mVideoTexture.getHeight();
-        float bw = mVideoWidth;
-        float bh = mVideoHeight;
-        float scale;
+        int containerW = mPageImage.getWidth();
+        int containerH = mPageImage.getHeight();
+        if (containerW <= 0 || containerH <= 0) {
+            return;
+        }
+        float base;
         switch (mVideoFitMode) {
             case 1:
-                scale = vh / bh;
+                base = containerH / (float) mVideoHeight;
                 break;
             case 2:
-                scale = vw / bw;
+                base = containerW / (float) mVideoWidth;
                 break;
             default:
-                scale = Math.min(vw / bw, vh / bh);
+                base = Math.min(containerW / (float) mVideoWidth,
+                        containerH / (float) mVideoHeight);
                 break;
         }
-        scale *= mVideoZoom;
-        Matrix matrix = new Matrix();
-        matrix.setScale(scale, scale);
-        matrix.postTranslate((vw - bw * scale) / 2f, (vh - bh * scale) / 2f);
-        mVideoTexture.setTransform(matrix);
+        int targetW = Math.max(1, Math.round(mVideoWidth * base * mVideoZoom));
+        int targetH = Math.max(1, Math.round(mVideoHeight * base * mVideoZoom));
+        FrameLayout.LayoutParams lp =
+                (FrameLayout.LayoutParams) mVideoTexture.getLayoutParams();
+        if (lp == null) {
+            return;
+        }
+        if (lp.width != targetW || lp.height != targetH
+                || lp.gravity != Gravity.CENTER) {
+            lp.width = targetW;
+            lp.height = targetH;
+            lp.gravity = Gravity.CENTER;
+            mVideoTexture.setLayoutParams(lp);
+        }
+        if (!mVideoIdentityTransform) {
+            // Identity transform: no double scaling, no stretch.
+            mVideoTexture.setTransform(null);
+            mVideoIdentityTransform = true;
+        }
     }
 
     private int dp(int value) {
@@ -2141,6 +2253,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             stopJoyTick();
             stopVideo(true);
             mExecutor.shutdownNow();
+            mScaleUpdatePending = false;
             mMainHandler.removeCallbacksAndMessages(null);
             if (mVideoSurface != null) {
                 mVideoSurface.release();

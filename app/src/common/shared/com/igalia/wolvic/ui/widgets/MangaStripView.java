@@ -10,6 +10,8 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Rect;
+import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 
@@ -82,7 +84,7 @@ public class MangaStripView extends View {
 
     public void setOffset(float offset) {
         mOffset = offset;
-        invalidate();
+        postInvalidateOnAnimation();
     }
 
     public void setZoom(float zoom) {
@@ -126,9 +128,19 @@ public class MangaStripView extends View {
                     break;
                 }
                 float h = tile.getHeight();
-                if (top + h > visibleTop && top < visibleBottom) {
+                float sliceTop = Math.max(top, visibleTop);
+                float sliceBottom = Math.min(top + h, visibleBottom);
+                if (sliceBottom > sliceTop) {
                     try {
-                        canvas.drawBitmap(tile, 0.0f, top, mPaint);
+                        // Draw only the intersecting slice. Passing a src rect
+                        // keeps the GPU from rasterising the whole full-res tile
+                        // on every scroll frame.
+                        Rect src = new Rect(0, (int) (sliceTop - top), tile.getWidth(),
+                                Math.min(tile.getHeight(), (int) (sliceBottom - top)));
+                        if (src.bottom > src.top) {
+                            RectF dst = new RectF(0f, sliceTop, tile.getWidth(), sliceBottom);
+                            canvas.drawBitmap(tile, src, dst, mPaint);
+                        }
                     } catch (Throwable ignored) {
                         // An oversized / recycled tile must never kill the reader.
                     }
@@ -164,11 +176,21 @@ public class MangaStripView extends View {
             }
             float w = b.getWidth() * s;
             float left = (vw - w) / 2.0f;
+            float visibleTop = Math.max(0f, -tops[i]);
+            float visibleBottom = Math.min(h, vh - tops[i]);
+            if (visibleBottom <= visibleTop) {
+                continue;
+            }
             try {
-                mMatrix.reset();
-                mMatrix.setScale(s, s);
-                mMatrix.postTranslate(left, tops[i]);
-                canvas.drawBitmap(b, mMatrix, mPaint);
+                Rect src = new Rect(0,
+                        (int) Math.max(0f, visibleTop / s),
+                        b.getWidth(),
+                        (int) Math.min(b.getHeight(), visibleBottom / s));
+                if (src.bottom > src.top) {
+                    RectF dst = new RectF(left, tops[i] + visibleTop,
+                            left + w, tops[i] + visibleBottom);
+                    canvas.drawBitmap(b, src, dst, mPaint);
+                }
             } catch (Throwable ignored) {
                 // A recycled / oversized page must never take down the reader.
             }

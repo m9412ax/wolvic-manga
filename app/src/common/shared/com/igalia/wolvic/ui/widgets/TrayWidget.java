@@ -681,12 +681,15 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
      *  deltaParentY and its quad could be scaled with the parent. Cancel that
      *  delta and pin the original dimensions: the control bar must stay exactly
      *  where it was, at exactly the same size - only the canvas changes. */
-    public void onMangaParentResized(float deltaParentY) {
+    public void onMangaParentResized(float deltaParentY, float deltaParentZ) {
         WidgetPlacement p = getPlacement();
         if (!mParentedToManga || p.parentHandle == -1) {
             return;
         }
+        // Cancel BOTH axes: a Z shift of the parent moves the child towards
+        // the viewer, which reads as the control bar growing/shrinking.
         p.translationY -= deltaParentY;
+        p.translationZ -= deltaParentZ;
         // Re-pin every placement field that could make the control bar appear
         // to grow/shrink together with the canvas. These are absolute values,
         // never percentages of the parent surface.

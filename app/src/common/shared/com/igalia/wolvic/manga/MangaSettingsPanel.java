@@ -14,6 +14,8 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.igalia.wolvic.VRBrowserActivity;
+
 import java.util.List;
 
 /**
@@ -71,6 +73,7 @@ public class MangaSettingsPanel extends LinearLayout {
             // Keep this on the first screen: options buried at the bottom of
             // the VR scroll view are effectively unreachable.
             buildScrollSpeedSection();
+            buildContinuousAspectSection();
             buildKeybindingSection();
             buildMangaSections();
         }
@@ -332,6 +335,34 @@ public class MangaSettingsPanel extends LinearLayout {
                                     ? 0xFF3A5A8A : 0xFF2A2A33);
                 }
             }
+        }
+    }
+
+    /** Continuous (webtoon) canvas aspect. 1:1 by default; the old 16:9
+     *  browser-window ratio made comic pages far wider than tall. */
+    private void buildContinuousAspectSection() {
+        final String[] labels = MangaSettings.ASPECT_LABELS;
+        final int current = Math.max(0, Math.min(labels.length - 1,
+                mSettings.integer(MangaSettings.READER_CONTINUOUS_ASPECT)));
+        addInfo("连续模式 · 画布比例",
+                "当前 " + labels[current] + "（默认 1:1）。仅纵向连续模式生效；"
+                        + "单页/双页模式不显示画框。选择后立即应用到当前画面。");
+        LinearLayout row = null;
+        for (int i = 0; i < labels.length; i++) {
+            if (i % 3 == 0) {
+                row = addRow();
+            }
+            final int index = i;
+            Button button = addButton(row, labels[i], v -> {
+                mSettings.put(MangaSettings.READER_CONTINUOUS_ASPECT, index);
+                Context context = getContext();
+                if (context instanceof VRBrowserActivity) {
+                    ((VRBrowserActivity) context).refreshMangaCanvasSize();
+                }
+                rebuild();
+            });
+            button.setMinWidth(dp(90));
+            button.setBackgroundColor(i == current ? 0xFF3A5A8A : 0xFF2A2A33);
         }
     }
 

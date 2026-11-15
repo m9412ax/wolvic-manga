@@ -56,6 +56,22 @@ public final class MangaSettings {
     public static final String READER_VIDEO_FIT = "reader_video_fit";
     /** Extra video zoom multiplier, adjustable in 0.5 steps. */
     public static final String READER_VIDEO_ZOOM = "reader_video_zoom";
+    /** Continuous-mode canvas aspect ratio index (see ASPECT_LABELS). */
+    public static final String READER_CONTINUOUS_ASPECT = "reader_continuous_aspect";
+
+    /** width / height of the continuous-mode canvas. 1:1 is the default. */
+    public static final String[] ASPECT_LABELS = {
+            "1:1", "3:4", "4:3", "16:9", "9:16"};
+
+    public static float aspectRatio(int index) {
+        switch (index) {
+            case 1: return 3.0f / 4.0f;
+            case 2: return 4.0f / 3.0f;
+            case 3: return 16.0f / 9.0f;
+            case 4: return 9.0f / 16.0f;
+            default: return 1.0f;
+        }
+    }
     /** Thumbstick vertical scroll multiplier in continuous (webtoon) mode.
      *  1.0 == the old hard-coded speed; 2.0 is the new default. */
     public static final String READER_SCROLL_SPEED = "reader_scroll_speed";

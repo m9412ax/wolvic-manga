@@ -2487,7 +2487,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     /** Keeps the tray and the floating grab bar at a fixed world position and
      *  size when a canvas zoom grows the manga surface upwards. */
-    public void onMangaCanvasResized(float deltaParentY) {
+    public void onMangaCanvasResized(float deltaParentY, float deltaParentZ) {
         // Only compensate while the tray/bar really are children of the manga
         // surface. In browser mode they are attached to the window and must
         // stay where they are. TrayWidget itself checks its own parent flag,
@@ -2495,9 +2495,16 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         if (mMangaUiMode == UI_BROWSER || mTray == null) {
             return;
         }
-        mTray.onMangaParentResized(deltaParentY);
+        mTray.onMangaParentResized(deltaParentY, deltaParentZ);
         if (mMangaDragBar != null) {
-            mMangaDragBar.onMangaParentResized(deltaParentY);
+            mMangaDragBar.onMangaParentResized(deltaParentY, deltaParentZ);
+        }
+    }
+
+    /** Applies a newly chosen continuous-mode aspect ratio immediately. */
+    public void refreshMangaCanvasSize() {
+        if (mMangaReader != null) {
+            mMangaReader.reapplyCanvasSize();
         }
     }
 
@@ -2651,6 +2658,9 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mMangaReader.setFolder(folder, startIndex);
         MangaSettings.get(this).setLastReadFolder(folder.getAbsolutePath());
         setUiMode(UI_READER);
+        // Re-apply the persisted canvas size every time the reader opens, so a
+        // restored preference can never be lost to an early layout pass.
+        mMangaReader.reapplyCanvasSize();
         Log.i("MangaMode", "openReader " + folder.getAbsolutePath() + " at=" + startIndex);
     }
 
@@ -2666,6 +2676,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mMangaReader.setFolder(folder, startFilePath);
         MangaSettings.get(this).setLastReadFolder(folder.getAbsolutePath());
         setUiMode(UI_READER);
+        mMangaReader.reapplyCanvasSize();
         Log.i("MangaMode", "openReader " + folder.getAbsolutePath()
                 + " file=" + startFilePath);
     }

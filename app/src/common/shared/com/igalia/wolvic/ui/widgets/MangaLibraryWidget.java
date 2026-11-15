@@ -1591,12 +1591,13 @@ public class MangaLibraryWidget extends UIWidget {
 
         /** Keeps the floating bar at a fixed world position and size when
          *  a canvas zoom grows the parent manga surface upwards. */
-        public void onMangaParentResized(float deltaParentY) {
+        public void onMangaParentResized(float deltaParentY, float deltaParentZ) {
             if (mTarget == null) {
                 return;
             }
             WidgetPlacement p = getPlacement();
             p.translationY -= deltaParentY;
+            p.translationZ -= deltaParentZ;
             p.parentAnchorX = 0.5f;
             p.parentAnchorY = 0.5f;
             // Pin the original quad: the control bar / grab bar must never
