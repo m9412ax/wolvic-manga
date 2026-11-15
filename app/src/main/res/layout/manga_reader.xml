@@ -117,19 +117,21 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Same draggable handle as the shelf: it drives Wolvic's native
-         WidgetMover (ray/plane intersection + clamped world translation),
-         so moving the reader feels exactly like moving a browser window. -->
+    <!-- The grab bar is now a separate floating widget (MangaDragBarWidget):
+         it lives in the gap between this surface and the tray, and dragging it
+         moves this surface AND the tray together. This id is kept (hidden and
+         zero-height) for source compatibility only. -->
     <LinearLayout
         android:id="@+id/readerDragBar"
         android:layout_width="match_parent"
-        android:layout_height="30dp"
+        android:layout_height="0dp"
         android:layout_gravity="bottom|center_horizontal"
         android:orientation="horizontal"
         android:gravity="center"
+        android:visibility="gone"
         android:background="#CC2A2A33"
-        android:clickable="true"
-        android:focusable="true">
+        android:clickable="false"
+        android:focusable="false">
 
         <View
             android:layout_width="72dp"

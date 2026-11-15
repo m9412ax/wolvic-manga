@@ -85,17 +85,19 @@
         </LinearLayout>
     </FrameLayout>
 
-    <!-- Draggable bottom bar. Grab to move the whole panel (like the browser
-         window's bottom chrome). The tray floats just below it. -->
+    <!-- The grab bar is now a separate floating widget (MangaDragBarWidget)
+         in the gap between the shelf and the tray. This id is kept hidden with
+         zero height for source compatibility only. -->
     <LinearLayout
         android:id="@+id/dragBar"
         android:layout_width="match_parent"
-        android:layout_height="30dp"
+        android:layout_height="0dp"
         android:orientation="horizontal"
         android:gravity="center"
+        android:visibility="gone"
         android:background="#FF2A2A33"
-        android:clickable="true"
-        android:focusable="true">
+        android:clickable="false"
+        android:focusable="false">
 
         <View
             android:layout_width="72dp"

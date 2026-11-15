@@ -238,6 +238,10 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     WebXRInterstitialWidget mWebXRInterstitial;
     private MangaLibraryWidget mMangaLibrary;
     private MangaReaderWidget mMangaReader;
+    private MangaDragBarWidget mMangaDragBar;
+    /** Handle of the manga surface the tray is currently parented to; -1 when
+     *  the tray is attached to the browser window. */
+    private int mMangaTrayParentHandle = -1;
     private static final int UI_LIBRARY = 0;
     private static final int UI_READER = 1;
     private static final int UI_BROWSER = 2;
@@ -526,6 +530,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mMangaUiMode = UI_LIBRARY;
         mMangaMode = true;
         mMangaLibrary = new MangaLibraryWidget(this);
+        // The floating grab bar registers itself the first time it is attached.
+        mMangaDragBar = new MangaDragBarWidget(this);
         // show() performs the initial addWidget once the placement is visible.
         mMangaLibrary.show(UIWidget.REQUEST_FOCUS);
         applyUiMode();
@@ -1057,6 +1063,19 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // Keep the held-key set in sync even when the virtual keyboard eats the
+        // event, otherwise a chord can stay "complete" after a key was released.
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            mPressedMangaKeys.add(event.getKeyCode());
+        } else {
+            mPressedMangaKeys.remove(event.getKeyCode());
+        }
+        // Capture must win over the virtual keyboard and over focus-based
+        // handling, otherwise controller/system keys get swallowed before the
+        // keybinding editor ever sees them.
+        if (MangaKeyCapture.active && dispatchMangaKey(event)) {
+            return true;
+        }
         if (mKeyboard.dispatchKeyEvent(event)) {
             return true;
         }
@@ -1066,17 +1085,28 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         return super.dispatchKeyEvent(event);
     }
 
-    /** Routes key events to custom manga bindings (set in the library settings).
-     *  Works regardless of which widget currently holds focus, because this is the
-     *  top-level key dispatch. Returns true when the event was consumed. */
+    /** Keys currently held down, used to resolve chords (multi-key bindings). */
+    private final Set<Integer> mPressedMangaKeys = new HashSet<>();
+    /** Binding indices that already fired for the current press. */
+    private final Set<Integer> mFiredBindings = new HashSet<>();
+
+    /** Routes key events to custom manga bindings (set in the manga settings).
+     *  Works regardless of which widget currently holds focus, because this is
+     *  the top-level key dispatch. Returns true when the event was consumed. */
     private boolean dispatchMangaKey(KeyEvent event) {
-        // Capture mode: swallow the key and report its raw code to the settings UI.
+        final int code = event.getKeyCode();
         if (MangaKeyCapture.active) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                MangaKeyCapture.feed(event.getKeyCode());
+                MangaKeyCapture.feed(code);
             }
             return true;
         }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            mPressedMangaKeys.add(code);
+        } else {
+            mPressedMangaKeys.remove(code);
+        }
+
         MangaReaderWidget reader = mMangaReader;
         MangaLibraryWidget library = mMangaLibrary;
         boolean readerVisible = reader != null && reader.isVisible();
@@ -1085,29 +1115,51 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             return false;
         }
         List<MangaSettings.KeyBinding> bindings = MangaSettings.get(this).getBindings();
-        for (MangaSettings.KeyBinding b : bindings) {
-            if (b.keyCode != event.getKeyCode()) {
-                continue;
+        boolean consumed = false;
+        for (int i = 0; i < bindings.size(); i++) {
+            MangaSettings.KeyBinding b = bindings.get(i);
+            boolean containsCode = false;
+            for (int k : b.keys) {
+                if (k == code) {
+                    containsCode = true;
+                    break;
+                }
+            }
+            if (containsCode) {
+                consumed = true;
             }
             if (b.scope == MangaSettings.SCOPE_READER && !readerVisible) {
                 continue;
             }
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (MangaSettings.ACTION_RESIZE_MOD.equals(b.action)) {
-                    if (reader != null) {
-                        reader.setResizeModifier(true);
-                    }
-                } else if (reader != null) {
-                    reader.dispatchMangaAction(b.action);
-                }
-            } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                if (MangaSettings.ACTION_RESIZE_MOD.equals(b.action) && reader != null) {
-                    reader.setResizeModifier(false);
+            boolean complete = true;
+            for (int k : b.keys) {
+                if (!mPressedMangaKeys.contains(k)) {
+                    complete = false;
+                    break;
                 }
             }
-            return true;
+            if (!complete) {
+                if (mFiredBindings.remove(i)
+                        && MangaSettings.ACTION_RESIZE_MOD.equals(b.action)
+                        && reader != null) {
+                    reader.setResizeModifier(false);
+                }
+                continue;
+            }
+            // Fire once per press, when the last key of the chord goes down.
+            if (mFiredBindings.contains(i)) {
+                continue;
+            }
+            mFiredBindings.add(i);
+            if (MangaSettings.ACTION_RESIZE_MOD.equals(b.action)) {
+                if (reader != null) {
+                    reader.setResizeModifier(true);
+                }
+            } else if (reader != null) {
+                reader.dispatchMangaAction(b.action);
+            }
         }
-        return false;
+        return consumed;
     }
 
     final Object mWaitLock = new Object();
@@ -1205,6 +1257,13 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     void handleMotionEvent(final int aHandle, final int aDevice, final boolean aFocused, final boolean aPressed, final float aX, final float aY) {
         runOnUiThread(() -> {
             Widget widget = mWidgets.get(aHandle);
+            // While capturing a shortcut, a stray trigger press in empty space
+            // would be treated as a world click and dismiss the settings dialog,
+            // silently ending the capture. Clicks on real widgets still work so
+            // the "stop capture" button remains reachable.
+            if (MangaKeyCapture.active && widget == null) {
+                return;
+            }
 
             if (!isWidgetInputEnabled(widget)) {
                 widget = null; // Fallback to mRootWidget in order to allow world clicks to dismiss UI.
@@ -1279,6 +1338,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             return;
         }
         runOnUiThread(() -> {
+            Log.d(LOGTAG, "controllerButton=" + aButton + " key=" + keyCode
+                    + " pressed=" + aPressed + " capturing=" + MangaKeyCapture.active);
             long now = System.currentTimeMillis();
             if (aPressed && keyCode == mLastNativeKey && now - mLastNativeKeyTime < 120) {
                 return;
@@ -2302,9 +2363,33 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mNavigationBar.setVisible(browserMode);
         }
         if (mTray != null) {
-            // Keep the tray visible in every mode. Detach it from the (hidden)
-            // browser window while in manga / reader modes so it stays on screen.
-            mTray.setMangaDetached(!browserMode);
+            // The tray is a child of the manga surface in manga / reader mode,
+            // so the native WidgetMover moves the page UI, the floating grab
+            // bar and the control bar together - exactly like a browser window.
+            // Re-parent only when the target changes: the stored offset is
+            // relative and must not be recomputed after the user has dragged.
+            UIWidget mangaSurface = browserMode ? null
+                    : (mMangaUiMode == UI_READER ? mMangaReader : mMangaLibrary);
+            int wantedParent = mangaSurface != null ? mangaSurface.getHandle() : -1;
+            if (browserMode) {
+                if (mMangaTrayParentHandle != -1) {
+                    mTray.setMangaParent(null);
+                    mTray.setMangaDetached(false);
+                    if (mMangaDragBar != null) {
+                        mMangaDragBar.detach();
+                    }
+                    mMangaTrayParentHandle = -1;
+                }
+            } else if (mMangaTrayParentHandle != wantedParent) {
+                mTray.setMangaDetached(true);
+                if (mangaSurface != null) {
+                    mTray.setMangaParent(mangaSurface);
+                }
+                if (mMangaDragBar != null) {
+                    mMangaDragBar.attachTo(mangaSurface);
+                }
+                mMangaTrayParentHandle = wantedParent;
+            }
             mTray.setVisible(true);
             // Always keep the manga control bar (MODE_MANGA) so the user can move
             // between browser / shelf / reader at any time. Only the reader shows

@@ -30,11 +30,10 @@ public class MangaSettingsPanel extends LinearLayout {
     private final MangaSettings mSettings;
     private SubPageOpener mOpener;
 
-    private String mCaptureAction = MangaSettings.ACTION_NEXT_PAGE;
-    private int mCaptureScope = MangaSettings.SCOPE_READER;
-    private int mCaptureKey = 0;
     private TextView mStatusView;
+    private Button mCaptureToggle;
     private Button[] mScopeButtons = new Button[2];
+    private Button[] mActionButtons;
 
     public MangaSettingsPanel(Context context) {
         super(context);
@@ -52,27 +51,36 @@ public class MangaSettingsPanel extends LinearLayout {
 
     /** Stop an in-progress key capture (e.g. when the settings dialog closes). */
     public void cancelCapture() {
-        MangaKeyCapture.stop();
+        MangaKeyCapture.reset();
     }
 
     @Override
     protected void onDetachedFromWindow() {
-        MangaKeyCapture.stop();
+        // SettingsWidget.updateUI() rebuilds its entire view tree and detaches
+        // this panel. Do NOT disarm capture here: that silently killed a running
+        // capture in earlier builds. The static state survives the rebuild.
         super.onDetachedFromWindow();
     }
 
     public void rebuild() {
-        MangaKeyCapture.stop();
         removeAllViews();
-        buildKeybindingSection();
-        buildMangaSections();
+        if (MangaKeyCapture.addFlow) {
+            renderAddFlow();
+        } else {
+            buildKeybindingSection();
+            buildMangaSections();
+        }
     }
 
     // --------------------------------------------------- keybinding settings
 
     private void buildKeybindingSection() {
         addInfo("自定义快捷键",
-                "可添加任意数量；支持「全局」或「仅看图」生效。添加时按下手柄任意键即可捕获并显示键值。");
+                "可添加任意数量；支持单键或组合键，作用范围可选「全局」或「仅看图」。");
+        addInfo("两种缩放的区别",
+                "画布放大/缩小(持久)：改变整个窗口的大小，切换图片、下次打开都保持；"
+                        + "图片放大/缩小(临时)：只缩放画面内容，窗口大小不变，切换图片后恢复默认。");
+
         List<MangaSettings.KeyBinding> bindings = mSettings.getBindings();
         if (bindings.isEmpty()) {
             TextView empty = new TextView(getContext());
@@ -84,17 +92,23 @@ public class MangaSettingsPanel extends LinearLayout {
         for (int i = 0; i < bindings.size(); i++) {
             final int index = i;
             MangaSettings.KeyBinding b = bindings.get(i);
-            LinearLayout row = new LinearLayout(getContext());
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout line = new LinearLayout(getContext());
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(Gravity.CENTER_VERTICAL);
             TextView label = new TextView(getContext());
+            StringBuilder keys = new StringBuilder();
+            for (int k : b.keys) {
+                if (keys.length() > 0) {
+                    keys.append(" + ");
+                }
+                keys.append(KeyEvent.keyCodeToString(k)).append("(").append(k).append(")");
+            }
             label.setText(MangaSettings.actionLabel(b.action) + "  |  "
-                    + KeyEvent.keyCodeToString(b.keyCode) + " (" + b.keyCode + ")  |  "
-                    + MangaSettings.scopeLabel(b.scope));
+                    + keys + "  |  " + MangaSettings.scopeLabel(b.scope));
             label.setTextSize(16f);
             label.setTextColor(0xFFE0E0E8);
             label.setPadding(0, dp(4), dp(8), dp(4));
-            row.addView(label);
+            line.addView(label, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
             Button remove = new Button(getContext());
             remove.setText("删除");
             remove.setAllCaps(false);
@@ -105,139 +119,165 @@ public class MangaSettingsPanel extends LinearLayout {
                 mSettings.removeBinding(index);
                 rebuild();
             });
-            row.addView(remove);
-            addView(row);
+            line.addView(remove);
+            addView(line, new LinearLayout.LayoutParams(
+                    LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         }
-        LinearLayout addRow = addRow();
-        addButton(addRow, "添加快捷键", v -> startCaptureFlow());
+        LinearLayout addLine = addRow();
+        addButton(addLine, "＋ 添加快捷键", v -> {
+            MangaKeyCapture.beginAddFlow();
+            rebuild();
+        });
     }
 
-    private void startCaptureFlow() {
-        mCaptureAction = MangaSettings.ACTION_NEXT_PAGE;
-        mCaptureScope = MangaSettings.SCOPE_READER;
-        mCaptureKey = 0;
-        removeAllViews();
+    /** The add-shortcut editor. Capture controls are deliberately the very
+     *  first thing on screen, followed by scope, then action, then save. */
+    private void renderAddFlow() {
+        MangaKeyCapture.setRefresh(this::updateCaptureStatus);
 
-        addInfo("添加快捷键",
-                "① 选择功能 → ② 选择生效范围 → ③ 点「开始捕获」再按任意手柄键 → ④ 确认保存");
+        LinearLayout top = row(this);
+        mCaptureToggle = bigButton("▶ 开始捕获");
+        mCaptureToggle.setOnClickListener(v -> {
+            if (MangaKeyCapture.active) {
+                MangaKeyCapture.stopCapture();
+            } else {
+                MangaKeyCapture.restartCapture();
+            }
+            updateCaptureStatus();
+        });
+        top.addView(mCaptureToggle, new LinearLayout.LayoutParams(
+                0, LayoutParams.WRAP_CONTENT, 2f));
+        Button clear = bigButton("清空按键");
+        clear.setOnClickListener(v -> {
+            MangaKeyCapture.keys.clear();
+            updateCaptureStatus();
+        });
+        top.addView(clear, new LinearLayout.LayoutParams(
+                0, LayoutParams.WRAP_CONTENT, 1f));
 
-        // Always-visible status line: the user can tell at a glance whether a
-        // selection registered and whether capture is actually armed.
         mStatusView = new TextView(getContext());
         mStatusView.setTextSize(17f);
         mStatusView.setTextColor(0xFFFFD080);
         mStatusView.setBackgroundColor(0xFF202430);
-        mStatusView.setPadding(dp(10), dp(8), dp(10), dp(8));
+        mStatusView.setPadding(dp(10), dp(10), dp(10), dp(10));
         addView(mStatusView, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-        updateCaptureStatus("尚未开始捕获");
 
-        TextView actionCaption = caption("① 选择功能（点击后高亮）");
-        addView(actionCaption);
+        addInfo("① 按键捕获",
+                "点最上方「开始捕获」→ 按 1 个键即单键，按住多个键即组合键 → 捕获完点「停止捕获」。支持扳机 / 侧握 / A·B·X·Y / 摇杆按压 / 菜单键 / 系统按键。");
 
-        // A 3-column grid instead of one 9-button row: the old row was ~900dp
-        // wide, overflowed the settings window and could not be scrolled.
+        // Scope sits immediately after capture so it is visible on the first
+        // screen. Two explicit buttons with a clear selected state.
+        addView(caption("② 选择生效范围（点击后高亮）"));
+        LinearLayout scopeRow = row(this);
+        mScopeButtons[0] = bigButton("仅看图生效");
+        mScopeButtons[0].setOnClickListener(v -> {
+            MangaKeyCapture.flowScope = MangaSettings.SCOPE_READER;
+            updateCaptureStatus();
+        });
+        mScopeButtons[1] = bigButton("全局生效");
+        mScopeButtons[1].setOnClickListener(v -> {
+            MangaKeyCapture.flowScope = MangaSettings.SCOPE_GLOBAL;
+            updateCaptureStatus();
+        });
+        for (Button b : mScopeButtons) {
+            scopeRow.addView(b, new LinearLayout.LayoutParams(
+                    0, LayoutParams.WRAP_CONTENT, 1f));
+        }
+
+        addView(caption("③ 选择功能（点击后高亮）"));
         String[] actions = MangaSettings.allActions();
         LinearLayout grid = new LinearLayout(getContext());
         grid.setOrientation(LinearLayout.VERTICAL);
         addView(grid, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
-        final Button[] actionButtons = new Button[actions.length];
-        for (int row = 0; row * 3 < actions.length; row++) {
+        mActionButtons = new Button[actions.length];
+        for (int r = 0; r * 3 < actions.length; r++) {
             LinearLayout line = row(grid);
             for (int col = 0; col < 3; col++) {
-                int i = row * 3 + col;
+                int i = r * 3 + col;
                 if (i >= actions.length) {
-                    View spacer = new View(getContext());
-                    line.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+                    line.addView(new View(getContext()),
+                            new LinearLayout.LayoutParams(0, 1, 1f));
                     continue;
                 }
                 final String act = actions[i];
                 final Button b = gridButton(MangaSettings.actionLabel(act));
                 b.setOnClickListener(v -> {
-                    mCaptureAction = act;
-                    for (Button other : actionButtons) {
-                        if (other != null) {
-                            other.setBackgroundColor(0xFF2A2A33);
-                        }
-                    }
-                    b.setBackgroundColor(0xFF3A5A8A);
-                    updateCaptureStatus(MangaKeyCapture.active ? "捕获中…" : "尚未开始捕获");
+                    MangaKeyCapture.flowAction = act;
+                    updateCaptureStatus();
                 });
-                b.setBackgroundColor(act.equals(mCaptureAction) ? 0xFF3A5A8A : 0xFF2A2A33);
-                line.addView(b, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
-                actionButtons[i] = b;
+                line.addView(b, new LinearLayout.LayoutParams(
+                        0, LayoutParams.WRAP_CONTENT, 1f));
+                mActionButtons[i] = b;
             }
         }
 
-        addView(caption("② 选择生效范围（点击后高亮）"));
-        LinearLayout scopeRow = row(this);
-        mScopeButtons[0] = gridButton("仅看图生效");
-        mScopeButtons[0].setOnClickListener(v -> {
-            mCaptureScope = MangaSettings.SCOPE_READER;
-            updateScopeButtons();
-        });
-        mScopeButtons[1] = gridButton("全局生效");
-        mScopeButtons[1].setOnClickListener(v -> {
-            mCaptureScope = MangaSettings.SCOPE_GLOBAL;
-            updateScopeButtons();
-        });
-        for (Button b : mScopeButtons) {
-            scopeRow.addView(b, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
-        }
-        updateScopeButtons();
-
-        addView(caption("③ 按键捕获（支持扳机 / 侧握 / A·B·X·Y / 摇杆按压 / 菜单键）"));
-        LinearLayout captureRow = row(this);
-        addButton(captureRow, "开始捕获", v -> beginCapture());
-        addButton(captureRow, "重新捕获", v -> beginCapture());
-
+        addView(caption("④ 保存"));
         LinearLayout confirmRow = row(this);
         addButton(confirmRow, "确认保存", v -> {
-            if (mCaptureKey == 0) {
-                updateCaptureStatus("请先点「开始捕获」并按下任意键");
+            if (MangaKeyCapture.keys.isEmpty()) {
+                updateCaptureStatus();
+                mStatusView.setText(mStatusView.getText()
+                        + "\n⚠ 请先点「开始捕获」并按下至少一个键，再点「停止捕获」");
                 return;
             }
             mSettings.addBinding(new MangaSettings.KeyBinding(
-                    mCaptureAction, mCaptureKey, mCaptureScope));
-            MangaKeyCapture.stop();
+                    MangaKeyCapture.flowAction,
+                    MangaKeyCapture.capturedKeys(),
+                    MangaKeyCapture.flowScope));
+            MangaKeyCapture.reset();
             rebuild();
         });
         addButton(confirmRow, "取消", v -> {
-            MangaKeyCapture.stop();
+            MangaKeyCapture.reset();
             rebuild();
         });
+        updateCaptureStatus();
     }
 
-    private void beginCapture() {
-        mCaptureKey = 0;
-        MangaKeyCapture.start(code -> {
-            mCaptureKey = code;
-            updateCaptureStatus("已捕获 ✔ 现在点「确认保存」");
-        });
-        updateCaptureStatus("捕获中…请按任意手柄键");
-    }
-
-    private void updateScopeButtons() {
-        if (mScopeButtons[0] == null || mScopeButtons[1] == null) {
-            return;
-        }
-        mScopeButtons[0].setBackgroundColor(mCaptureScope == MangaSettings.SCOPE_READER
-                ? 0xFF3A5A8A : 0xFF2A2A33);
-        mScopeButtons[1].setBackgroundColor(mCaptureScope == MangaSettings.SCOPE_GLOBAL
-                ? 0xFF3A5A8A : 0xFF2A2A33);
-        updateCaptureStatus(MangaKeyCapture.active ? "捕获中…" : "尚未开始捕获");
-    }
-
-    private void updateCaptureStatus(String state) {
+    /** Refresh the always-visible status line and every selected state. This is
+     *  also the capture callback, so a key press is visible immediately. */
+    private void updateCaptureStatus() {
         if (mStatusView == null) {
             return;
         }
-        String key = mCaptureKey == 0 ? "未捕获"
-                : KeyEvent.keyCodeToString(mCaptureKey) + " (" + mCaptureKey + ")";
-        mStatusView.setText("功能：" + MangaSettings.actionLabel(mCaptureAction)
-                + "    范围：" + MangaSettings.scopeLabel(mCaptureScope)
-                + "\n按键：" + key + "    状态：" + state);
+        StringBuilder key = new StringBuilder();
+        for (Integer code : MangaKeyCapture.keys) {
+            if (key.length() > 0) {
+                key.append("  +  ");
+            }
+            key.append(KeyEvent.keyCodeToString(code))
+                    .append(" (").append(code).append(")");
+        }
+        String keyText = key.length() == 0 ? "（尚未按键）" : key.toString();
+        String state = MangaKeyCapture.active
+                ? "● 捕获中 — 现在按手柄键" : "○ 捕获已停止 / 未开始";
+        mStatusView.setText("状态：" + state
+                + "\n已捕获：" + keyText
+                + "\n功能：" + MangaSettings.actionLabel(MangaKeyCapture.flowAction)
+                + "    范围：" + MangaSettings.scopeLabel(MangaKeyCapture.flowScope));
+        if (mCaptureToggle != null) {
+            mCaptureToggle.setText(MangaKeyCapture.active ? "■ 停止捕获" : "▶ 开始捕获");
+            mCaptureToggle.setBackgroundColor(
+                    MangaKeyCapture.active ? 0xFF8A3A2A : 0xFF2A6A3A);
+        }
+        if (mScopeButtons[0] != null && mScopeButtons[1] != null) {
+            mScopeButtons[0].setBackgroundColor(MangaKeyCapture.flowScope == MangaSettings.SCOPE_READER
+                    ? 0xFF3A5A8A : 0xFF2A2A33);
+            mScopeButtons[1].setBackgroundColor(MangaKeyCapture.flowScope == MangaSettings.SCOPE_GLOBAL
+                    ? 0xFF3A5A8A : 0xFF2A2A33);
+        }
+        if (mActionButtons != null) {
+            String[] actions = MangaSettings.allActions();
+            for (int i = 0; i < mActionButtons.length && i < actions.length; i++) {
+                if (mActionButtons[i] != null) {
+                    mActionButtons[i].setBackgroundColor(
+                            actions[i].equals(MangaKeyCapture.flowAction)
+                                    ? 0xFF3A5A8A : 0xFF2A2A33);
+                }
+            }
+        }
     }
 
     private TextView caption(String text) {
@@ -267,7 +307,7 @@ public class MangaSettingsPanel extends LinearLayout {
         b.setTextColor(0xFFFFFFFF);
         b.setMinWidth(0);
         b.setMinimumWidth(0);
-        b.setMinHeight(dp(44));
+        b.setMinHeight(dp(48));
         b.setClickable(true);
         b.setFocusable(true);
         b.setBackgroundColor(0xFF2A2A33);
@@ -275,6 +315,13 @@ public class MangaSettingsPanel extends LinearLayout {
                 0, LayoutParams.WRAP_CONTENT, 1f);
         lp.setMargins(dp(3), dp(2), dp(3), dp(2));
         b.setLayoutParams(lp);
+        return b;
+    }
+
+    private Button bigButton(String text) {
+        Button b = gridButton(text);
+        b.setTextSize(17f);
+        b.setMinHeight(dp(64));
         return b;
     }
 

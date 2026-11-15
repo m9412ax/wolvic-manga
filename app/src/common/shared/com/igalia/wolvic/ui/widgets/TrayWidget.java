@@ -629,6 +629,45 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         Log.i("MangaTray", "detached=" + detached + " parent=" + getPlacement().parentHandle);
     }
 
+    /** In manga / reader mode the tray becomes a child of the manga surface.
+     *  Moving that surface with the native WidgetMover then moves the control
+     *  bar along with the page UI, exactly like a stock browser window.
+     *
+     *  <p>parentAnchor 0.5 makes the child translation a pure world-space
+     *  offset relative to the parent centre (no anchor compensation), so the
+     *  tray keeps its original on-screen position while following the drag.</p>
+     *
+     *  <p>Callers must only invoke this when the parent actually changes: the
+     *  stored offset is relative and must NOT be recomputed after the user has
+     *  dragged the manga surface.</p> */
+    public void setMangaParent(UIWidget parent) {
+        WidgetPlacement p = getPlacement();
+        float absY = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_y);
+        float absZ = WidgetPlacement.unitFromMeters(getContext(), R.dimen.tray_world_z);
+        if (parent == null) {
+            if (p.parentHandle != -1) {
+                p.parentHandle = -1;
+                p.parentAnchorX = 0.5f;
+                p.parentAnchorY = 0.5f;
+                p.translationX = 0f;
+                p.translationY = absY;
+                p.translationZ = absZ;
+                mWidgetManager.updateWidget(this);
+            }
+            return;
+        }
+        WidgetPlacement t = parent.getPlacement();
+        p.parentHandle = parent.getHandle();
+        p.parentAnchorX = 0.5f;
+        p.parentAnchorY = 0.5f;
+        p.translationX = -t.translationX;
+        p.translationY = absY - t.translationY;
+        p.translationZ = absZ - t.translationZ;
+        mWidgetManager.updateWidget(this);
+        Log.i("MangaTray", "attached to manga parent=" + parent.getHandle()
+                + " relY=" + p.translationY + " relZ=" + p.translationZ);
+    }
+
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
         Context context = getContext();

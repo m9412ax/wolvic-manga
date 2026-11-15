@@ -136,6 +136,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void initialize() {
         mSettings = MangaSettings.get(getContext());
+        // Canvas size is persistent across pages and restarts; image zoom is not.
+        mUserScale = clamp(mSettings.getFloat(MangaSettings.READER_CANVAS_SCALE, 1.0f),
+                0.4f, 3.0f);
         mDoublePage = mSettings.bool(MangaSettings.READER_DOUBLE_PAGE);
         setIsHardwareAccelerationEnabled(mSettings.bool(MangaSettings.ADV_HW_ACCEL));
         LayoutInflater.from(getContext()).inflate(R.layout.manga_reader, this, true);
@@ -254,11 +257,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         cancel.setOnClickListener(v -> mGotoDialog.setVisibility(GONE));
 
         applyDisplaySettings();
+        // Restore the persisted canvas/window size once the widget is live.
+        if (mUserScale != 1.0f) {
+            post(this::applyUserScale);
+        }
     }
 
-    /** The reader gets its own grab bar, wired to exactly the same native
-     *  WidgetMover the shelf and the stock browser window use. Java-side touch
-     *  deltas are 2D texture pixels and cannot reproduce the ray/plane drag. */
+    /** Legacy in-widget grab bar. The floating MangaDragBarWidget now owns the
+     *  handle, so this stays as a no-op when the layout no longer defines it. */
     private void setupReaderDrag() {
         if (mReaderDragBar == null) {
             return;
@@ -1079,16 +1085,27 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     // --------------------------------------------------- external control API
 
-    /** Multiply the image zoom factor (clamped). Used by key bindings. */
+    /** TEMPORARY image zoom: scales only the picture content inside a
+     *  fixed-size window. showPage() resets mZoom, so the next page is 100%. */
     public void zoomBy(float factor) {
         mZoom = clamp(mZoom * factor, 0.2f, 8.0f);
         applyImageTransform();
-        showHint("缩放：" + Math.round(mZoom * 100) + "%");
+        showHint("图片缩放：" + Math.round(mZoom * 100) + "%（切页重置）");
+    }
+
+    /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
+     *  height). Saved to prefs, so it survives page changes and restarts. */
+    public void scaleCanvasBy(float factor) {
+        mUserScale = clamp(mUserScale * factor, 0.4f, 3.0f);
+        mSettings.put(MangaSettings.READER_CANVAS_SCALE, mUserScale);
+        applyUserScale();
+        showHint("画布大小：" + Math.round(mUserScale * 100) + "%（持久）");
     }
 
     /** Re-apply the default placement, window size and image zoom. */
     public void resetPosition() {
         mUserScale = 1.0f;
+        mSettings.put(MangaSettings.READER_CANVAS_SCALE, 1.0f);
         mZoom = 1.0f;
         mScrollY = 0.0f;
         mStripOffset = 0.0f;
@@ -1176,6 +1193,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 break;
             case MangaSettings.ACTION_ZOOM_OUT:
                 zoomBy(1.0f / 1.2f);
+                break;
+            case MangaSettings.ACTION_CANVAS_ZOOM_IN:
+                scaleCanvasBy(1.15f);
+                break;
+            case MangaSettings.ACTION_CANVAS_ZOOM_OUT:
+                scaleCanvasBy(1.0f / 1.15f);
                 break;
             case MangaSettings.ACTION_RESET_POS:
                 resetPosition();

@@ -49,6 +49,9 @@ public final class MangaSettings {
     public static final String READER_TRANSITION = "reader_transition";
     public static final String READER_BACKGROUND = "reader_background";
     public static final String READER_DOUBLE_PAGE = "reader_double_page";
+    /** Persistent window/canvas size multiplier. Unlike the temporary image
+     *  zoom, this survives page changes and restarts. */
+    public static final String READER_CANVAS_SCALE = "reader_canvas_scale";
 
     // Sources
     public static final String SOURCE_ROOT = "source_root";
@@ -149,6 +152,14 @@ public final class MangaSettings {
 
     public void put(String key, String value) {
         prefs().edit().putString(key, value == null ? "" : value).apply();
+    }
+
+    public float getFloat(String key, float fallback) {
+        return prefs().getFloat(key, fallback);
+    }
+
+    public void put(String key, float value) {
+        prefs().edit().putFloat(key, value).apply();
     }
 
     // ------------------------------------------------------------ defaults
@@ -304,8 +315,14 @@ public final class MangaSettings {
     public static final String ACTION_NEXT_PAGE = "next_page";
     public static final String ACTION_PREV_FOLDER = "prev_folder";
     public static final String ACTION_NEXT_FOLDER = "next_folder";
+    /** Temporary image-content zoom (Matrix). The window/canvas keeps its size
+     *  and the zoom resets to 100% on the next page. */
     public static final String ACTION_ZOOM_IN = "zoom_in";
     public static final String ACTION_ZOOM_OUT = "zoom_out";
+    /** Persistent canvas/window zoom. Changes worldWidth/width/height, is saved
+     *  to prefs and therefore survives page changes and app restarts. */
+    public static final String ACTION_CANVAS_ZOOM_IN = "canvas_zoom_in";
+    public static final String ACTION_CANVAS_ZOOM_OUT = "canvas_zoom_out";
     public static final String ACTION_RESET_POS = "reset_position";
     public static final String ACTION_TOGGLE_DOUBLE = "toggle_double";
     /** Hold modifier: while this key is down the joystick resizes/repositions the window. */
@@ -315,31 +332,63 @@ public final class MangaSettings {
     private static final String KEY_CONTROLLER_BINDINGS = "manga_controller_bindings_v1";
     private static final String[] ALL_ACTIONS = {
             ACTION_PREV_PAGE, ACTION_NEXT_PAGE, ACTION_PREV_FOLDER, ACTION_NEXT_FOLDER,
-            ACTION_ZOOM_IN, ACTION_ZOOM_OUT, ACTION_RESET_POS, ACTION_TOGGLE_DOUBLE,
-            ACTION_RESIZE_MOD
+            ACTION_ZOOM_IN, ACTION_ZOOM_OUT, ACTION_CANVAS_ZOOM_IN, ACTION_CANVAS_ZOOM_OUT,
+            ACTION_RESET_POS, ACTION_TOGGLE_DOUBLE, ACTION_RESIZE_MOD
     };
 
     public static final class KeyBinding {
         public String action;
+        /** First key of the chord. Kept for code that still uses a single key. */
         public int keyCode;
+        /** Full chord. A single-key binding is just a one-element array. */
+        public int[] keys;
         public int scope;
 
         public KeyBinding(String action, int keyCode, int scope) {
+            this(action, new int[]{keyCode}, scope);
+        }
+
+        public KeyBinding(String action, int[] keys, int scope) {
             this.action = action;
-            this.keyCode = keyCode;
+            this.keys = (keys == null || keys.length == 0) ? new int[]{0} : keys.clone();
+            this.keyCode = this.keys[0];
             this.scope = scope;
+        }
+
+        public String keySignature() {
+            StringBuilder sb = new StringBuilder();
+            for (int k : keys) {
+                sb.append(k).append(',');
+            }
+            return sb.toString();
         }
 
         public JSONObject toJson() throws JSONException {
             JSONObject o = new JSONObject();
             o.put("action", action);
             o.put("key", keyCode);
+            JSONArray chord = new JSONArray();
+            for (int k : keys) {
+                chord.put(k);
+            }
+            o.put("keys", chord);
             o.put("scope", scope);
             return o;
         }
 
         public static KeyBinding fromJson(JSONObject o) throws JSONException {
-            return new KeyBinding(o.getString("action"), o.getInt("key"), o.optInt("scope", SCOPE_GLOBAL));
+            JSONArray chord = o.optJSONArray("keys");
+            int[] keys;
+            if (chord != null && chord.length() > 0) {
+                keys = new int[chord.length()];
+                for (int i = 0; i < chord.length(); i++) {
+                    keys[i] = chord.getInt(i);
+                }
+            } else {
+                keys = new int[]{o.getInt("key")};
+            }
+            return new KeyBinding(o.getString("action"), keys,
+                    o.optInt("scope", SCOPE_GLOBAL));
         }
     }
 
@@ -374,8 +423,8 @@ public final class MangaSettings {
 
     public void addBinding(KeyBinding b) {
         List<KeyBinding> list = getBindings();
-        // Replace any existing binding for the same key to avoid duplicates.
-        list.removeIf(existing -> existing.keyCode == b.keyCode);
+        // Replace any existing binding for the same chord to avoid duplicates.
+        list.removeIf(existing -> existing.keySignature().equals(b.keySignature()));
         list.add(b);
         setBindings(list);
     }
@@ -419,8 +468,10 @@ public final class MangaSettings {
             case ACTION_NEXT_PAGE: return "下一页";
             case ACTION_PREV_FOLDER: return "上一个文件夹";
             case ACTION_NEXT_FOLDER: return "下一个文件夹";
-            case ACTION_ZOOM_IN: return "放大图片";
-            case ACTION_ZOOM_OUT: return "缩小图片";
+            case ACTION_ZOOM_IN: return "图片放大(临时)";
+            case ACTION_ZOOM_OUT: return "图片缩小(临时)";
+            case ACTION_CANVAS_ZOOM_IN: return "画布放大(持久)";
+            case ACTION_CANVAS_ZOOM_OUT: return "画布缩小(持久)";
             case ACTION_RESET_POS: return "重置位置/大小";
             case ACTION_TOGGLE_DOUBLE: return "双页切换";
             case ACTION_RESIZE_MOD: return "缩放/移动修饰键(按住)";
