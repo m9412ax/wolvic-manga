@@ -167,6 +167,11 @@ public class MangaSettingsPanel extends LinearLayout {
         mCaptureToggle = bigButton("▶ 开始捕获");
         mCaptureToggle.setOnClickListener(v -> {
             if (MangaKeyCapture.active) {
+                // Deterministic fallback in case the hover callback was not
+                // delivered: the trigger that activated this button must never
+                // end up inside the recorded chord.
+                MangaKeyCapture.keys.remove(KeyEvent.KEYCODE_BUTTON_R2);
+                MangaKeyCapture.keys.remove(KeyEvent.KEYCODE_BUTTON_A);
                 MangaKeyCapture.stopCapture();
             } else {
                 MangaKeyCapture.restartCapture();
