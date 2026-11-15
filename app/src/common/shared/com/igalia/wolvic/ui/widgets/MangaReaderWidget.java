@@ -90,6 +90,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private GestureDetector mGestureDetector;
     private LruCache<String, Bitmap> mCache;
 
+    // Continuous mode: five live pages [index-2 .. index+2] held as strong
+    // references (an LruCache would evict them mid-scroll and break the seam).
+    private MangaStripView mStripView;
+    private View mReaderDragBar;
+    private final Bitmap[] mStripSegments = new Bitmap[5];
+    private float mStripOffset = 0.0f;
+    private float mStripScale = 1.0f;
+    private float mStripLastZoom = 1.0f;
+    private int mStripGeneration;
+
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-decode");
         thread.setDaemon(true);
@@ -139,10 +149,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mHint = findViewById(R.id.readerHint);
         mBrightnessOverlay = findViewById(R.id.brightnessOverlay);
         mGotoInput = findViewById(R.id.gotoInput);
+        mStripView = findViewById(R.id.stripView);
+        mReaderDragBar = findViewById(R.id.readerDragBar);
 
         mPageImage.setScaleType(ImageView.ScaleType.MATRIX);
         mPageImage.addOnLayoutChangeListener(
                 (v, l, t, r, b, ol, ot, or_, ob) -> applyImageTransform());
+        if (mStripView != null) {
+            mStripView.addOnLayoutChangeListener(
+                    (v, l, t, r, b, ol, ot, or_, ob) -> updateStripTransform());
+        }
+        setupReaderDrag();
         mVideoTexture.setSurfaceTextureListener(this);
 
         int cacheKb = Math.max(16, mSettings.integer(MangaSettings.CACHE_MB)) * 1024;
@@ -177,6 +194,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+                if (isContinuous() && mZoom <= 1.01f) {
+                    scrollContinuous(-distanceY);
+                    return true;
+                }
                 if (mSettings.integer(MangaSettings.READER_DIRECTION) == 2 && mZoom <= 1.01f) {
                     mScrollY -= distanceY;
                     applyImageTransform();
@@ -235,6 +256,35 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         applyDisplaySettings();
     }
 
+    /** The reader gets its own grab bar, wired to exactly the same native
+     *  WidgetMover the shelf and the stock browser window use. Java-side touch
+     *  deltas are 2D texture pixels and cannot reproduce the ray/plane drag. */
+    private void setupReaderDrag() {
+        if (mReaderDragBar == null) {
+            return;
+        }
+        mReaderDragBar.setOnTouchListener((view, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (mWidgetManager != null) {
+                        mWidgetManager.startWidgetMove(this,
+                                WidgetManagerDelegate.WIDGET_MOVE_BEHAVIOUR_GENERAL);
+                    }
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (mWidgetManager != null) {
+                        mWidgetManager.finishWidgetMove();
+                    }
+                    return true;
+                default:
+                    return false;
+            }
+        });
+    }
+
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
         Context context = getContext();
@@ -273,6 +323,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mIndex = 0;
         mZoom = 1.0f;
         mScrollY = 0.0f;
+        mStripOffset = 0.0f;
+        mStripGeneration++;
+        clearStripSegments();
 
         List<File> videos = new ArrayList<>();
         List<File> images = new ArrayList<>();
@@ -342,15 +395,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         stopVideo(true);
         cancelAuto();
         final int generation = ++mLoadGeneration;
+        final int stripGeneration = ++mStripGeneration;
         mIndex = index;
         mVideoCompleted = false;
         mZoom = 1.0f;
         mScrollY = 0.0f;
+        mStripOffset = 0.0f;
+        mStripLastZoom = 1.0f;
+        clearStripSegments();
         if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
 
         final File page = mPages.get(mIndex);
+        final boolean continuous = isContinuous();
         applyDisplaySettings();
         mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
         mGotoDialog.setVisibility(GONE);
@@ -358,6 +416,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (MangaSettings.hasExtension(page.getName(), mSettings.videoExtensions())) {
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
+            setStripVisible(false);
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
                 playVideo(page);
             } else {
@@ -367,27 +426,39 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
 
         mVideoTexture.setVisibility(GONE);
-        mPageImage.setVisibility(VISIBLE);
-        Bitmap cached = mCache.get(displayKey(mIndex));
+        mPageImage.setVisibility(continuous ? GONE : VISIBLE);
+        setStripVisible(continuous);
+        final String cacheKey = continuous ? stripKey(mIndex) : displayKey(mIndex);
+        Bitmap cached = mCache.get(cacheKey);
         if (cached != null && !cached.isRecycled()) {
             mCurrent = cached;
-            mPageImage.setImageBitmap(cached);
-            mPageImage.post(this::applyImageTransform);
+            if (continuous) {
+                rebuildStrip(cached, stripGeneration);
+            } else {
+                mPageImage.setImageBitmap(cached);
+                mPageImage.post(this::applyImageTransform);
+            }
             finishPageLoad(generation);
             return;
         }
-        mPageImage.setImageDrawable(null);
+        if (!continuous) {
+            mPageImage.setImageDrawable(null);
+        }
         mExecutor.execute(() -> {
-            final Bitmap bitmap = decodeDisplay(mIndex);
+            final Bitmap bitmap = continuous ? decodePage(page) : decodeDisplay(mIndex);
             mMainHandler.post(() -> {
                 if (mDestroyed || generation != mLoadGeneration) {
                     return;
                 }
                 mCurrent = bitmap;
                 if (bitmap != null) {
-                    mCache.put(displayKey(mIndex), bitmap);
-                    mPageImage.setImageBitmap(bitmap);
-                    mPageImage.post(this::applyImageTransform);
+                    mCache.put(cacheKey, bitmap);
+                    if (continuous) {
+                        rebuildStrip(bitmap, stripGeneration);
+                    } else {
+                        mPageImage.setImageBitmap(bitmap);
+                        mPageImage.post(this::applyImageTransform);
+                    }
                 } else {
                     showHint("无法解码：" + page.getName());
                 }
@@ -534,28 +605,225 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void preloadNext() {
+        if (isContinuous()) {
+            return; // continuous mode keeps its own +/-2 pages alive
+        }
         int count = Math.max(0, Math.min(4, mSettings.integer(MangaSettings.READER_PRELOAD)));
         for (int i = 1; i <= count; i++) {
-            int target = mIndex + i;
+            final int target = mIndex + i;
             if (target >= mPages.size()) {
                 break;
             }
             final File file = mPages.get(target);
-            if (mCache.get(file.getAbsolutePath()) != null
+            final String key = displayKey(target);
+            if (mCache.get(key) != null
                     || MangaSettings.hasExtension(file.getName(), mSettings.videoExtensions())) {
                 continue;
             }
             mExecutor.execute(() -> {
-                Bitmap bitmap = decodePage(file);
+                Bitmap bitmap = decodeDisplay(target);
                 if (bitmap != null) {
                     mMainHandler.post(() -> {
-                        if (!mDestroyed && mCache.get(file.getAbsolutePath()) == null) {
-                            mCache.put(file.getAbsolutePath(), bitmap);
+                        if (!mDestroyed && mCache.get(key) == null) {
+                            mCache.put(key, bitmap);
                         }
                     });
                 }
             });
         }
+    }
+
+    // -------------------------------------------------- continuous long strip
+
+    private boolean isContinuous() {
+        return mStripView != null && mSettings != null
+                && mSettings.integer(MangaSettings.READER_DIRECTION) == 2;
+    }
+
+    private String stripKey(int index) {
+        return "strip:" + (mFolder == null ? "" : mFolder.getAbsolutePath()) + ":" + index;
+    }
+
+    private void setStripVisible(boolean visible) {
+        if (mStripView == null) {
+            return;
+        }
+        mStripView.setVisibility(visible ? VISIBLE : GONE);
+        if (!visible) {
+            mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
+        }
+    }
+
+    private void clearStripSegments() {
+        for (int i = 0; i < 5; i++) {
+            mStripSegments[i] = null;
+        }
+    }
+
+    /** Seeds the five-page window around the current page and decodes the
+     *  missing neighbours in the background. Both directions are always read,
+     *  so scrolling up from the very top of a page lands on the previous
+     *  page's tail with no blank frame. */
+    private void rebuildStrip(Bitmap current, int generation) {
+        if (!isContinuous()) {
+            return;
+        }
+        clearStripSegments();
+        mStripSegments[2] = current;
+        mStripOffset = 0.0f;
+        mStripScale = 1.0f;
+        mStripLastZoom = mZoom;
+        updateStripTransform();
+        // The strip may not have been laid out yet when the first page decodes.
+        mStripView.post(this::updateStripTransform);
+        loadStripNeighbours(generation);
+    }
+
+    private void loadStripNeighbours(int generation) {
+        for (int slot = 0; slot < 5; slot++) {
+            if (slot == 2 || mStripSegments[slot] != null) {
+                continue;
+            }
+            final int targetSlot = slot;
+            final int targetIndex = mIndex + (slot - 2);
+            if (targetIndex < 0 || targetIndex >= mPages.size()) {
+                continue;
+            }
+            final File file = mPages.get(targetIndex);
+            if (MangaSettings.hasExtension(file.getName(), mSettings.videoExtensions())) {
+                continue;
+            }
+            final String key = stripKey(targetIndex);
+            Bitmap cached = mCache.get(key);
+            if (cached != null && !cached.isRecycled()) {
+                mStripSegments[targetSlot] = cached;
+                updateStripTransform();
+                continue;
+            }
+            mExecutor.execute(() -> {
+                final Bitmap bitmap = decodePage(file);
+                if (bitmap != null) {
+                    mCache.put(key, bitmap);
+                }
+                mMainHandler.post(() -> {
+                    if (mDestroyed || generation != mStripGeneration || !isContinuous()) {
+                        return;
+                    }
+                    int expected = mIndex + (targetSlot - 2);
+                    if (expected == targetIndex) {
+                        mStripSegments[targetSlot] = bitmap;
+                        updateStripTransform();
+                    }
+                });
+            });
+        }
+    }
+
+    /** Recomputes the shared scale and pushes the five pages into the strip
+     *  view. All pages use the CURRENT page's width scale, so crossing a seam
+     *  never causes a sudden size jump. */
+    private void updateStripTransform() {
+        if (mStripView == null || !isContinuous()) {
+            return;
+        }
+        Bitmap cur = mStripSegments[2];
+        if (cur == null && mCurrent != null) {
+            mStripSegments[2] = mCurrent;
+            cur = mCurrent;
+        }
+        if (cur == null || cur.isRecycled()) {
+            return;
+        }
+        float vw = mStripView.getWidth() > 0 ? mStripView.getWidth() : mPageImage.getWidth();
+        if (vw <= 0) {
+            // Still push the pages so scrolling has segment heights to work
+            // with; a layout callback will refine the scale right after.
+            mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+            return;
+        }
+        float newScale = vw / (float) cur.getWidth();
+        if (mStripScale > 0f && Math.abs(newScale - mStripScale) > 0.0001f) {
+            mStripOffset *= newScale / mStripScale;
+        }
+        mStripScale = newScale;
+        if (mStripLastZoom > 0f && Math.abs(mZoom - mStripLastZoom) > 0.0001f) {
+            mStripOffset *= mZoom / mStripLastZoom;
+        }
+        mStripLastZoom = mZoom;
+        mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+    }
+
+    /** Scrolls the long strip. Positive delta moves down the comic (content
+     *  moves up). When the current page leaves the viewport the array slides by
+     *  one page: the very same bitmaps are reused, so the seam is invisible. */
+    private void scrollContinuous(float delta) {
+        if (!isContinuous() || mStripSegments[2] == null) {
+            return;
+        }
+        mStripOffset += delta;
+        final float vh = mStripView.getHeight();
+        for (int guard = 0; guard < 8; guard++) {
+            float curH = mStripView.scaledHeight(2);
+            if (curH <= 0f) {
+                break;
+            }
+            if (mStripOffset >= curH) {
+                if (mIndex + 1 >= mPages.size() || isVideoIndex(mIndex + 1)) {
+                    mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
+                    break;
+                }
+                mStripOffset -= curH;
+                shiftStrip(1);
+                continue;
+            }
+            if (mStripOffset < 0f) {
+                if (mIndex - 1 < 0 || isVideoIndex(mIndex - 1)) {
+                    mStripOffset = 0f;
+                    break;
+                }
+                shiftStrip(-1);
+                float prevH = mStripView.scaledHeight(2);
+                mStripOffset += prevH;
+                continue;
+            }
+            break;
+        }
+        mStripView.setOffset(mStripOffset);
+    }
+
+    private boolean isVideoIndex(int index) {
+        return index >= 0 && index < mPages.size()
+                && MangaSettings.hasExtension(mPages.get(index).getName(),
+                        mSettings.videoExtensions());
+    }
+
+    /** Slides the five-page window by one page without reloading the visible
+     *  bitmaps. Only the new far end needs decoding. */
+    private void shiftStrip(int delta) {
+        if (delta > 0) {
+            for (int i = 0; i < 4; i++) {
+                mStripSegments[i] = mStripSegments[i + 1];
+            }
+            mStripSegments[4] = null;
+            mIndex++;
+        } else {
+            for (int i = 4; i > 0; i--) {
+                mStripSegments[i] = mStripSegments[i - 1];
+            }
+            mStripSegments[0] = null;
+            mIndex--;
+        }
+        mCurrent = mStripSegments[2];
+        mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
+        if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
+            progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
+        }
+        applyDisplaySettings();
+        // Keep the SAME scale and offset across a seam: recomputing the width
+        // scale here would rescale the offset and make the picture jump.
+        mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+        loadStripNeighbours(mStripGeneration);
+        Log.d(TAG, "continuous shift to " + (mIndex + 1) + "/" + mPages.size());
     }
 
     // ---------------------------------------------------------- settings
@@ -577,6 +845,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void applyImageTransform() {
+        if (isContinuous()) {
+            updateStripTransform();
+            return;
+        }
         Bitmap bitmap = mCurrent;
         if (bitmap == null || mPageImage.getWidth() == 0 || mPageImage.getHeight() == 0) {
             return;
@@ -819,6 +1091,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mUserScale = 1.0f;
         mZoom = 1.0f;
         mScrollY = 0.0f;
+        mStripOffset = 0.0f;
+        mStripLastZoom = 1.0f;
         Context context = getContext();
         int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
         int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
@@ -989,9 +1263,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
-                // Continuous vertical scroll mode.
-                mScrollY -= dy * 14.0f;
-                applyImageTransform();
+                // Seamless long-strip scroll: dy > 0 scrolls down into the
+                // next page, dy < 0 scrolls up into the previous page's tail.
+                if (isContinuous()) {
+                    scrollContinuous(-dy * 14.0f);
+                } else {
+                    mScrollY -= dy * 14.0f;
+                    applyImageTransform();
+                }
             } else if (Math.abs(mScrollAccumY) > 0.35f) {
                 zoomBy(mScrollAccumY > 0 ? 0.89f : 1.12f);
                 mScrollAccumY = 0f;
@@ -1070,8 +1349,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
                 // Vertical continuous scroll, like swiping a long image.
-                mScrollY -= mAxisY * 50.0f;
-                applyImageTransform();
+                if (isContinuous()) {
+                    scrollContinuous(-mAxisY * 50.0f);
+                } else {
+                    mScrollY -= mAxisY * 50.0f;
+                    applyImageTransform();
+                }
             } else if (!mJoyPageCooldown) {
                 if (mAxisY < -dead) {
                     pageDelta(1);

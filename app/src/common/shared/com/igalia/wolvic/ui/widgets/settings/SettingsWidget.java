@@ -164,7 +164,8 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                     break;
             }
         });
-        mBinding.mangaPanelHost.addView(panel);
+        mBinding.mangaPanelHost.addView(panel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         selectSettingsTab(mActiveTab);
     }
 

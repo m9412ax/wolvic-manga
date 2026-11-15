@@ -25,6 +25,15 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:visibility="gone" />
+
+        <!-- Continuous (webtoon) mode draws the previous/current/next pages as
+             one seamless vertical strip. Each page stays a separate bitmap so
+             we never hit Android's single-bitmap Canvas draw limit. -->
+        <com.igalia.wolvic.ui.widgets.MangaStripView
+            android:id="@+id/stripView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
     </FrameLayout>
 
     <View
@@ -39,8 +48,9 @@
         android:id="@+id/pageCounter"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="12dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="12dp"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
         android:paddingTop="6dp"
@@ -105,6 +115,34 @@
                 android:text="取消"
                 android:textSize="18sp" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- Same draggable handle as the shelf: it drives Wolvic's native
+         WidgetMover (ray/plane intersection + clamped world translation),
+         so moving the reader feels exactly like moving a browser window. -->
+    <LinearLayout
+        android:id="@+id/readerDragBar"
+        android:layout_width="match_parent"
+        android:layout_height="30dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:background="#CC2A2A33"
+        android:clickable="true"
+        android:focusable="true">
+
+        <View
+            android:layout_width="72dp"
+            android:layout_height="5dp"
+            android:layout_marginEnd="12dp"
+            android:background="#FFFFFFFF" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="拖动移动窗口"
+            android:textColor="#FFD0D0DC"
+            android:textSize="14sp" />
     </LinearLayout>
 
 </FrameLayout>

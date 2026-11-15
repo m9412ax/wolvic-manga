@@ -339,9 +339,12 @@
                     </LinearLayout>
 
                     <!-- Hosts MangaSettingsPanel (keybindings + manga options). -->
+                    <!-- Fixed width: the panel builds a 3-column grid, so it
+                         needs a definite width instead of wrap_content (which
+                         let the old 9-button row overflow off-screen). -->
                     <FrameLayout
                         android:id="@+id/mangaPanelHost"
-                        android:layout_width="wrap_content"
+                        android:layout_width="600dp"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp" />
                 </LinearLayout>
