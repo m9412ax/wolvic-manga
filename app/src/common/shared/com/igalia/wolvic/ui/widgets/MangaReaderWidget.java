@@ -2626,8 +2626,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSurface.release();
         }
         mVideoSurface = new Surface(surface);
+        Log.i(TAG, "surface available " + width + "x" + height
+                + " videoPage=" + isVideoPage());
         if (isVideoPage() && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
             playVideo(mPages.get(mIndex));
+        } else {
+            // The callback can arrive while setFolder() is still building the
+            // page list. Check again on the next frame once it is settled.
+            mMainHandler.post(() -> {
+                if (!mDestroyed && isVideoPage() && mMediaPlayer == null
+                        && mVideoSurface != null && mVideoSurface.isValid()
+                        && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+                    playVideo(mPages.get(mIndex));
+                }
+            });
         }
     }
 
