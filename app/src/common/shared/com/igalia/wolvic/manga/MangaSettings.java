@@ -134,8 +134,8 @@ public final class MangaSettings {
     public static final String PROGRESS_PREFS = "manga_reader_progress";
     public static final String DOWNLOAD_QUEUE_PREFS = "manga_download_queue";
 
-    private static final String DEFAULT_IMAGE_FORMATS = "jpg,jpeg,png,webp,gif,bmp";
-    private static final String DEFAULT_VIDEO_FORMATS = "mp4,mkv,webm,avi,mov";
+    private static final String DEFAULT_IMAGE_FORMATS = "jpg,jpeg,png,webp,gif,bmp,avif,avifs";
+    private static final String DEFAULT_VIDEO_FORMATS = "mp4,mkv,webm,avi,mov,3gp,ts,m4v,hevc,h265,av1";
 
     private final Context mContext;
 

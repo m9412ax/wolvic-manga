@@ -22,6 +22,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
 import com.igalia.wolvic.manga.MangaSettings;
+import com.igalia.wolvic.manga.MangaImageDecoder;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -180,14 +181,15 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            MangaImageDecoder.decodeBounds(file, bounds);
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, reqWidth, reqHeight);
-            opts.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+            return MangaImageDecoder.decodeSampled(file,
+                    computeInSampleSize(bounds.outWidth, bounds.outHeight, reqWidth, reqHeight),
+                    Bitmap.Config.RGB_565);
         } catch (Throwable t) {
             return null;
         }

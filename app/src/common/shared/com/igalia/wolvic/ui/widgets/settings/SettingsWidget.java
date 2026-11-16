@@ -316,6 +316,7 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
+            android.util.Log.i("MangaSettingsPanel", "honeycomb click READER");
             showView(SettingsView.SettingViewType.MANGA_READER);
         });
 
@@ -323,6 +324,7 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
+            android.util.Log.i("MangaSettingsPanel", "honeycomb click SOURCES");
             showView(SettingsView.SettingViewType.MANGA_SOURCES);
         });
 
@@ -330,6 +332,7 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
+            android.util.Log.i("MangaSettingsPanel", "honeycomb click DOWNLOADS");
             showView(SettingsView.SettingViewType.MANGA_DOWNLOADS);
         });
 
@@ -337,6 +340,7 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
+            android.util.Log.i("MangaSettingsPanel", "honeycomb click BACKUP");
             showView(SettingsView.SettingViewType.MANGA_BACKUP);
         });
 
@@ -344,6 +348,7 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             if (mAudio != null) {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
+            android.util.Log.i("MangaSettingsPanel", "honeycomb click ADVANCED");
             showView(SettingsView.SettingViewType.MANGA_ADVANCED);
         });
 
@@ -620,7 +625,16 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
             case MANGA_DOWNLOADS:
             case MANGA_BACKUP:
             case MANGA_ADVANCED:
-                showView(new MangaOptionsView(getContext(), mWidgetManager, aType));
+                try {
+                    android.util.Log.i("MangaSettingsPanel", "creating MangaOptionsView " + aType);
+                    showView(new MangaOptionsView(getContext(), mWidgetManager, aType));
+                    android.util.Log.i("MangaSettingsPanel", "MangaOptionsView shown " + aType);
+                } catch (Throwable t) {
+                    android.util.Log.e("MangaSettingsPanel", "failed to open " + aType, t);
+                    android.widget.Toast.makeText(getContext(),
+                            "打开" + aType + "失败：" + t.getMessage(),
+                            android.widget.Toast.LENGTH_LONG).show();
+                }
                 break;
         }
     }

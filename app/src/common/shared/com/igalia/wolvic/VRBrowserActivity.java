@@ -1296,6 +1296,15 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             final float x = aX / scale;
             final float y = aY / scale;
 
+            // Feed the VR pointer position to the manga reader no matter which
+            // child view received the event. Without this the reader's anchor
+            // zoom never knew where the pointer was (its own mStage onDown is
+            // not reliably called for controller-generated MotionEvents).
+            MangaReaderWidget mangaReader = mMangaReader;
+            if (mangaReader != null && mangaReader.isVisible()) {
+                mangaReader.onPointerPosition(x, y);
+            }
+
             if (widget == null) {
                 MotionEventGenerator.dispatch(this, mRootWidget, aDevice, aFocused, aPressed, x, y);
 

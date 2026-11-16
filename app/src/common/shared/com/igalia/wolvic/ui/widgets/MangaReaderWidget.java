@@ -43,6 +43,7 @@ import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
 import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.manga.MangaSettings;
+import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
@@ -770,7 +771,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            MangaImageDecoder.decodeBounds(file, bounds);
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 return null;
             }
@@ -795,7 +796,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
-            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+            Bitmap bitmap = MangaImageDecoder.decodeSampled(file, sample, null);
             if (bitmap != null && mSettings.bool(MangaSettings.READER_CROP_BORDERS)) {
                 Bitmap cropped = cropBorders(bitmap);
                 if (cropped != null && cropped != bitmap) {
@@ -813,7 +814,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+            MangaImageDecoder.decodeBounds(file, bounds);
             long bytes = (long) bounds.outWidth * bounds.outHeight * 4L;
             // Anything that would exceed the Canvas DRAW limit must be tiled.
             // A 7008x4672 page (124.9 MB) used to fall through to a single
@@ -1501,6 +1502,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     // --------------------------------------------------- external control API
 
+    /** Called from the Activity with the VR pointer position in widget
+     *  coordinates. Used as the anchor for pointer-centred image zoom. */
+    public void onPointerPosition(float x, float y) {
+        mPointerX = x;
+        mPointerY = y;
+    }
+
     /** TEMPORARY image zoom: scales only the picture content inside a
      *  fixed-size window. showPage() resets mZoom, so the next page is 100%. */
     public void zoomBy(float factor) {
@@ -1512,23 +1520,33 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  what you are looking at). When it is outside (or unset), fall back to
      *  the original centred zoom. */
     private void zoomByAt(float factor, float anchorX, float anchorY) {
-        float vw = mPageImage.getWidth();
-        float vh = mPageImage.getHeight();
-        boolean inside = vw > 0 && vh > 0 && anchorX >= 0 && anchorX <= vw
-                && anchorY >= 0 && anchorY <= vh;
+        float vw = (mStage != null && mStage.getWidth() > 0)
+                ? mStage.getWidth() : mPageImage.getWidth();
+        float vh = (mStage != null && mStage.getHeight() > 0)
+                ? mStage.getHeight() : mPageImage.getHeight();
+        // The Activity forwards pointer coordinates in WIDGET space. Subtract
+        // the border that MotionEventGenerator adds so they match stage space.
+        int border = getBorderWidth();
+        float px = anchorX - border;
+        float py = anchorY - border;
+        boolean inside = vw > 0 && vh > 0 && px >= 0 && px <= vw
+                && py >= 0 && py <= vh;
         float oldZoom = mZoom;
         float newZoom = clamp(oldZoom * factor, 0.2f, 8.0f);
         if (inside && oldZoom > 0f) {
-            // Content coordinate under the pointer before the zoom. Since the
-            // image is centred (plus pan), imageX = (pointerX - cx) / oldZoom.
-            float cx = vw / 2f + mPanX;
-            float cy = vh / 2f + mPanY;
-            float imageX = (anchorX - cx) / oldZoom;
-            float imageY = (anchorY - cy) / oldZoom;
-            // Keep that same image point under the pointer after zooming:
-            // anchorX = vw/2 + newPanX + imageX * newZoom
-            mPanX = anchorX - vw / 2f - imageX * newZoom;
-            mPanY = anchorY - vh / 2f - imageY * newZoom;
+            // Keep the image point under the pointer fixed. Only the zoom
+            // RATIO matters here (the base fit scale cancels out):
+            //   newPan = pan + (pointer - centre - pan) * (1 - newZoom/oldZoom)
+            float cx = vw / 2f;
+            float cy = vh / 2f;
+            float ratio = 1f - newZoom / oldZoom;
+            mPanX += (px - cx - mPanX) * ratio;
+            mPanY += (py - cy - mPanY) * ratio;
+            Log.d(TAG, "anchor zoom pointer=" + px + "," + py
+                    + " zoom " + oldZoom + "->" + newZoom + " pan=" + mPanX + "," + mPanY);
+        } else if (anchorX >= 0) {
+            Log.d(TAG, "anchor zoom OUTSIDE pointer=" + px + "," + py
+                    + " stage=" + vw + "x" + vh);
         }
         mZoom = newZoom;
         markZoomGesture();
@@ -2480,17 +2498,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 break;
         }
         scale *= mVideoZoom;
-        // TextureView.setTransform maps NORMALISED texture coordinates (0..1)
-        // into the View. Convert the pixel-space fit into that space.
+        // TextureView's transform maps normalised texture coordinates (0..1)
+        // into VIEW PIXELS. Scale by the destination pixel size, then centre
+        // with a PIXEL translation. Using normalised translate values here
+        // pushed the frame off to the right and clipped the bottom.
         final float drawW = bw * scale;
         final float drawH = bh * scale;
-        final float sx = drawW / vw;
-        final float sy = drawH / vh;
-        final float tx = (vw - drawW) / (2f * vw);
-        final float ty = (vh - drawH) / (2f * vh);
         Matrix matrix = new Matrix();
-        matrix.setScale(sx, sy);
-        matrix.postTranslate(tx, ty);
+        matrix.setScale(drawW, drawH);
+        matrix.postTranslate((vw - drawW) / 2f, (vh - drawH) / 2f);
         mVideoTexture.setTransform(matrix);
     }
 
