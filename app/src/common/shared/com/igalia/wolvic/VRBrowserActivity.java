@@ -895,6 +895,19 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             }
         }
 
+        // Diagnostic / convenience hook: open a local manga folder directly.
+        // Usage: am start -n <pkg>/.VRBrowserActivity --es manga_open_folder <path>
+        String mangaFolder = intent.getStringExtra("manga_open_folder");
+        if (mangaFolder != null && !mangaFolder.isEmpty()) {
+            File folder = new File(mangaFolder);
+            if (folder.isDirectory()) {
+                openMangaReader(folder);
+                Log.i("MangaMode", "intent open folder=" + mangaFolder);
+            } else {
+                Log.e("MangaMode", "intent folder missing=" + mangaFolder);
+            }
+        }
+
         boolean openInWindow = false;
         boolean openInBackground = false;
         boolean openInKioskMode = false;

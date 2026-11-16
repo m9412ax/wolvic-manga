@@ -231,7 +231,7 @@ public final class MangaSettings {
             case READER_AUTO_ADVANCE_SEC:
                 return 8;
             case READER_PRELOAD:
-                return 1;
+                return 2;
             case SOURCE_SPAN_COUNT:
                 return 4;
             case SOURCE_THUMB_PX:
@@ -241,7 +241,7 @@ public final class MangaSettings {
             case DOWNLOAD_RETRY:
                 return 2;
             case CACHE_MB:
-                return 128;
+                return 256;
             case ADV_MAX_DECODE_PX:
                 return 1600;
             case READER_VIDEO_FIT:

@@ -144,6 +144,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         thread.setDaemon(true);
         return thread;
     });
+    /** Preloading runs on its OWN thread so a background decode can never sit
+     *  in front of the page the user just turned to (that caused black frames). */
+    private final ExecutorService mPreloadExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "manga-preload");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     private final Runnable mAutoTick = this::onAutoTick;
     private final Runnable mHideHint = () -> {
@@ -451,6 +458,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         cancelAuto();
         mLoadGeneration++;
         mFolder = folder;
+        // Stale entries from another manga are the source of "old page shown
+        // after switching". The cache is keyed by path now, but clearing also
+        // releases several hundred MB before opening a new folder.
+        if (mCache != null) {
+            mCache.evictAll();
+        }
         mPages.clear();
         mIndex = 0;
         mZoom = 1.0f;
@@ -546,8 +559,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mDisplayWidth = 0;
         mDisplayHeight = 0;
         if (mStripView != null) {
+            // Clear BOTH drawing modes. Leaving tiles/strip behind made the
+            // previous page (often the last continuous-mode page) flash for
+            // one frame whenever the mode or image changed.
             mStripView.clearTiles();
+            mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
         }
+        mTiledPage = false;
         applyDisplaySettings();
         mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
         mGotoDialog.setVisibility(GONE);
@@ -923,7 +941,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     || MangaSettings.hasExtension(file.getName(), mSettings.videoExtensions())) {
                 continue;
             }
-            mExecutor.execute(() -> {
+            mPreloadExecutor.execute(() -> {
                 Bitmap bitmap = decodeDisplay(target);
                 if (bitmap != null) {
                     mMainHandler.post(() -> {
@@ -954,6 +972,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mStripView.setVisibility(visible ? VISIBLE : GONE);
         if (!visible) {
             mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
+            mStripView.clearTiles();
         }
     }
 
@@ -1625,7 +1644,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private String displayKey(int index) {
-        return (mDoublePage ? "d:" : "s:") + index;
+        // MUST include the folder: s:0 / d:0 are reused by every manga in the
+        // shelf, so opening a different folder showed the previous manga's
+        // page. Include the file name too so edits/reordering cannot collide.
+        String path = mFolder == null ? "" : mFolder.getAbsolutePath();
+        String name = mPages != null && index >= 0 && index < mPages.size()
+                ? mPages.get(index).getAbsolutePath() : "";
+        return (mDoublePage ? "d:" : "s:") + path + ":" + index + ":" + name;
     }
 
     /** Builds the bitmap to display for a page index (single, or a 2-page spread). */
@@ -2592,6 +2617,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             stopJoyTick();
             stopVideo(true);
             mExecutor.shutdownNow();
+            mPreloadExecutor.shutdownNow();
             mScaleUpdatePending = false;
             mMainHandler.removeCallbacksAndMessages(null);
             if (mVideoSurface != null) {

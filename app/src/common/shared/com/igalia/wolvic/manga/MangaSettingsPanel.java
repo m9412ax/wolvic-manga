@@ -432,8 +432,18 @@ public class MangaSettingsPanel extends LinearLayout {
     }
 
     private void open(String key) {
+        android.util.Log.i("MangaSettingsPanel", "open key=" + key
+                + " opener=" + (mOpener != null));
         if (mOpener != null) {
             mOpener.open(key);
+            return;
+        }
+        // Fallback: the panel is also embedded in the shelf, and that host may
+        // not install an opener. Route through the Activity so the top row is
+        // never a dead button.
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).showMangaSettingsSubPage(key);
         }
     }
 
