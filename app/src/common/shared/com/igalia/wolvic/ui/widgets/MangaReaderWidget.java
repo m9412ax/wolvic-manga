@@ -683,17 +683,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // (which needs one Bitmap per page) falls back to a sample when a
             // single bitmap would exceed Canvas' draw limit. Single-page mode
             // uses decodePageTiles() for those pages and stays at full res.
-            long bytes = (long) bounds.outWidth * bounds.outHeight * 4L;
+            // Bytes AND longest edge matter: a 3000x40000 strip can be under
+            // the byte budget yet exceed the GPU texture height, in which case
+            // BitmapFactory / Canvas silently fails and the page won't open.
+            final int MAX_EDGE = 16384;
             int sample = 1;
-            if (bytes > SINGLE_BITMAP_LIMIT) {
-                while (sample <= 32) {
-                    long w = (bounds.outWidth + sample - 1L) / sample;
-                    long h = (bounds.outHeight + sample - 1L) / sample;
-                    if (w * h * 4L <= SINGLE_BITMAP_LIMIT) {
-                        break;
-                    }
-                    sample *= 2;
+            while (sample <= 32) {
+                long w = (bounds.outWidth + sample - 1L) / sample;
+                long h = (bounds.outHeight + sample - 1L) / sample;
+                if (Math.max(w, h) <= MAX_EDGE && w * h * 4L <= SINGLE_BITMAP_LIMIT) {
+                    break;
                 }
+                sample *= 2;
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
