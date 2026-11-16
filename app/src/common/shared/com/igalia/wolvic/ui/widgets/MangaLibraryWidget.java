@@ -330,6 +330,30 @@ public class MangaLibraryWidget extends UIWidget {
         fillPage(page, content);
     }
 
+    /** Each page keeps its own ScrollView, so hiding and re-showing it used to
+     *  preserve the PREVIOUS folder's scroll offset. Always start at the top
+     *  when entering a page / opening a different folder. */
+    private void scrollPageToTop(MangaPage page) {
+        View view = mPageViews.get(page);
+        if (view instanceof ScrollView) {
+            final ScrollView scroll = (ScrollView) view;
+            scroll.post(() -> scroll.scrollTo(0, 0));
+        }
+    }
+
+    private void openFolderView(File dir, boolean detail) {
+        mFolderDir = dir;
+        mFolderDetail = detail;
+        switchPage(MangaPage.FOLDER);   // switchPage resets the scroll
+    }
+
+    private void refreshFolderPage(boolean toTop) {
+        refreshPage(MangaPage.FOLDER);
+        if (toTop) {
+            scrollPageToTop(MangaPage.FOLDER);
+        }
+    }
+
     private void fillPage(MangaPage page, LinearLayout content) {
         switch (page) {
             case LOCAL:
@@ -377,6 +401,7 @@ public class MangaLibraryWidget extends UIWidget {
         }
         mTitle.setText("漫画 · " + page.label);
         refreshCurrentPage();
+        scrollPageToTop(page);
         Log.i(TAG, "switchPage " + page.name());
     }
 
@@ -612,9 +637,7 @@ public class MangaLibraryWidget extends UIWidget {
         if (folder == null) {
             return;
         }
-        mFolderDir = folder;
-        mFolderDetail = mSettings.isInBookshelf(folder.getAbsolutePath());
-        switchPage(MangaPage.FOLDER);
+        openFolderView(folder, mSettings.isInBookshelf(folder.getAbsolutePath()));
     }
 
     private void openReaderAt(File folder, File file) {
@@ -676,9 +699,7 @@ public class MangaLibraryWidget extends UIWidget {
             }
             mLocalDir = dir;
             mSettings.setLastDir(dir.getAbsolutePath());
-            mFolderDir = dir;
-            mFolderDetail = false;
-            switchPage(MangaPage.FOLDER);
+            openFolderView(dir, false);
         });
         addButton(row, "设为默认位置", v -> {
             if (current == null) {
@@ -708,9 +729,7 @@ public class MangaLibraryWidget extends UIWidget {
         File parent = folder.getParentFile();
         if (parent != null) {
             addButton(actions, "返回上级", v -> {
-                mFolderDir = parent;
-                mFolderDetail = false;
-                refreshPage(MangaPage.FOLDER);
+                openFolderView(parent, false);
             });
         }
         addButton(actions, "▶ 继续阅读", v -> continueReading(folder));
@@ -719,12 +738,12 @@ public class MangaLibraryWidget extends UIWidget {
             addButton(actions, "从书架移除", v -> {
                 mSettings.removeFromBookshelf(path);
                 mFolderDetail = false;
-                refreshPage(MangaPage.FOLDER);
+                refreshFolderPage(false);
             });
         } else {
             addButton(actions, "＋ 加入书架", v -> {
                 mSettings.addToBookshelf(path);
-                refreshPage(MangaPage.FOLDER);
+                refreshFolderPage(false);
             });
         }
         addButton(actions, "设为默认位置", v -> {
@@ -742,7 +761,7 @@ public class MangaLibraryWidget extends UIWidget {
                     v -> continueReading(folder));
             addButton(detail, "浏览文件 / 章节", v -> {
                 mFolderDetail = false;
-                refreshPage(MangaPage.FOLDER);
+                refreshFolderPage(true);
             });
             listChapters(content, folder);
             return;
@@ -789,9 +808,7 @@ public class MangaLibraryWidget extends UIWidget {
             row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             row.setMinHeight(dp(50));
             row.setOnClickListener(v -> {
-                mFolderDir = chapter;
-                mFolderDetail = false;
-                refreshPage(MangaPage.FOLDER);
+                openFolderView(chapter, false);
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1003,9 +1020,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mSettings.setLastDir(dir.getAbsolutePath());
                 // Entering a folder from the local browser always opens the
                 // thumbnail view (bookshelf entries show their detail card).
-                mFolderDir = dir;
-                mFolderDetail = false;
-                switchPage(MangaPage.FOLDER);
+                openFolderView(dir, false);
             });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
