@@ -926,6 +926,18 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                 isSettingsWidgetVisible());
     }
 
+    /** Switch an ALREADY VISIBLE settings dialog to a manga sub-page without
+     *  re-running show()/updateUI(), which rebuilt the view tree and left the
+     *  five manga buttons pointing at stale views. */
+    public void showMangaSettingsView(@NonNull SettingsView.SettingViewType settingDialog) {
+        android.util.Log.i("MangaSettingsPanel", "tray showMangaSettingsView " + settingDialog);
+        if (mSettingsWidget == null || !mSettingsWidget.isVisible()) {
+            showSettingsDialog(settingDialog);
+            return;
+        }
+        mSettingsWidget.showView(settingDialog);
+    }
+
     public void showSettingsDialog(@NonNull SettingsView.SettingViewType settingDialog) {
         if (mSettingsWidget == null) {
             createSettingsWidget();

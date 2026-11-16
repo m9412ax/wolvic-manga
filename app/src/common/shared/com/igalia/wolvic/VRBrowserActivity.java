@@ -2575,7 +2575,8 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             default:
                 return;
         }
-        mTray.showSettingsDialog(type);
+        android.util.Log.i("MangaSettingsPanel", "activity showMangaSettingsSubPage " + type);
+        mTray.showMangaSettingsView(type);
     }
 
     /** Single entry point for all manga actions coming from Wolvic's tray. */

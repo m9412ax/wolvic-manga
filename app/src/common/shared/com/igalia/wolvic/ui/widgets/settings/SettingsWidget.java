@@ -317,7 +317,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
             android.util.Log.i("MangaSettingsPanel", "honeycomb click READER");
-            showView(SettingsView.SettingViewType.MANGA_READER);
+            android.content.Context c = getContext();
+            if (c instanceof VRBrowserActivity) {
+                ((VRBrowserActivity) c).showMangaSettingsSubPage("READER");
+            } else {
+                showView(SettingsView.SettingViewType.MANGA_READER);
+            }
         });
 
         mBinding.mangaSourcesButton.setOnClickListener(view -> {
@@ -325,7 +330,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
             android.util.Log.i("MangaSettingsPanel", "honeycomb click SOURCES");
-            showView(SettingsView.SettingViewType.MANGA_SOURCES);
+            android.content.Context c = getContext();
+            if (c instanceof VRBrowserActivity) {
+                ((VRBrowserActivity) c).showMangaSettingsSubPage("SOURCES");
+            } else {
+                showView(SettingsView.SettingViewType.MANGA_SOURCES);
+            }
         });
 
         mBinding.mangaDownloadsButton.setOnClickListener(view -> {
@@ -333,7 +343,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
             android.util.Log.i("MangaSettingsPanel", "honeycomb click DOWNLOADS");
-            showView(SettingsView.SettingViewType.MANGA_DOWNLOADS);
+            android.content.Context c = getContext();
+            if (c instanceof VRBrowserActivity) {
+                ((VRBrowserActivity) c).showMangaSettingsSubPage("DOWNLOADS");
+            } else {
+                showView(SettingsView.SettingViewType.MANGA_DOWNLOADS);
+            }
         });
 
         mBinding.mangaBackupButton.setOnClickListener(view -> {
@@ -341,7 +356,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
             android.util.Log.i("MangaSettingsPanel", "honeycomb click BACKUP");
-            showView(SettingsView.SettingViewType.MANGA_BACKUP);
+            android.content.Context c = getContext();
+            if (c instanceof VRBrowserActivity) {
+                ((VRBrowserActivity) c).showMangaSettingsSubPage("BACKUP");
+            } else {
+                showView(SettingsView.SettingViewType.MANGA_BACKUP);
+            }
         });
 
         mBinding.mangaAdvancedButton.setOnClickListener(view -> {
@@ -349,7 +369,12 @@ public class SettingsWidget extends UIDialog implements SettingsView.Delegate {
                 mAudio.playSound(AudioEngine.Sound.CLICK);
             }
             android.util.Log.i("MangaSettingsPanel", "honeycomb click ADVANCED");
-            showView(SettingsView.SettingViewType.MANGA_ADVANCED);
+            android.content.Context c = getContext();
+            if (c instanceof VRBrowserActivity) {
+                ((VRBrowserActivity) c).showMangaSettingsSubPage("ADVANCED");
+            } else {
+                showView(SettingsView.SettingViewType.MANGA_ADVANCED);
+            }
         });
 
         mBinding.whatsNewButton.setOnClickListener(v -> {

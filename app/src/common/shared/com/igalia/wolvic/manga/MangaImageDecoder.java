@@ -7,22 +7,19 @@ package com.igalia.wolvic.manga;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.ImageDecoder;
-import android.os.Build;
 
 import androidx.annotation.Nullable;
 
 import java.io.File;
-import java.io.IOException;
 
 /**
  * Unified still-image decoder for the manga reader/covers.
  *
- * BitmapFactory cannot decode AVIF at all (decodeFile returns null with
- * outWidth=-1). ImageDecoder (API 28+, which covers every Pico runtime we
- * ship for) handles AVIF natively through the platform codec - no extra
- * native library is needed. All legacy formats keep the fast BitmapFactory
- * path so their behaviour (including inSampleSize) is unchanged.
+ * BitmapFactory / the platform ImageDecoder cannot decode AVIF on all
+ * devices (notably Pico Neo3). AVIF/HEIC/JXL go through the bundled libvips
+ * decoder (ca.mpreg:imagedecoder, same as Mihon); other formats keep the
+ * fast BitmapFactory path so their behaviour (including inSampleSize) stays
+ * unchanged.
  */
 public final class MangaImageDecoder {
 
@@ -41,31 +38,33 @@ public final class MangaImageDecoder {
         if (file == null || out == null) {
             return false;
         }
-        if (!isAvif(file) || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+        if (!isAvif(file)) {
             BitmapFactory.decodeFile(file.getAbsolutePath(), out);
             return out.outWidth > 0 && out.outHeight > 0;
         }
-        // Header-only size query via decodeDrawable's OnHeaderDecodedListener.
+        // AVIF is not decoded by the platform decoder on many devices (e.g.
+        // Pico Neo3). Use the bundled libvips decoder for a header decode.
+        java.io.InputStream in = null;
+        ca.mpreg.imagedecoder.ImageDecoder decoder = null;
         try {
-            ImageDecoder.Source source = ImageDecoder.createSource(file);
-            final int[] dims = new int[2];
-            android.graphics.drawable.Drawable header = ImageDecoder.decodeDrawable(
-                    source, (decoder, info, src) -> {
-                        dims[0] = info.getSize().getWidth();
-                        dims[1] = info.getSize().getHeight();
-                        decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                        decoder.setTargetSampleSize(64); // tiny pixel copy for a size query
-                    });
-            if (header instanceof android.graphics.drawable.Animatable) {
-                ((android.graphics.drawable.Animatable) header).stop();
-            }
-            out.outWidth = dims[0];
-            out.outHeight = dims[1];
-            return dims[0] > 0 && dims[1] > 0;
+            in = new java.io.FileInputStream(file);
+            decoder = ca.mpreg.imagedecoder.ImageDecoder.Companion.new(in);
+            ca.mpreg.imagedecoder.ImageDecoder.DecodeResult result = decoder.decode();
+            out.outWidth = result.getWidth();
+            out.outHeight = result.getHeight();
+            return out.outWidth > 0 && out.outHeight > 0;
         } catch (Throwable t) {
+            android.util.Log.w("MangaImageDecoder", "avif bounds failed: " + t);
             out.outWidth = -1;
             out.outHeight = -1;
             return false;
+        } finally {
+            if (decoder != null) {
+                try { decoder.close(); } catch (Throwable ignored) { }
+            }
+            if (in != null) {
+                try { in.close(); } catch (Throwable ignored) { }
+            }
         }
     }
 
@@ -76,7 +75,7 @@ public final class MangaImageDecoder {
         if (file == null) {
             return null;
         }
-        if (!isAvif(file) || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+        if (!isAvif(file)) {
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
             if (preferredConfig != null) {
@@ -88,16 +87,36 @@ public final class MangaImageDecoder {
                 return null;
             }
         }
+        java.io.InputStream in = null;
+        ca.mpreg.imagedecoder.ImageDecoder decoder = null;
         try {
-            ImageDecoder.Source source = ImageDecoder.createSource(file);
-            return ImageDecoder.decodeBitmap(source, (decoder, info, src) -> {
-                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
-                decoder.setTargetSampleSize(sample);
-                decoder.setTargetColorSpace(android.graphics.ColorSpace.get(
-                        android.graphics.ColorSpace.Named.SRGB));
-            });
+            in = new java.io.FileInputStream(file);
+            decoder = ca.mpreg.imagedecoder.ImageDecoder.Companion.new(in);
+            ca.mpreg.imagedecoder.ImageDecoder.DecodeResult result = decoder.decode();
+            int w = result.getWidth();
+            int h = result.getHeight();
+            java.nio.ByteBuffer buffer = result.getImage();
+            buffer.rewind();
+            Bitmap full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            full.copyPixelsFromBuffer(buffer);
+            if (sample <= 1) {
+                return full;
+            }
+            int sw = Math.max(1, w / sample);
+            int sh = Math.max(1, h / sample);
+            Bitmap scaled = Bitmap.createScaledBitmap(full, sw, sh, true);
+            full.recycle();
+            return scaled;
         } catch (Throwable t) {
+            android.util.Log.w("MangaImageDecoder", "avif decode failed: " + t);
             return null;
+        } finally {
+            if (decoder != null) {
+                try { decoder.close(); } catch (Throwable ignored) { }
+            }
+            if (in != null) {
+                try { in.close(); } catch (Throwable ignored) { }
+            }
         }
     }
 }

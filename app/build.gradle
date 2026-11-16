@@ -630,6 +630,8 @@ dependencies {
     implementation libs.support.viewpager2
     implementation libs.constraintlayout
     implementation libs.gson
+    // AVIF/HEIC/JXL image decoding via libvips (platform decoder absent on Pico Neo3)
+    implementation libs.image.decoder
     implementation libs.room.runtime
     annotationProcessor libs.room.compiler
 

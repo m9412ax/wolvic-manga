@@ -2498,15 +2498,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 break;
         }
         scale *= mVideoZoom;
-        // TextureView's transform maps normalised texture coordinates (0..1)
-        // into VIEW PIXELS. Scale by the destination pixel size, then centre
-        // with a PIXEL translation. Using normalised translate values here
-        // pushed the frame off to the right and clipped the bottom.
-        final float drawW = bw * scale;
-        final float drawH = bh * scale;
+        // Use the EXACT matrix form from the last build where video displayed
+        // correctly (55d29a8). TextureView's transform is relative to the
+        // texture's own aspect; a single uniform scale keeps it proportional.
+        // The earlier "normalized coordinate" rewrite made the frame vanish.
         Matrix matrix = new Matrix();
-        matrix.setScale(drawW, drawH);
-        matrix.postTranslate((vw - drawW) / 2f, (vh - drawH) / 2f);
+        matrix.setScale(scale, scale);
+        matrix.postTranslate((vw - bw * scale) / 2f, (vh - bh * scale) / 2f);
         mVideoTexture.setTransform(matrix);
     }
 
