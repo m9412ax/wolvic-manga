@@ -1392,12 +1392,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 }
                 float prevH = mStripView.scaledHeight(1);
                 if (prevH > 0f) {
-                    // Negative offset becomes the position inside the previous
-                    // page's tail; clamp so we never land past its top.
-                    // Assign BEFORE shifting: shiftStrip may rescale the offset
-                    // for the new current page's width, and that rescale must
-                    // apply to this value, not to the stale negative offset.
-                    mStripOffset = Math.max(-vh, Math.min(0f, mStripOffset + prevH));
+                    // After the shift the previous page IS the current page and
+                    // the viewport sits near its BOTTOM: the offset must be a
+                    // large POSITIVE value (prevH + offset). Clamping it to <= 0
+                    // snapped every up-crossing to the previous page's TOP, and
+                    // holding the stick chained one top-jump per page backwards.
+                    mStripOffset = Math.max(0f, Math.min(prevH, mStripOffset + prevH));
                 }
                 shiftStrip(-1);
             }
