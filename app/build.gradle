@@ -479,6 +479,9 @@ android {
                     'src/common/shared',
                     'src/main/cpp/vrb/android/java'
             ]
+            kotlin.srcDirs = [
+                    'src/common/shared'
+            ]
         }
 
         release {
@@ -666,6 +669,9 @@ dependencies {
     implementation libs.androidcomponents.feature.webcompat.reporter
     implementation libs.androidcomponents.feature.addons
     implementation libs.support.preference
+
+    // Mihon extension ABI layer (source-api port)
+    implementation project(':source-api')
 
     // Kotlin dependency
     implementation libs.kotlin.stdlib

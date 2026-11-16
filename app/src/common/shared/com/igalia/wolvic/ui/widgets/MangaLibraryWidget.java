@@ -45,6 +45,7 @@ import com.igalia.wolvic.manga.MangaDownloader;
 import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaSettingsPanel;
+import com.igalia.wolvic.manga.MangaSourceManager;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
@@ -1276,24 +1277,21 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void fillExtensionsPage(LinearLayout content) {
         addInfo(content, "自定义漫画源 / 扩展应用",
-                "可安装本地扩展 APK；Mihon source-api 扩展加载层尚未移植，安装后不会自动成为图源。");
-        List<String> hits = new ArrayList<>();
+                "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。点“试读”抓取热门第一页，结果见 logcat(MangaSource)。");
+        List<MangaSourceManager.LoadedSource> sources;
         try {
-            PackageManager pm = getContext().getPackageManager();
-            List<ApplicationInfo> apps = pm.getInstalledApplications(0);
-            for (ApplicationInfo app : apps) {
-                String name = app.packageName.toLowerCase(Locale.ROOT);
-                if (name.contains("tachiyomi") || name.contains("mihon")
-                        || name.contains("mangaextension") || name.contains(".extension.")) {
-                    hits.add(app.packageName);
-                }
-            }
-        } catch (Throwable ignored) {
+            sources = MangaSourceManager.INSTANCE.init(getContext());
+        } catch (Throwable t) {
+            Log.e("MangaLibrary", "source manager init failed", t);
+            addInfo(content, "加载失败", String.valueOf(t));
+            sources = new ArrayList<>();
         }
-        hits.sort(String::compareTo);
-        addInfo(content, "已安装疑似扩展", hits.isEmpty() ? "无" : String.valueOf(hits.size()));
-        for (String pkg : hits) {
-            addInfo(content, "·", pkg);
+        addInfo(content, "已加载图源", String.valueOf(sources.size()));
+        for (MangaSourceManager.LoadedSource entry : sources) {
+            LinearLayout row = addRow(content);
+            addButton(row, entry.getExtName() + " [" + entry.getSource().getLang() + "] "
+                    + entry.getVersionName(), v -> MangaSourceManager.INSTANCE.testFetch(entry));
+            addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(entry));
         }
 
         File extDir = new File(mSettings.text(MangaSettings.SOURCE_ROOT), "Extensions");
@@ -1308,7 +1306,12 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         LinearLayout actions = addRow(content);
-        addButton(actions, "重新扫描", v -> refreshPage(MangaPage.EXTENSIONS));
+        addButton(actions, "重新扫描", v -> {
+            mIoExecutor.execute(() -> {
+                MangaSourceManager.INSTANCE.reload(getContext());
+                mMain.post(() -> refreshPage(MangaPage.EXTENSIONS));
+            });
+        });
     }
 
     private void installApk(File apk) {

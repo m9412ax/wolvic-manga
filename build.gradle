@@ -4,6 +4,7 @@ buildscript {
     dependencies {
         classpath libs.agp
         classpath libs.kotlin.plugin
+        classpath "org.jetbrains.kotlin:kotlin-serialization:2.4.0"
         classpath libs.huawei.agconnect.agcp
 
         // NOTE: Do not place your application dependencies here; they belong
@@ -19,6 +20,7 @@ buildscript {
 allprojects {
     repositories {
         google()
+        mavenCentral()
         maven { url = 'https://maven.mozilla.org/maven2' }
         maven { url = 'https://developer.huawei.com/repo/' }
         maven { url = 'https://storage.googleapis.com/r8-releases/raw' }
