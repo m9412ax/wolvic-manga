@@ -98,7 +98,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mVideoCompleted;
 
     private MediaPlayer mMediaPlayer;
-    private java.io.FileInputStream mVideoStream; // must stay open until MediaPlayer is released
     private Surface mVideoSurface;
 
     // Video control bar (only visible while a video page is open). It sits at
@@ -247,15 +246,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 0.5f, 4.0f);
         setupVideoBar();
         setupVideoProgressTrack();
-        // A canvas zoom re-lays out the whole tree. Re-apply the video geometry
-        // from the ROOT view: pageImage is GONE on video pages, so its measured
-        // size can be stale (or zero) and must not drive the frame size.
-        mRootView.addOnLayoutChangeListener(
-                (v, l, t, r, b, ol, ot, or_, ob) -> {
-                    if (isVideoPage()) {
-                        applyVideoTransform();
-                    }
-                });
         // The video control strip stays out of the way until the pointer is
         // aimed at the bottom of the picture.
         mRootView.setOnHoverListener((v, event) -> {
@@ -588,17 +578,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 });
             }
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
-                // The SurfaceTexture callback may have fired BEFORE this page
-                // became a video page, so mVideoSurface can be null here even
-                // though TextureView already owns a valid texture. Acquire it
-                // now instead of waiting for a callback that may never repeat.
-                acquireVideoSurfaceIfNeeded();
+                // Use the ORIGINAL playback path: wait for TextureView's
+                // onSurfaceTextureAvailable(), which provides a Surface that
+                // is actually attached to and rendered by the TextureView.
                 playVideo(page);
-                // TextureView inside a floating VR widget may need several
-                // layout passes before its SurfaceTexture exists. Retry a few
-                // times instead of relying on a single callback that can fire
-                // before this page ever became a video page.
-                retryVideoStart(page, 0);
             } else {
                 showHint("点击画面播放视频");
             }
@@ -1759,14 +1742,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         boolean pagingSuspended = mResizeModifier || zoomGestureActive();
         if (mResizeModifier) {
             markZoomGesture();
-            // Amplitude-dependent speed: light stick = fine control, full
-            // deflection zooms ~6x faster than before.
-            float rate = 0.012f * zoomRateForMagnitude(rawDy);
-            setActiveScale(clamp(activeScale() * (1.0f - dy * rate), 0.4f, 3.0f));
-            // Deliberately do NOT touch translationZ: the tray and grab bar are
-            // children of this surface, so moving it in depth made the control
-            // bar grow/shrink together with the canvas.
-            requestUserScale();
+            // NEW MAPPING (per user): with the side button held, LEFT/RIGHT
+            // resizes the CANVAS, UP/DOWN scales the PICTURE. Previously both
+            // axes zoomed the canvas, and bare up/down also zoomed the picture,
+            // which was easy to trigger by accident and conflicted with the
+            // continuous-mode scroll habit.
+            if (Math.abs(dx) > Math.abs(dy)) {
+                float rate = 0.012f * zoomRateForMagnitude(dx / gain);
+                setActiveScale(clamp(activeScale() * (1.0f - dx * rate), 0.4f, 3.0f));
+                requestUserScale();
+            } else {
+                float rate = 0.010f * zoomRateForMagnitude(rawDy);
+                mZoom = clamp(mZoom * (1.0f - dy * rate), 0.2f, 8.0f);
+                applyImageTransform();
+            }
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
@@ -1778,10 +1767,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mScrollY -= dy * 14.0f * scrollSpeed() * imageScaleFactor();
                     applyImageTransform();
                 }
-            } else if (Math.abs(mScrollAccumY) > 0.35f) {
-                zoomBy(mScrollAccumY > 0 ? 0.89f : 1.12f);
-                mScrollAccumY = 0f;
             }
+            // Bare up/down no longer zooms the picture: it was too easy to
+            // trigger and conflicting with continuous-mode scrolling.
+            mScrollAccumY = 0f;
         }
 
         if (pagingSuspended) {
@@ -1878,12 +1867,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mResizeModifier) {
-            // Hold a controller side button + joystick to resize / reposition window.
+            // Side button + LEFT/RIGHT = canvas zoom; UP/DOWN = picture zoom.
             markZoomGesture();
-            float rate = 0.05f * zoomRateForMagnitude(mAxisY);
-            setActiveScale(clamp(activeScale() * (1.0f - mAxisY * rate), 0.4f, 3.0f));
-            // No Z move: see onControllerScroll - it drags the child control bar.
-            requestUserScale();
+            if (Math.abs(mAxisX) > Math.abs(mAxisY)) {
+                float rate = 0.05f * zoomRateForMagnitude(mAxisX);
+                setActiveScale(clamp(activeScale() * (1.0f - mAxisX * rate), 0.4f, 3.0f));
+                requestUserScale();
+            } else {
+                float rate = 0.04f * zoomRateForMagnitude(mAxisY);
+                mZoom = clamp(mZoom * (1.0f - mAxisY * rate), 0.2f, 8.0f);
+                applyImageTransform();
+            }
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
@@ -2398,113 +2392,55 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  buffer across the whole View by default, so a View whose width/height
      *  ratio equals the video's is the only reliable way to avoid distortion.
      *  Gravity.CENTER also keeps it centred after any canvas resize. */
+    /** Proportional fit using ONLY TextureView.setTransform(). The View keeps
+     *  its match_parent size, so its SurfaceTexture is never re-created (that
+     *  was the cause of the sound-with-black-screen regression). setTransform
+     *  maps video buffer pixels into the View; using one uniform scale for
+     *  both axes and centring the remainder gives letterboxing, never stretch.
+     *
+     *  IMPORTANT: do NOT also change the View's LayoutParams here - that is
+     *  what made the 55d29a8 version distort, and later broke playback. */
     private void applyVideoTransform() {
-        if (mVideoWidth <= 0 || mVideoHeight <= 0) {
+        if (mVideoWidth <= 0 || mVideoHeight <= 0
+                || mVideoTexture.getWidth() <= 0 || mVideoTexture.getHeight() <= 0) {
             return;
         }
-        // Root is always laid out; pageImage is GONE on video pages and its
-        // measured size can be stale after a canvas zoom.
-        int containerW = mRootView.getWidth();
-        int containerH = mRootView.getHeight();
-        if (containerW <= 0 || containerH <= 0) {
-            return;
-        }
-        float base;
+        final float vw = mVideoTexture.getWidth();
+        final float vh = mVideoTexture.getHeight();
+        final float bw = mVideoWidth;
+        final float bh = mVideoHeight;
+        float scale;
         switch (mVideoFitMode) {
-            case 1:
-                base = containerH / (float) mVideoHeight;
+            case 1: // fit height
+                scale = vh / bh;
                 break;
-            case 2:
-                base = containerW / (float) mVideoWidth;
+            case 2: // fit width
+                scale = vw / bw;
                 break;
-            case 3:
-                // Original size: never upscale, but still fit inside the
-                // canvas. Width and height keep the SAME factor, so the frame
-                // is never stretched.
-                base = Math.min(1.0f, Math.min(
-                        containerW / (float) mVideoWidth,
-                        containerH / (float) mVideoHeight));
+            case 3: // original size, never upscale, still proportional
+                scale = Math.min(1.0f, Math.min(vw / bw, vh / bh));
                 break;
-            default:
-                base = Math.min(containerW / (float) mVideoWidth,
-                        containerH / (float) mVideoHeight);
+            default: // fit screen
+                scale = Math.min(vw / bw, vh / bh);
                 break;
         }
-        int targetW = Math.max(1, Math.round(mVideoWidth * base * mVideoZoom));
-        int targetH = Math.max(1, Math.round(mVideoHeight * base * mVideoZoom));
-        FrameLayout.LayoutParams lp =
-                (FrameLayout.LayoutParams) mVideoTexture.getLayoutParams();
-        if (lp == null) {
-            return;
-        }
-        if (lp.width != targetW || lp.height != targetH
-                || lp.gravity != Gravity.CENTER) {
-            lp.width = targetW;
-            lp.height = targetH;
-            lp.gravity = Gravity.CENTER;
-            mVideoTexture.setLayoutParams(lp);
-        }
-        layoutVideoProgressTrack(targetW, targetH);
-        if (!mVideoIdentityTransform) {
-            // Identity transform: no double scaling, no stretch.
-            mVideoTexture.setTransform(null);
-            mVideoIdentityTransform = true;
-        }
+        scale *= mVideoZoom;
+        // TextureView.setTransform maps NORMALISED texture coordinates (0..1)
+        // into the View. Convert the pixel-space fit into that space.
+        final float drawW = bw * scale;
+        final float drawH = bh * scale;
+        final float sx = drawW / vw;
+        final float sy = drawH / vh;
+        final float tx = (vw - drawW) / (2f * vw);
+        final float ty = (vh - drawH) / (2f * vh);
+        Matrix matrix = new Matrix();
+        matrix.setScale(sx, sy);
+        matrix.postTranslate(tx, ty);
+        mVideoTexture.setTransform(matrix);
     }
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private void retryVideoStart(File page, int attempt) {
-        if (attempt > 8 || mDestroyed || !isVideoPage()
-                || !mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)
-                || (mMediaPlayer != null && mMediaPlayer.isPlaying())) {
-            return;
-        }
-        mMainHandler.postDelayed(() -> {
-            if (mDestroyed || !isVideoPage()) {
-                return;
-            }
-            acquireVideoSurfaceIfNeeded();
-            if (mVideoSurface != null && mVideoSurface.isValid() && mMediaPlayer == null) {
-                Log.i(TAG, "video retry playback success at attempt=" + attempt);
-                playVideo(page);
-            } else {
-                retryVideoStart(page, attempt + 1);
-            }
-        }, 200L);
-    }
-
-    /** TextureView keeps its SurfaceTexture across GONE/VISIBLE toggles, but
-     *  onSurfaceTextureAvailable() only fires once. Re-acquire the Surface
-     *  lazily so entering a video page always has a valid output. */
-    private void acquireVideoSurfaceIfNeeded() {
-        if (mDestroyed || mVideoTexture == null) {
-            return;
-        }
-        SurfaceTexture texture = mVideoTexture.getSurfaceTexture();
-        if (texture == null) {
-            // The single onSurfaceTextureAvailable() callback can be consumed
-            // by a non-video page during widget init, and onDestroyed() then
-            // releases the texture. Force-create one so playback always has
-            // an output surface.
-            try {
-                texture = new SurfaceTexture(0);
-                mVideoTexture.setSurfaceTexture(texture);
-                Log.i(TAG, "video surface force-created");
-            } catch (Throwable t) {
-                Log.e(TAG, "video surface create failed: " + t);
-                return;
-            }
-        }
-        if (mVideoSurface == null || !mVideoSurface.isValid()) {
-            if (mVideoSurface != null) {
-                try { mVideoSurface.release(); } catch (Exception ignored) { }
-            }
-            mVideoSurface = new Surface(texture);
-            Log.i(TAG, "video surface acquired " + texture.toString());
-        }
     }
 
     private void playVideo(File page) {
@@ -2569,30 +2505,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             return true;
         });
-        // Use a FileDescriptor rather than the path string: the source library
-        // contains full-width brackets and CJK punctuation, which some
-        // MediaPlayer path parsers mishandle. MediaPlayer always prefers the
-        // platform hardware codec; we do not request any software decoder.
         try {
-            mVideoStream = new java.io.FileInputStream(page);
-            player.setDataSource(mVideoStream.getFD());
+            // Original, proven path-based setup: this is what worked with
+            // picture + sound in every earlier build.
+            player.setDataSource(page.getAbsolutePath());
             player.setSurface(mVideoSurface);
-            Log.i(TAG, "video prepareAsync size=" + page.length());
             player.prepareAsync();
         } catch (Exception e) {
-            Log.e(TAG, "video open failed: " + e, e);
             if (player == mMediaPlayer) {
                 stopVideo(false);
-                showHint("视频无法打开：" + e.getMessage());
+                showHint("视频无法打开：" + page.getName());
             }
-        }
-    }
-
-    private void closeVideoStream() {
-        java.io.FileInputStream stream = mVideoStream;
-        mVideoStream = null;
-        if (stream != null) {
-            try { stream.close(); } catch (Exception ignored) { }
         }
     }
 
@@ -2605,7 +2528,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             persistState();
         }
         mMediaPlayer = null;
-        closeVideoStream();
         if (player == null) {
             return;
         }
@@ -2704,14 +2626,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSurface.release();
         }
         mVideoSurface = new Surface(surface);
-        // Ignore duplicate availability callbacks while playback is already
-        // running (our force-created texture also triggers this callback).
-        boolean alreadyPlaying = mMediaPlayer != null;
-        try {
-            alreadyPlaying = mMediaPlayer != null && mMediaPlayer.isPlaying();
-        } catch (Exception ignored) { }
-        if (!alreadyPlaying && isVideoPage()
-                && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+        if (isVideoPage() && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
             playVideo(mPages.get(mIndex));
         }
     }
