@@ -46,9 +46,15 @@ import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.manga.MangaSourceManager;
+import com.igalia.wolvic.manga.MangaSourceRepository;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
+
+import eu.kanade.tachiyomi.source.Source;
+import eu.kanade.tachiyomi.source.model.MangasPage;
+import eu.kanade.tachiyomi.source.model.SChapter;
+import eu.kanade.tachiyomi.source.model.SManga;
 
 import java.io.File;
 import java.net.InetSocketAddress;
@@ -80,6 +86,8 @@ public class MangaLibraryWidget extends UIWidget {
         SMB("SMB 共享"),
         WEBDAV("网盘 WebDAV"),
         EXTENSIONS("漫画源扩展"),
+        SOURCE_BROWSE("图源浏览"),
+        SOURCE_MANGA("漫画详情"),
         FOLDER("文件夹"),
         SETTINGS("设置");
 
@@ -114,6 +122,17 @@ public class MangaLibraryWidget extends UIWidget {
 
     private String mWebDavUrl = "";
     private String mWebDavStatus = "未连接";
+
+    private MangaSourceManager.LoadedSource mSourceEntry;
+    private String mSourceQuery = "";
+    private int mSourcePage = 1;
+    private boolean mSourceLatest = false;
+    private String mSourceStatus = "";
+    private final List<SManga> mSourceMangas = new ArrayList<>();
+    private boolean mSourceHasNext = false;
+    private SManga mSourceManga;
+    private String mSourceMangaStatus = "";
+    private final List<SChapter> mSourceChapters = new ArrayList<>();
     private final List<MangaWebDav.Entry> mWebDavEntries = new ArrayList<>();
     private final ExecutorService mIoExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-io");
@@ -368,6 +387,12 @@ public class MangaLibraryWidget extends UIWidget {
                 break;
             case EXTENSIONS:
                 fillExtensionsPage(content);
+                break;
+            case SOURCE_BROWSE:
+                fillSourceBrowsePage(content);
+                break;
+            case SOURCE_MANGA:
+                fillSourceMangaPage(content);
                 break;
             case FOLDER:
                 fillFolderPage(content);
@@ -1290,7 +1315,7 @@ public class MangaLibraryWidget extends UIWidget {
         for (MangaSourceManager.LoadedSource entry : sources) {
             LinearLayout row = addRow(content);
             addButton(row, entry.getExtName() + " [" + entry.getSource().getLang() + "] "
-                    + entry.getVersionName(), v -> MangaSourceManager.INSTANCE.testFetch(entry));
+                    + entry.getVersionName(), v -> openSourceBrowse(entry));
             addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(entry));
         }
 
@@ -1312,6 +1337,177 @@ public class MangaLibraryWidget extends UIWidget {
                 mMain.post(() -> refreshPage(MangaPage.EXTENSIONS));
             });
         });
+    }
+
+    // ------------------------------------------- extension source browsing
+
+    private void openSourceBrowse(MangaSourceManager.LoadedSource entry) {
+        mSourceEntry = entry;
+        mSourceQuery = "";
+        mSourcePage = 1;
+        mSourceLatest = false;
+        mSourceMangas.clear();
+        mSourceHasNext = false;
+        switchPage(MangaPage.SOURCE_BROWSE);
+        startSourceBrowse();
+    }
+
+    private void startSourceBrowse() {
+        if (mSourceEntry == null) {
+            return;
+        }
+        mSourceStatus = "加载中…";
+        refreshPage(MangaPage.SOURCE_BROWSE);
+        Source source = mSourceEntry.getSource();
+        MangaSourceRepository.Callback<MangasPage> cb = (page, error) -> {
+            if (page == null) {
+                mSourceStatus = "加载失败：" + error;
+                mSourceMangas.clear();
+                mSourceHasNext = false;
+            } else {
+                mSourceMangas.clear();
+                mSourceMangas.addAll(page.getMangas());
+                mSourceHasNext = page.getHasNextPage();
+                mSourceStatus = "第 " + mSourcePage + " 页 · " + mSourceMangas.size() + " 部";
+            }
+            refreshPage(MangaPage.SOURCE_BROWSE);
+        };
+        if (mSourceLatest) {
+            MangaSourceRepository.INSTANCE.latest(source, mSourcePage, cb);
+        } else {
+            MangaSourceRepository.INSTANCE.browse(source, mSourcePage, mSourceQuery, cb);
+        }
+    }
+
+    private void fillSourceBrowsePage(LinearLayout content) {
+        if (mSourceEntry == null) {
+            addInfo(content, "未选择图源", "请先到“漫画源扩展”页选择一个图源。");
+            return;
+        }
+        Source source = mSourceEntry.getSource();
+        addInfo(content, mSourceEntry.getExtName(), source.getName() + " · " + source.getLang());
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回扩展", v -> switchPage(MangaPage.EXTENSIONS));
+
+        LinearLayout searchRow = addRow(content);
+        EditText input = new EditText(getContext());
+        input.setHint("搜索关键词");
+        input.setText(mSourceQuery);
+        input.setTextColor(0xFFFFFFFF);
+        input.setHintTextColor(0xFF808088);
+        input.setTextSize(17f);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        searchRow.addView(input, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        addButton(searchRow, "搜索", v -> {
+            mSourceQuery = input.getText().toString().trim();
+            mSourcePage = 1;
+            mSourceLatest = false;
+            startSourceBrowse();
+        });
+        addButton(searchRow, "热门", v -> {
+            mSourceQuery = "";
+            mSourceLatest = false;
+            mSourcePage = 1;
+            startSourceBrowse();
+        });
+        if (source.getSupportsLatest()) {
+            addButton(searchRow, "最新", v -> {
+                mSourceQuery = "";
+                mSourceLatest = true;
+                mSourcePage = 1;
+                startSourceBrowse();
+            });
+        }
+
+        addInfo(content, "状态", mSourceStatus);
+        for (SManga manga : mSourceMangas) {
+            LinearLayout row = addRow(content);
+            addButton(row, manga.getTitle(), v -> openSourceManga(manga));
+        }
+        LinearLayout pager = addRow(content);
+        if (mSourcePage > 1) {
+            addButton(pager, "上一页", v -> {
+                mSourcePage--;
+                startSourceBrowse();
+            });
+        }
+        if (mSourceHasNext) {
+            addButton(pager, "下一页", v -> {
+                mSourcePage++;
+                startSourceBrowse();
+            });
+        }
+    }
+
+    private void openSourceManga(SManga manga) {
+        if (mSourceEntry == null) {
+            return;
+        }
+        mSourceManga = manga;
+        mSourceChapters.clear();
+        mSourceMangaStatus = "加载详情…";
+        switchPage(MangaPage.SOURCE_MANGA);
+        MangaSourceRepository.INSTANCE.details(mSourceEntry.getSource(), manga, (update, error) -> {
+            if (update == null) {
+                mSourceMangaStatus = "详情加载失败：" + error;
+            } else {
+                mSourceManga = update.getManga();
+                mSourceChapters.clear();
+                mSourceChapters.addAll(update.getChapters());
+                mSourceMangaStatus = mSourceChapters.size() + " 个章节";
+            }
+            refreshPage(MangaPage.SOURCE_MANGA);
+        });
+    }
+
+    private void fillSourceMangaPage(LinearLayout content) {
+        if (mSourceManga == null || mSourceEntry == null) {
+            addInfo(content, "未选择漫画", "");
+            return;
+        }
+        String desc = mSourceManga.getDescription();
+        if (desc != null && desc.length() > 400) {
+            desc = desc.substring(0, 400) + "…";
+        }
+        addInfo(content, mSourceManga.getTitle(), desc);
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回浏览", v -> switchPage(MangaPage.SOURCE_BROWSE));
+        addButton(nav, "刷新详情", v -> openSourceManga(mSourceManga));
+        addInfo(content, "状态", mSourceMangaStatus);
+        for (SChapter chapter : mSourceChapters) {
+            LinearLayout row = addRow(content);
+            File dir = MangaSourceRepository.INSTANCE.chapterDir(
+                    getContext(), mSourceEntry.getSource(), mSourceManga, chapter);
+            File[] cached = dir.listFiles();
+            boolean hasCache = cached != null && cached.length > 0;
+            addButton(row, (hasCache ? "✓ " : "") + chapter.getName(),
+                    v -> readSourceChapter(chapter));
+        }
+    }
+
+    private void readSourceChapter(SChapter chapter) {
+        if (mSourceEntry == null || mSourceManga == null) {
+            return;
+        }
+        mSourceMangaStatus = "准备下载…";
+        refreshPage(MangaPage.SOURCE_MANGA);
+        MangaSourceRepository.INSTANCE.downloadChapter(
+                getContext(), mSourceEntry.getSource(), mSourceManga, chapter,
+                (done, total) -> {
+                    mSourceMangaStatus = "下载中 " + done + "/" + total;
+                    refreshPage(MangaPage.SOURCE_MANGA);
+                },
+                (folder, error) -> {
+                    if (folder == null) {
+                        mSourceMangaStatus = "下载失败：" + error;
+                        refreshPage(MangaPage.SOURCE_MANGA);
+                        Toast.makeText(getContext(), "下载失败：" + error, Toast.LENGTH_LONG).show();
+                    } else {
+                        mSourceMangaStatus = "下载完成";
+                        openReader(folder);
+                    }
+                });
     }
 
     private void installApk(File apk) {
