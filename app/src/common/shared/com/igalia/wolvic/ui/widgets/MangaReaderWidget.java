@@ -588,7 +588,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 });
             }
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+                // The SurfaceTexture callback may have fired BEFORE this page
+                // became a video page, so mVideoSurface can be null here even
+                // though TextureView already owns a valid texture. Acquire it
+                // now instead of waiting for a callback that may never repeat.
+                acquireVideoSurfaceIfNeeded();
                 playVideo(page);
+                mVideoTexture.post(() -> {
+                    acquireVideoSurfaceIfNeeded();
+                    if (mMediaPlayer == null && isVideoPage()
+                            && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+                        playVideo(page);
+                    }
+                });
             } else {
                 showHint("点击画面播放视频");
             }
@@ -2444,6 +2456,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    /** TextureView keeps its SurfaceTexture across GONE/VISIBLE toggles, but
+     *  onSurfaceTextureAvailable() only fires once. Re-acquire the Surface
+     *  lazily so entering a video page always has a valid output. */
+    private void acquireVideoSurfaceIfNeeded() {
+        if (mDestroyed || mVideoTexture == null) {
+            return;
+        }
+        SurfaceTexture texture = mVideoTexture.getSurfaceTexture();
+        if (texture == null) {
+            return;
+        }
+        if (mVideoSurface == null || !mVideoSurface.isValid()) {
+            if (mVideoSurface != null) {
+                try { mVideoSurface.release(); } catch (Exception ignored) { }
+            }
+            mVideoSurface = new Surface(texture);
+            Log.i(TAG, "video surface acquired " + texture.toString());
+        }
     }
 
     private void playVideo(File page) {
