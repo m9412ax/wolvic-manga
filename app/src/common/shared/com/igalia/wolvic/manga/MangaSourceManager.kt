@@ -82,29 +82,29 @@ object MangaSourceManager {
 
         if (!injektReady) {
             injektReady = true
-            Injekt.addModule(object : InjektModule {
-            override fun registerWith(into: InjektRegistrar) {
-                into.addSingletonFactory<Context> { appContext }
-                into.addSingletonFactory {
-                    Json {
-                        ignoreUnknownKeys = true
-                        isLenient = true
-                        coerceInputValues = true
-                        explicitNulls = false
+            Injekt.importModule(object : InjektModule {
+                override fun InjektRegistrar.registerInjectables() {
+                    addSingletonFactory<Context> { appContext }
+                    addSingletonFactory {
+                        Json {
+                            ignoreUnknownKeys = true
+                            isLenient = true
+                            coerceInputValues = true
+                            explicitNulls = false
+                        }
+                    }
+                    addSingletonFactory {
+                        NetworkHelper(
+                            appContext,
+                            NetworkPreferences(
+                                AndroidPreferenceStore(
+                                    appContext.getSharedPreferences("manga_source_prefs", Context.MODE_PRIVATE),
+                                ),
+                                false,
+                            ),
+                        )
                     }
                 }
-                into.addSingletonFactory {
-                    NetworkHelper(
-                        appContext,
-                        NetworkPreferences(
-                            AndroidPreferenceStore(
-                                appContext.getSharedPreferences("manga_source_prefs", Context.MODE_PRIVATE),
-                            ),
-                            false,
-                        ),
-                    )
-                }
-            }
             })
         }
 
