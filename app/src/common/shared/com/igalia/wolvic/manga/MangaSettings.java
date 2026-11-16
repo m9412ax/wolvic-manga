@@ -52,6 +52,10 @@ public final class MangaSettings {
     /** Persistent window/canvas size multiplier. Unlike the temporary image
      *  zoom, this survives page changes and restarts. */
     public static final String READER_CANVAS_SCALE = "reader_canvas_scale";
+    /** Continuous mode keeps its OWN canvas zoom. The continuous canvas is
+     *  1:1 while single/double page is 16:9-ish, so sharing one multiplier made
+     *  a comfortable zoom in one mode far too large/small in the other. */
+    public static final String READER_CONTINUOUS_SCALE = "reader_continuous_scale";
     /** Video fit mode: 0 = fit screen, 1 = fit height, 2 = fit width. */
     public static final String READER_VIDEO_FIT = "reader_video_fit";
     /** Extra video zoom multiplier, adjustable in 0.5 steps. */
@@ -240,6 +244,8 @@ public final class MangaSettings {
                 return 128;
             case ADV_MAX_DECODE_PX:
                 return 1600;
+            case READER_VIDEO_FIT:
+                return 3; // original size, never upscaled / stretched
             case READER_DIRECTION:
             case READER_SCALE:
             case READER_TRANSITION:

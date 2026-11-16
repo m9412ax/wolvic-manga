@@ -682,6 +682,12 @@ BrowserWorld::State::UpdateControllers(bool& aRelayoutWidgets) {
         }
       }
     }
+    // Thumbstick deltas must work even when the pointer is outside the field
+    // of view. The two calls above only happen while a widget is hit (or an
+    // immersive video is active); without this fallback the joystick silently
+    // stops paging / scrolling as soon as the user looks away from the canvas.
+    // HandleControllerScroll clears the deltas, so a second call is a no-op.
+    HandleControllerScroll(controller, controller.widget);
     controller.lastButtonState = controller.buttonState;
   }
   if ((context->GetTimestamp() - lastBatteryLevelUpdate) > 1.0) {
