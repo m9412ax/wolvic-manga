@@ -64,16 +64,19 @@ import java.util.concurrent.Executors;
 public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTextureListener {
 
     private static final String TAG = "MangaReader";
-    /** Android's RecordingCanvas refuses to draw a single Bitmap above this
-     *  size (observed crash at ~166 MB). This is a *draw* limit, not a decode
-     *  limit: pages beyond it are decoded as full-resolution tiles instead of
-     *  being downsampled, so no detail is ever thrown away. */
-    private static final long SINGLE_BITMAP_LIMIT = 150L * 1024 * 1024;
-    private static final long TILE_BYTES_LIMIT = 96L * 1024 * 1024;
-    /** Above this size, decoding every tile at 1:1 would hold hundreds of MB
-     *  at once. Fall back to a sampled single bitmap so the page still opens. */
-    private static final long MAX_TILED_BYTES = 300L * 1024 * 1024;
-    private static final int MAX_TILES = 4;
+    /** Android's hardware accelerated RecordingCanvas hard-refuses to draw a
+     *  single Bitmap above ~100 MB: throwIfCannotDraw() kills the process with
+     *  "Canvas: trying to draw too large(NNN bytes) bitmap". Measured on this
+     *  device: a 7008x4672 page is 130,965,504 bytes and crashes instantly.
+     *  Keep a wide margin. This is a DRAW limit, not a decode limit - pages
+     *  above it are decoded at 1:1 into tiles, so no detail is lost. */
+    private static final long SINGLE_BITMAP_LIMIT = 72L * 1024 * 1024;
+    /** Each region tile must also stay far below the draw limit. */
+    private static final long TILE_BYTES_LIMIT = 40L * 1024 * 1024;
+    /** Above this size, holding every 1:1 tile at once would exhaust memory;
+     *  fall back to a sampled single bitmap so the page still opens. */
+    private static final long MAX_TILED_BYTES = 400L * 1024 * 1024;
+    private static final int MAX_TILES = 8;
 
     private MangaSettings mSettings;
     private FrameLayout mRootView;
@@ -95,6 +98,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mVideoCompleted;
 
     private MediaPlayer mMediaPlayer;
+    private java.io.FileInputStream mVideoStream; // must stay open until MediaPlayer is released
     private Surface mVideoSurface;
 
     // Video control bar (only visible while a video page is open). It sits at
@@ -610,7 +614,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             mCurrent = fallback;
                             mDisplayWidth = fallback.getWidth();
                             mDisplayHeight = fallback.getHeight();
-                            mPageImage.setImageBitmap(fallback);
+                            mPageImage.setImageBitmap(safeForImageView(fallback));
                             mPageImage.post(this::applyImageTransform);
                         } else {
                             showHint("无法解码：" + page.getName());
@@ -645,7 +649,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (continuous) {
                 rebuildStrip(cached, stripGeneration);
             } else {
-                mPageImage.setImageBitmap(cached);
+                mPageImage.setImageBitmap(safeForImageView(cached));
                 mPageImage.post(this::applyImageTransform);
             }
             finishPageLoad(generation);
@@ -655,7 +659,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPageImage.setImageDrawable(null);
         }
         mExecutor.execute(() -> {
-            final Bitmap bitmap = continuous ? decodePage(page) : decodeDisplay(mIndex);
+            final Bitmap bitmap = continuous ? decodePage(page, CONTINUOUS_PAGE_BYTES) : decodeDisplay(mIndex);
             mMainHandler.post(() -> {
                 if (mDestroyed || generation != mLoadGeneration) {
                     return;
@@ -668,7 +672,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     if (continuous) {
                         rebuildStrip(bitmap, stripGeneration);
                     } else {
-                        mPageImage.setImageBitmap(bitmap);
+                        mPageImage.setImageBitmap(safeForImageView(bitmap));
                         mPageImage.post(this::applyImageTransform);
                     }
                 } else {
@@ -700,7 +704,37 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    /** Last line of defence: ImageView draws through RecordingCanvas, which
+     *  crashes the whole process for any bitmap above ~100 MB. Never hand it
+     *  such a bitmap - downsample just this once if a code path slipped
+     *  through the tiling decision. Normal 1:1 pages arrive here well below
+     *  the cap, so nothing is lost for regular reading. */
+    private Bitmap safeForImageView(Bitmap bitmap) {
+        if (bitmap == null || bitmap.isRecycled()) {
+            return bitmap;
+        }
+        long bytes = (long) bitmap.getWidth() * bitmap.getHeight() * 4L;
+        if (bytes <= SINGLE_BITMAP_LIMIT) {
+            return bitmap;
+        }
+        double ratio = Math.sqrt((double) SINGLE_BITMAP_LIMIT / (double) bytes);
+        int w = Math.max(1, (int) (bitmap.getWidth() * ratio));
+        int h = Math.max(1, (int) (bitmap.getHeight() * ratio));
+        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, w, h, true);
+        Log.w(TAG, "bitmap over draw limit, downsampled " + bitmap.getWidth() + "x"
+                + bitmap.getHeight() + " -> " + w + "x" + h);
+        return scaled != null ? scaled : bitmap;
+    }
+
+    /** Continuous mode keeps 5 pages decoded at once, so it needs a much
+     *  smaller per-page budget than single-page viewing. */
+    private static final long CONTINUOUS_PAGE_BYTES = 24L * 1024 * 1024;
+
     private Bitmap decodePage(File file) {
+        return decodePage(file, SINGLE_BITMAP_LIMIT);
+    }
+
+    private Bitmap decodePage(File file, long byteBudget) {
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -722,7 +756,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             while (sample <= 32) {
                 long w = (bounds.outWidth + sample - 1L) / sample;
                 long h = (bounds.outHeight + sample - 1L) / sample;
-                if (Math.max(w, h) <= MAX_EDGE && w * h * 4L <= SINGLE_BITMAP_LIMIT) {
+                if (Math.max(w, h) <= MAX_EDGE && w * h * 4L <= byteBudget) {
                     break;
                 }
                 sample *= 2;
@@ -749,6 +783,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             bounds.inJustDecodeBounds = true;
             BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
             long bytes = (long) bounds.outWidth * bounds.outHeight * 4L;
+            // Anything that would exceed the Canvas DRAW limit must be tiled.
+            // A 7008x4672 page (124.9 MB) used to fall through to a single
+            // bitmap here because the threshold was 150 MB - and crashed.
             return bounds.outWidth > 0 && bounds.outHeight > 0
                     && bytes > SINGLE_BITMAP_LIMIT && bytes <= MAX_TILED_BYTES;
         } catch (Throwable t) {
@@ -967,7 +1004,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 continue;
             }
             mExecutor.execute(() -> {
-                final Bitmap bitmap = decodePage(file);
+                final Bitmap bitmap = decodePage(file, CONTINUOUS_PAGE_BYTES);
                 if (bitmap != null) {
                     mCache.put(key, bitmap);
                 }
@@ -1032,12 +1069,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         // A single input frame must never jump over several pages. Very large
-        // deltas (fast stick + high zoom) used to overshoot and then bounce
-        // back through the previous page, which looked like random up-jumps.
-        final float maxStep = Math.max(64f, mStripView.getHeight() * 0.45f);
-        mStripOffset += Math.max(-maxStep, Math.min(maxStep, delta));
+        // deltas (fast stick + high zoom) used to overshoot and bounce back,
+        // which looked like random up-jumps. Cap each frame to 30% viewport.
         final float vh = mStripView.getHeight();
-        for (int guard = 0; guard < 4; guard++) {
+        final float maxStep = Math.max(48f, vh * 0.30f);
+        mStripOffset += Math.max(-maxStep, Math.min(maxStep, delta));
+        // At most one seam per frame: crossing several in one tick forces
+        // repeated array shifts and visible jumps.
+        for (int guard = 0; guard < 1; guard++) {
             float curH = mStripView.scaledHeight(2);
             if (curH <= 0f) {
                 break;
@@ -1047,27 +1086,37 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
                     break;
                 }
+                // Never advance onto a neighbour that is still decoding.
+                Bitmap next = mStripSegments[3];
+                if (next == null || next.isRecycled()) {
+                    mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
+                    loadStripNeighbours(mStripGeneration);
+                    break;
+                }
                 mStripOffset -= curH;
                 shiftStrip(1);
-                continue;
-            }
-            if (mStripOffset < 0f) {
+            } else if (mStripOffset < 0f) {
                 if (mIndex - 1 < 0 || isVideoIndex(mIndex - 1)) {
                     mStripOffset = 0f;
                     break;
                 }
-                shiftStrip(-1);
-                float prevH = mStripView.scaledHeight(2);
-                if (prevH <= 0f) {
-                    // Neighbour bitmap is not decoded yet. Do not keep
-                    // shifting (that produced repeated upward jumps).
+                // Check BEFORE shifting: shifting first and then discovering
+                // the page is undecoded used to snap the offset to zero and
+                // yank the picture back to the top (the "upward jump").
+                Bitmap prev = mStripSegments[1];
+                if (prev == null || prev.isRecycled()) {
                     mStripOffset = 0f;
+                    loadStripNeighbours(mStripGeneration);
                     break;
                 }
-                mStripOffset += prevH;
-                continue;
+                float prevH = mStripView.scaledHeight(1);
+                shiftStrip(-1);
+                if (prevH > 0f) {
+                    // Negative offset becomes the position inside the previous
+                    // page's tail; clamp so we never land past its top.
+                    mStripOffset = Math.max(-vh, Math.min(0f, mStripOffset + prevH));
+                }
             }
-            break;
         }
         mStripView.setOffset(mStripOffset);
     }
@@ -1438,7 +1487,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         mScaleUpdatePending = true;
-        mMainHandler.post(mScaleUpdate);
+        // Coalesce to ~11 updates/second. Rebuilding the SurfaceTexture on
+        // every 50 ms tick is what produced the visible flicker; this keeps
+        // zoom responsive while cutting rebuilds by more than half. The
+        // final value is always persisted by applyUserScale().
+        mMainHandler.postDelayed(mScaleUpdate, 90L);
+    }
+
+    /** Zoom rate grows with stick deflection: a light nudge keeps fine
+     *  control, a full push zooms about six times faster. */
+    private static float zoomRateForMagnitude(float magnitude) {
+        float m = Math.min(1.0f, Math.abs(magnitude));
+        return 1.0f + 5.0f * m;
     }
 
     /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
@@ -1630,12 +1690,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (Math.abs(dx) < 0.001f && Math.abs(dy) < 0.001f) {
             return;
         }
+        // WebKit's ScaleScrollDelta shrinks stick deltas to as little as 0.15x
+        // for the first ~2 s of a gesture. In the browser that is fine, but in
+        // the reader it made paging and canvas zoom feel dead unless the
+        // pointer happened to hit the widget (which uses the unscaled axes).
+        // Restore the true stick amplitude so controls work everywhere.
+        final float gain = 4.0f;
+        final float rawDy = dy; // unscaled amplitude, used for variable-speed zoom
+        dx *= gain;
+        dy *= gain;
         mScrollAccumX += dx;
         mScrollAccumY += dy;
 
         // On a video page the horizontal stick seeks +/-5 s instead of paging.
         if (isVideoPage() && !mResizeModifier) {
-            if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
+            if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.22f) {
                 // Keep the same sign convention as image paging
                 // (pageDelta(mScrollAccumX > 0 ? -1 : 1)): pushing right must
                 // advance the video, not rewind it.
@@ -1655,7 +1724,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         boolean pagingSuspended = mResizeModifier || zoomGestureActive();
         if (mResizeModifier) {
             markZoomGesture();
-            setActiveScale(clamp(activeScale() * (1.0f - dy * 0.012f), 0.4f, 3.0f));
+            // Amplitude-dependent speed: light stick = fine control, full
+            // deflection zooms ~6x faster than before.
+            float rate = 0.012f * zoomRateForMagnitude(rawDy);
+            setActiveScale(clamp(activeScale() * (1.0f - dy * rate), 0.4f, 3.0f));
             // Deliberately do NOT touch translationZ: the tray and grab bar are
             // children of this surface, so moving it in depth made the control
             // bar grow/shrink together with the canvas.
@@ -1685,7 +1757,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mMainHandler.postDelayed(mScrollDecay, 220);
             return;
         }
-        if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.35f) {
+        if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.22f) {
             pageDelta(mScrollAccumX > 0 ? -1 : 1);
             mScrollAccumX = 0f;
             mJoyPageCooldown = true;
@@ -1773,7 +1845,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mResizeModifier) {
             // Hold a controller side button + joystick to resize / reposition window.
             markZoomGesture();
-            setActiveScale(clamp(activeScale() * (1.0f - mAxisY * 0.05f), 0.4f, 3.0f));
+            float rate = 0.05f * zoomRateForMagnitude(mAxisY);
+            setActiveScale(clamp(activeScale() * (1.0f - mAxisY * rate), 0.4f, 3.0f));
             // No Z move: see onControllerScroll - it drags the child control bar.
             requestUserScale();
         } else {
@@ -2395,23 +2468,40 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         });
         player.setOnErrorListener((mp, what, extra) -> {
             if (player == mMediaPlayer && !mDestroyed) {
+                // Do NOT auto-advance on error. The next page is often a huge
+                // image, so an unsupported codec turned into a "video failed"
+                // hint followed immediately by a fatal Canvas crash.
+                Log.e(TAG, "video error what=" + what + " extra=" + extra
+                        + " file=" + page.getName());
                 stopVideo(false);
-                showHint("视频无法播放：" + page.getName());
-                if (mIndex + 1 < mPages.size()) {
-                    showPage(mIndex + 1);
-                }
+                showHint("视频无法播放(what=" + what + "/extra=" + extra
+                        + ")：" + page.getName());
             }
             return true;
         });
+        // Use a FileDescriptor rather than the path string: the source library
+        // contains full-width brackets and CJK punctuation, which some
+        // MediaPlayer path parsers mishandle. MediaPlayer always prefers the
+        // platform hardware codec; we do not request any software decoder.
         try {
-            player.setDataSource(page.getAbsolutePath());
+            mVideoStream = new java.io.FileInputStream(page);
+            player.setDataSource(mVideoStream.getFD());
             player.setSurface(mVideoSurface);
             player.prepareAsync();
         } catch (Exception e) {
+            Log.e(TAG, "video open failed: " + e, e);
             if (player == mMediaPlayer) {
                 stopVideo(false);
-                showHint("视频无法打开：" + page.getName());
+                showHint("视频无法打开：" + e.getMessage());
             }
+        }
+    }
+
+    private void closeVideoStream() {
+        java.io.FileInputStream stream = mVideoStream;
+        mVideoStream = null;
+        if (stream != null) {
+            try { stream.close(); } catch (Exception ignored) { }
         }
     }
 
@@ -2424,6 +2514,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             persistState();
         }
         mMediaPlayer = null;
+        closeVideoStream();
         if (player == null) {
             return;
         }
