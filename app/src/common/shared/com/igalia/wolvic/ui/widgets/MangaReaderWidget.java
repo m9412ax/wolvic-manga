@@ -594,13 +594,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // now instead of waiting for a callback that may never repeat.
                 acquireVideoSurfaceIfNeeded();
                 playVideo(page);
-                mVideoTexture.post(() -> {
-                    acquireVideoSurfaceIfNeeded();
-                    if (mMediaPlayer == null && isVideoPage()
-                            && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
-                        playVideo(page);
-                    }
-                });
+                // TextureView inside a floating VR widget may need several
+                // layout passes before its SurfaceTexture exists. Retry a few
+                // times instead of relying on a single callback that can fire
+                // before this page ever became a video page.
+                retryVideoStart(page, 0);
             } else {
                 showHint("点击画面播放视频");
             }
@@ -2456,6 +2454,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void retryVideoStart(File page, int attempt) {
+        if (attempt > 8 || mDestroyed || !isVideoPage()
+                || !mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)
+                || (mMediaPlayer != null && mMediaPlayer.isPlaying())) {
+            return;
+        }
+        mMainHandler.postDelayed(() -> {
+            if (mDestroyed || !isVideoPage()) {
+                return;
+            }
+            acquireVideoSurfaceIfNeeded();
+            if (mVideoSurface != null && mVideoSurface.isValid() && mMediaPlayer == null) {
+                Log.i(TAG, "video retry playback success at attempt=" + attempt);
+                playVideo(page);
+            } else {
+                retryVideoStart(page, attempt + 1);
+            }
+        }, 200L);
     }
 
     /** TextureView keeps its SurfaceTexture across GONE/VISIBLE toggles, but
