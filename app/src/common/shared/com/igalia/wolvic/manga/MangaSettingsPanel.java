@@ -434,16 +434,24 @@ public class MangaSettingsPanel extends LinearLayout {
     private void open(String key) {
         android.util.Log.i("MangaSettingsPanel", "open key=" + key
                 + " opener=" + (mOpener != null));
-        if (mOpener != null) {
-            mOpener.open(key);
-            return;
-        }
-        // Fallback: the panel is also embedded in the shelf, and that host may
-        // not install an opener. Route through the Activity so the top row is
-        // never a dead button.
+        // Always route through the Activity's CURRENT tray/SettingsWidget.
+        // A captured mOpener can point at a SettingsWidget instance that was
+        // destroyed by updateUI(), which made these buttons silently dead.
+        // The Activity's tray reference is authoritative.
         Context context = getContext();
         if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).showMangaSettingsSubPage(key);
+            VRBrowserActivity activity = (VRBrowserActivity) context;
+            // LOCAL / SMB / WEBDAV / EXTENSIONS are shelf pages, not settings.
+            if ("LOCAL".equals(key) || "SMB".equals(key) || "WEBDAV".equals(key)
+                    || "EXTENSIONS".equals(key)) {
+                activity.onMangaTrayAction(key);
+                return;
+            }
+            activity.showMangaSettingsSubPage(key);
+            return;
+        }
+        if (mOpener != null) {
+            mOpener.open(key);
         }
     }
 

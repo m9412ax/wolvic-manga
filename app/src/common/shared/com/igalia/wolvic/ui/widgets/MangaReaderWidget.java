@@ -123,6 +123,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private final Matrix mMatrix = new Matrix();
     private float mZoom = 1.0f;
+    /** Pan offset of a zoomed image, in view pixels. Lets the user inspect
+     *  the edges instead of only the centre of an enlarged page. */
+    private float mPanX = 0.0f;
+    private float mPanY = 0.0f;
+    /** Last VR pointer position inside the picture panel. */
+    private float mPointerX = -1f;
+    private float mPointerY = -1f;
     private float mScrollY = 0.0f;
     private GestureDetector mGestureDetector;
     private LruCache<String, Bitmap> mCache;
@@ -267,6 +274,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mGestureDetector = new GestureDetector(getContext(), new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onDown(MotionEvent e) {
+                // Remember where the VR pointer is on the picture. Used as the
+                // anchor for pointer-centred zoom and as the drag start.
+                mPointerX = e.getX();
+                mPointerY = e.getY();
                 return true;
             }
 
@@ -279,15 +290,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public boolean onDoubleTap(MotionEvent e) {
                 if (mSettings.bool(MangaSettings.READER_DOUBLE_TAP_ZOOM)) {
-                    mZoom = mZoom > 1.01f ? 1.0f : 2.0f;
-                    applyImageTransform();
-                    showHint(mZoom > 1.01f ? "已放大 2×" : "已还原缩放");
+                    boolean wasZoomed = mZoom > 1.01f;
+                    zoomByAt(wasZoomed ? 1.0f / mZoom : 2.0f, e.getX(), e.getY());
+                    showHint(!wasZoomed ? "已放大 2×" : "已还原缩放");
                 }
                 return true;
             }
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+                // Pointer + trigger drag on a ZOOMED image pans the picture,
+                // just like dragging a photo on a phone. Clamped in
+                // applyImageTransform() so no empty area can be exposed.
+                if (mZoom > 1.01f && !isContinuous() && !mTiledPage) {
+                    mPanX -= distanceX;
+                    mPanY -= distanceY;
+                    applyImageTransform();
+                    return true;
+                }
                 if (isContinuous() && mZoom <= 1.01f) {
                     scrollContinuous(-distanceY);
                     return true;
@@ -457,6 +477,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPages.clear();
         mIndex = 0;
         mZoom = 1.0f;
+        mPanX = 0f;
+        mPanY = 0f;
         mScrollY = 0.0f;
         mStripOffset = 0.0f;
         mStripGeneration++;
@@ -535,6 +557,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mIndex = index;
         mVideoCompleted = false;
         mZoom = 1.0f;
+        mPanX = 0f;
+        mPanY = 0f;
         mScrollY = 0.0f;
         mStripOffset = 0.0f;
         mStripLastZoom = 1.0f;
@@ -561,34 +585,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mGotoDialog.setVisibility(GONE);
 
         if (MangaSettings.hasExtension(page.getName(), mSettings.videoExtensions())) {
+            // Minimal, proven path (same as the build where video worked):
+            // make the TextureView visible and let MediaPlayer attach to the
+            // SurfaceTexture delivered by onSurfaceTextureAvailable().
+            // No synthetic texture, no path tricks, no extra layout work.
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
             setStripVisible(false);
-            showVideoBar(false); // hidden until the pointer reaches the bottom
+            showVideoBar(false);
             if (mVideoProgressTrack != null) {
                 mVideoProgressTrack.setVisibility(VISIBLE);
                 updateVideoProgressTrackFill();
-                // With autoplay off the video dimensions are still unknown;
-                // show the bar full-width at the bottom until playback starts.
-                mRootView.post(() -> {
-                    if (isVideoPage() && mVideoWidth <= 0) {
-                        layoutVideoProgressTrack(mRootView.getWidth(),
-                                mRootView.getHeight());
-                    }
-                });
             }
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
-                // If TextureView already owns a real SurfaceTexture (the normal
-                // case), use it directly - onSurfaceTextureAvailable() may have
-                // fired before this page became a video. Never fabricate one:
-                // a synthetic SurfaceTexture gives audio with a black picture.
-                SurfaceTexture tex = mVideoTexture.getSurfaceTexture();
-                if (tex != null && (mVideoSurface == null || !mVideoSurface.isValid())) {
-                    if (mVideoSurface != null) {
-                        try { mVideoSurface.release(); } catch (Exception ignored) { }
-                    }
-                    mVideoSurface = new Surface(tex);
-                }
                 playVideo(page);
             } else {
                 showHint("点击画面播放视频");
@@ -604,7 +613,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoTexture.setVisibility(GONE);
         // An oversized page is shown as full-resolution tiles rather than one
         // downsampled bitmap, so zooming in never loses text detail.
-        final boolean tiled = !continuous && needsTiling(page);
+        // Double-page spreads must go through decodeDisplay() (which merges
+        // two pages). Tiling bypasses that entirely, which is why large pages
+        // never showed as a spread. combineSideBySide caps at 4096 px so the
+        // merged bitmap stays well under the Canvas draw limit.
+        final boolean tiled = !continuous && !mDoublePage && needsTiling(page);
         mPageImage.setVisibility(continuous || tiled ? GONE : VISIBLE);
         setStripVisible(continuous || tiled);
         final String cacheKey = continuous ? stripKey(mIndex) : displayKey(mIndex);
@@ -1262,6 +1275,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 dy = (vh - bh * sy) / 2.0f;
             }
         }
+        // Pan a zoomed picture, clamped so the image can never be dragged
+        // completely off screen (max pan = half the overflow on each side).
+        float maxPanX = Math.max(0f, (bw * sx - vw) / 2.0f);
+        float maxPanY = Math.max(0f, (bh * sy - vh) / 2.0f);
+        mPanX = Math.max(-maxPanX, Math.min(maxPanX, mPanX));
+        mPanY = Math.max(-maxPanY, Math.min(maxPanY, mPanY));
+        dx += mPanX;
+        dy += mPanY;
         mMatrix.setScale(sx, sy);
         mMatrix.postTranslate(dx, dy);
         if (mTiledPage) {
@@ -1483,7 +1504,33 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** TEMPORARY image zoom: scales only the picture content inside a
      *  fixed-size window. showPage() resets mZoom, so the next page is 100%. */
     public void zoomBy(float factor) {
-        mZoom = clamp(mZoom * factor, 0.2f, 8.0f);
+        zoomByAt(factor, mPointerX, mPointerY);
+    }
+
+    /** Zoom with an optional anchor. When the VR pointer is inside the
+     *  picture, the comic content under the pointer stays fixed (zoom toward
+     *  what you are looking at). When it is outside (or unset), fall back to
+     *  the original centred zoom. */
+    private void zoomByAt(float factor, float anchorX, float anchorY) {
+        float vw = mPageImage.getWidth();
+        float vh = mPageImage.getHeight();
+        boolean inside = vw > 0 && vh > 0 && anchorX >= 0 && anchorX <= vw
+                && anchorY >= 0 && anchorY <= vh;
+        float oldZoom = mZoom;
+        float newZoom = clamp(oldZoom * factor, 0.2f, 8.0f);
+        if (inside && oldZoom > 0f) {
+            // Content coordinate under the pointer before the zoom. Since the
+            // image is centred (plus pan), imageX = (pointerX - cx) / oldZoom.
+            float cx = vw / 2f + mPanX;
+            float cy = vh / 2f + mPanY;
+            float imageX = (anchorX - cx) / oldZoom;
+            float imageY = (anchorY - cy) / oldZoom;
+            // Keep that same image point under the pointer after zooming:
+            // anchorX = vw/2 + newPanX + imageX * newZoom
+            mPanX = anchorX - vw / 2f - imageX * newZoom;
+            mPanY = anchorY - vh / 2f - imageY * newZoom;
+        }
+        mZoom = newZoom;
         markZoomGesture();
         applyImageTransform();
         showZoomHint("图片缩放：" + Math.round(mZoom * 100) + "%（切页重置）");
@@ -1536,6 +1583,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         setActiveScale(1.0f);
         mSettings.put(activeScaleKey(), 1.0f);
         mZoom = 1.0f;
+        mPanX = 0f;
+        mPanY = 0f;
         mScrollY = 0.0f;
         mStripOffset = 0.0f;
         mStripLastZoom = 1.0f;
@@ -1761,8 +1810,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 requestUserScale();
             } else {
                 float rate = 0.010f * zoomRateForMagnitude(rawDy);
-                mZoom = clamp(mZoom * (1.0f - dy * rate), 0.2f, 8.0f);
-                applyImageTransform();
+                zoomByAt(1.0f - dy * rate, mPointerX, mPointerY);
             }
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
@@ -1883,8 +1931,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 requestUserScale();
             } else {
                 float rate = 0.04f * zoomRateForMagnitude(mAxisY);
-                mZoom = clamp(mZoom * (1.0f - mAxisY * rate), 0.2f, 8.0f);
-                applyImageTransform();
+                zoomByAt(1.0f - mAxisY * rate, mPointerX, mPointerY);
             }
         } else {
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
@@ -2634,20 +2681,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSurface.release();
         }
         mVideoSurface = new Surface(surface);
-        Log.i(TAG, "surface available " + width + "x" + height
-                + " videoPage=" + isVideoPage());
+        Log.i(TAG, "surface available " + width + "x" + height + " video=" + isVideoPage());
         if (isVideoPage() && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
             playVideo(mPages.get(mIndex));
-        } else {
-            // The callback can arrive while setFolder() is still building the
-            // page list. Check again on the next frame once it is settled.
-            mMainHandler.post(() -> {
-                if (!mDestroyed && isVideoPage() && mMediaPlayer == null
-                        && mVideoSurface != null && mVideoSurface.isValid()
-                        && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
-                    playVideo(mPages.get(mIndex));
-                }
-            });
         }
     }
 
