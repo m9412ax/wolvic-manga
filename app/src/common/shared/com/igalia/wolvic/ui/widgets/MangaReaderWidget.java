@@ -578,9 +578,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 });
             }
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
-                // Use the ORIGINAL playback path: wait for TextureView's
-                // onSurfaceTextureAvailable(), which provides a Surface that
-                // is actually attached to and rendered by the TextureView.
+                // If TextureView already owns a real SurfaceTexture (the normal
+                // case), use it directly - onSurfaceTextureAvailable() may have
+                // fired before this page became a video. Never fabricate one:
+                // a synthetic SurfaceTexture gives audio with a black picture.
+                SurfaceTexture tex = mVideoTexture.getSurfaceTexture();
+                if (tex != null && (mVideoSurface == null || !mVideoSurface.isValid())) {
+                    if (mVideoSurface != null) {
+                        try { mVideoSurface.release(); } catch (Exception ignored) { }
+                    }
+                    mVideoSurface = new Surface(tex);
+                }
                 playVideo(page);
             } else {
                 showHint("点击画面播放视频");
