@@ -92,8 +92,9 @@ private suspend fun Call.await(callStack: Array<StackTraceElement>): Response {
             }
 
             override fun onResponse(call: Call, response: Response) {
-                continuation.resume(response) { _, value, _ ->
-                    value.close()
+                // coroutines 1.7.3 has the single-arg onCancellation overload
+                continuation.resume(response) {
+                    response.close()
                 }
             }
         })
