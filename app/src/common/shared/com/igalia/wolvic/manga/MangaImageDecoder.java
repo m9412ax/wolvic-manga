@@ -23,7 +23,19 @@ import java.io.File;
  */
 public final class MangaImageDecoder {
 
+    private static final android.util.LruCache<String, int[]> DIMENSIONS =
+            new android.util.LruCache<>(256);
+
     private MangaImageDecoder() { }
+
+    private static String fileKey(File file) {
+        return file.getAbsolutePath() + ":" + file.length() + ":" + file.lastModified();
+    }
+
+    @Nullable
+    public static int[] cachedDimensions(File file) {
+        return DIMENSIONS.get(fileKey(file));
+    }
 
     /** Kotlin names its factory ImageDecoder.new(InputStream); "new" is a
      *  Java keyword, so invoke it reflectively. */
@@ -69,9 +81,19 @@ public final class MangaImageDecoder {
         if (file == null || out == null) {
             return false;
         }
+        int[] cached = cachedDimensions(file);
+        if (cached != null) {
+            out.outWidth = cached[0];
+            out.outHeight = cached[1];
+            return true;
+        }
         if (!isAvif(file)) {
             BitmapFactory.decodeFile(file.getAbsolutePath(), out);
-            return out.outWidth > 0 && out.outHeight > 0;
+            if (out.outWidth > 0 && out.outHeight > 0) {
+                DIMENSIONS.put(fileKey(file), new int[] {out.outWidth, out.outHeight});
+                return true;
+            }
+            return false;
         }
         // AVIF is not decoded by the platform decoder on many devices (e.g.
         // Pico Neo3). Use the bundled libvips decoder for a header decode.
@@ -83,7 +105,11 @@ public final class MangaImageDecoder {
             Object result = decodeNative(decoder);
             out.outWidth = resultInt(result, "Width");
             out.outHeight = resultInt(result, "Height");
-            return out.outWidth > 0 && out.outHeight > 0;
+            if (out.outWidth > 0 && out.outHeight > 0) {
+                DIMENSIONS.put(fileKey(file), new int[] {out.outWidth, out.outHeight});
+                return true;
+            }
+            return false;
         } catch (Throwable t) {
             android.util.Log.w("MangaImageDecoder", "avif bounds failed", t);
             out.outWidth = -1;
@@ -116,6 +142,15 @@ public final class MangaImageDecoder {
                 return null;
             }
         }
+        return decodeAvif(file, Math.max(1, sample), Long.MAX_VALUE);
+    }
+
+    @Nullable
+    public static Bitmap decodeAvifWithinBudget(File file, long byteBudget) {
+        return decodeAvif(file, 1, byteBudget);
+    }
+
+    private static Bitmap decodeAvif(File file, int sample, long byteBudget) {
         java.io.InputStream in = null;
         Object decoder = null;
         try {
@@ -126,7 +161,19 @@ public final class MangaImageDecoder {
             int h = resultInt(result, "Height");
             java.nio.ByteBuffer buffer = resultImage(result);
             buffer.rewind();
-            Bitmap full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            long pixels = (long) w * h;
+            int bytesPerPixel = buffer.remaining() == pixels * 8L ? 8 : 4;
+            if (w <= 0 || h <= 0 || buffer.remaining() != pixels * bytesPerPixel) {
+                throw new IllegalStateException("Unexpected AVIF pixel buffer size");
+            }
+            DIMENSIONS.put(fileKey(file), new int[] {w, h});
+            while (Math.max(w / sample, h / sample) > 16384
+                    || (long) Math.max(1, w / sample) * Math.max(1, h / sample)
+                    * bytesPerPixel > byteBudget) {
+                sample *= 2;
+            }
+            Bitmap full = Bitmap.createBitmap(w, h,
+                    bytesPerPixel == 8 ? Bitmap.Config.RGBA_F16 : Bitmap.Config.ARGB_8888);
             full.copyPixelsFromBuffer(buffer);
             if (sample <= 1) {
                 return full;

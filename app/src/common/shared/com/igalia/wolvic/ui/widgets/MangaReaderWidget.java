@@ -52,8 +52,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Independent floating reader window. It deliberately has no control bar: all
@@ -93,16 +98,27 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private final List<File> mPages = new ArrayList<>();
     private File mFolder;
     private int mIndex;
-    private int mLoadGeneration;
+    private volatile int mLoadGeneration;
     private Bitmap mCurrent;
-    private boolean mDestroyed;
+    private volatile boolean mDestroyed;
     private boolean mVideoCompleted;
 
     private MediaPlayer mMediaPlayer;
     private Surface mVideoSurface;
+    private SurfaceTexture mVideoSurfaceTexture;
 
-    // Video control bar (only visible while a video page is open). It sits at
-    // the bottom of the picture panel, immediately above the tray control bar.
+    private boolean mVideoPrepared;
+    private File mVideoPage;
+    private File mPendingVideoPage;
+    private boolean mVideoPaused;
+    private final android.graphics.RectF mVideoRect = new android.graphics.RectF();
+    private final Rect mVideoStageOffset = new Rect();
+    private boolean mVideoPointerInWidget;
+    private float mVideoPointerX = -1f;
+    private float mVideoPointerY = -1f;
+    private String mLastVideoTransformLog;
+
+    // Hover controls overlay the visible video bottom, in stage coordinates.
     private LinearLayout mVideoBar;
     private Button mVideoPlayButton;
     private Button mVideoFitButton;
@@ -114,10 +130,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private int mVideoWidth = 0;
     private int mVideoHeight = 0;
     private boolean mVideoSeekDragging = false;
-    private boolean mVideoIdentityTransform = false;
-    /** Always-visible thin WHITE progress bar below the video frame (outside
-     *  the picture). Its width follows the real video width, so zooming the
-     *  canvas or switching fit modes keeps the two aligned. */
+    // Progress geometry stays fixed when hover controls appear.
     private FrameLayout mVideoProgressTrack;
     private View mVideoProgressFill;
     private final Runnable mVideoTick = this::updateVideoProgress;
@@ -134,6 +147,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private float mScrollY = 0.0f;
     private GestureDetector mGestureDetector;
     private LruCache<String, Bitmap> mCache;
+    private final Map<String, PageLoad> mPendingPages = new HashMap<>();
+    private final Set<String> mWindowKeys = new HashSet<>();
+    private String mRequestedPageKey;
 
     // Continuous mode: five live pages [index-2 .. index+2] held as strong
     // references (an LruCache would evict them mid-scroll and break the seam).
@@ -144,20 +160,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private float mStripScale = 1.0f;
     private float mStripLastZoom = 1.0f;
     private int mStripGeneration;
+    private long mLastStripRetry;
     private float mLastStripViewWidth = -1f;
 
-    private final ExecutorService mExecutor = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "manga-decode");
-        thread.setDaemon(true);
-        return thread;
-    });
-    /** Preloading runs on its OWN thread so a background decode can never sit
-     *  in front of the page the user just turned to (that caused black frames). */
-    private final ExecutorService mPreloadExecutor = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "manga-preload");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ThreadPoolExecutor mExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+                Thread thread = new Thread(runnable, "manga-decode");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private final ThreadPoolExecutor mPreloadExecutor = new ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+                Thread thread = new Thread(() -> {
+                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                    runnable.run();
+                }, "manga-page-window");
+                thread.setDaemon(true);
+                return thread;
+            });
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     private final Runnable mAutoTick = this::onAutoTick;
     private final Runnable mHideHint = () -> {
@@ -254,10 +274,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 applyVideoTransform();
             }
         });
-        mVideoFitMode = Math.max(0, Math.min(VIDEO_FIT_LABELS.length - 1,
-                mSettings.integer(MangaSettings.READER_VIDEO_FIT)));
-        mVideoZoom = clamp(mSettings.getFloat(MangaSettings.READER_VIDEO_ZOOM, 1.0f),
-                0.5f, 4.0f);
+        // Each video opens fully fitted; only explicit controls write preferences.
+        mVideoFitMode = 0;
+        mVideoZoom = 1.0f;
         setupVideoBar();
         setupVideoProgressTrack();
 
@@ -472,6 +491,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mCache != null) {
             mCache.evictAll();
         }
+        for (PageLoad load : mPendingPages.values()) {
+            load.cancelled = true;
+        }
+        mPendingPages.clear();
+        mPreloadExecutor.getQueue().clear();
+        mWindowKeys.clear();
+        mRequestedPageKey = null;
         mPages.clear();
         mIndex = 0;
         mZoom = 1.0f;
@@ -553,6 +579,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final int generation = ++mLoadGeneration;
         final int stripGeneration = ++mStripGeneration;
         mIndex = index;
+        mRequestedPageKey = null;
         mVideoCompleted = false;
         mZoom = 1.0f;
         mPanX = 0f;
@@ -581,6 +608,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         applyDisplaySettings();
         mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
         mGotoDialog.setVisibility(GONE);
+        preloadNext();
 
         if (MangaSettings.hasExtension(page.getName(), mSettings.videoExtensions())) {
             // Minimal, proven path (same as the build where video worked):
@@ -590,9 +618,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
             setStripVisible(false);
-            showVideoBar(true);
+            mVideoFitMode = 0;
+            mVideoZoom = 1.0f;
+            mVideoWidth = 0;
+            mVideoHeight = 0;
+            mVideoRect.setEmpty();
+            mLastVideoTransformLog = null;
+            mVideoPointerInWidget = false;
+            showVideoBar(false);
+            updateVideoControls();
+            if (mVideoSeek != null) {
+                mVideoSeek.setProgress(0);
+                mVideoTime.setText("00:00 / 00:00");
+            }
             if (mVideoProgressTrack != null) {
-                mVideoProgressTrack.setVisibility(VISIBLE);
+                mVideoProgressTrack.setVisibility(GONE);
                 updateVideoProgressTrackFill();
             }
             if (mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
@@ -622,9 +662,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (tiled) {
             // Deliberately not cached in the Bitmap LruCache: a set of tiles can
             // be several hundred MB and must not evict all the small pages.
-            mCurrent = null;
-            mPageImage.setImageDrawable(null);
+            Bitmap preview = mCache.get(cacheKey);
+            mCurrent = preview;
+            mPageImage.setImageBitmap(preview);
+            if (preview != null) {
+                mDisplayWidth = preview.getWidth();
+                mDisplayHeight = preview.getHeight();
+                mPageImage.setVisibility(VISIBLE);
+                setStripVisible(false);
+                applyImageTransform();
+            }
             mExecutor.execute(() -> {
+                if (generation != mLoadGeneration || mDestroyed) {
+                    return;
+                }
                 final Bitmap[] tiles = decodePageTiles(page);
                 // Some formats (e.g. certain WebP/GIF variants) have no region
                 // decoder. Fall back to a single sampled bitmap rather than
@@ -661,6 +712,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mDisplayWidth = totalW;
                     mDisplayHeight = totalH;
                     mTiledPage = true;
+                    mPageImage.setVisibility(GONE);
+                    setStripVisible(true);
                     mStripView.setTiles(tiles, null);
                     applyImageTransform();
                     // The strip view may not have been measured yet when it
@@ -672,50 +725,74 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         Bitmap cached = mCache.get(cacheKey);
+        Log.i(TAG, "page cache " + (cached == null ? "miss" : "hit")
+                + " index=" + mIndex + " pending=" + mPendingPages.size());
         if (cached != null && !cached.isRecycled()) {
-            mCurrent = cached;
-            mDisplayWidth = cached.getWidth();
-            mDisplayHeight = cached.getHeight();
-            if (continuous) {
-                rebuildStrip(cached, stripGeneration);
-            } else {
-                mPageImage.setImageBitmap(safeForImageView(cached));
-                mPageImage.post(this::applyImageTransform);
-            }
-            finishPageLoad(generation);
+            displayLoadedPage(cached);
             return;
         }
+        mCurrent = null;
         if (!continuous) {
             mPageImage.setImageDrawable(null);
         }
+        mRequestedPageKey = cacheKey;
+    }
+
+    private void displayLoadedPage(Bitmap bitmap) {
+        mRequestedPageKey = null;
+        mCurrent = bitmap;
+        if (bitmap != null) {
+            mDisplayWidth = bitmap.getWidth();
+            mDisplayHeight = bitmap.getHeight();
+            if (isContinuous()) {
+                rebuildStrip(bitmap, mStripGeneration);
+            } else {
+                mPageImage.setImageBitmap(safeForImageView(bitmap));
+                applyImageTransform();
+                restorePageDetail(bitmap);
+            }
+        } else {
+            showHint("无法解码：" + mPages.get(mIndex).getName());
+        }
+        finishPageLoad(mLoadGeneration);
+    }
+
+    private void restorePageDetail(Bitmap preview) {
+        if (pageCacheBudget() >= SINGLE_BITMAP_LIMIT) {
+            return;
+        }
+        File first = mPages.get(mIndex);
+        File second = mDoublePage && mIndex + 1 < mPages.size() && !isVideoIndex(mIndex + 1)
+                ? mPages.get(mIndex + 1) : null;
+        int[] dimensions = MangaImageDecoder.cachedDimensions(first);
+        if (second == null && (dimensions == null
+                || (dimensions[0] <= preview.getWidth() && dimensions[1] <= preview.getHeight()))) {
+            return;
+        }
+        final int generation = mLoadGeneration;
+        final boolean crop = mSettings.bool(MangaSettings.READER_CROP_BORDERS);
         mExecutor.execute(() -> {
-            final Bitmap bitmap = continuous ? decodePage(page, CONTINUOUS_PAGE_BYTES) : decodeDisplay(mIndex);
+            Bitmap detail = decodeDisplay(first, second, SINGLE_BITMAP_LIMIT, crop,
+                    () -> mDestroyed || generation != mLoadGeneration);
             mMainHandler.post(() -> {
-                if (mDestroyed || generation != mLoadGeneration) {
+                if (mDestroyed || generation != mLoadGeneration || mCurrent != preview
+                        || detail == null) {
                     return;
                 }
-                mCurrent = bitmap;
-                if (bitmap != null) {
-                    mDisplayWidth = bitmap.getWidth();
-                    mDisplayHeight = bitmap.getHeight();
-                    mCache.put(cacheKey, bitmap);
-                    if (continuous) {
-                        rebuildStrip(bitmap, stripGeneration);
-                    } else {
-                        mPageImage.setImageBitmap(safeForImageView(bitmap));
-                        mPageImage.post(this::applyImageTransform);
-                    }
-                } else {
-                    showHint("无法解码：" + page.getName());
-                }
-                finishPageLoad(generation);
+                // Keep the cached preview on screen until full detail is ready; never clear between them.
+                mCurrent = detail;
+                mDisplayWidth = detail.getWidth();
+                mDisplayHeight = detail.getHeight();
+                mPageImage.setImageBitmap(safeForImageView(detail));
+                applyImageTransform();
+                Log.i(TAG, "page detail index=" + mIndex + " size="
+                        + detail.getWidth() + "x" + detail.getHeight());
             });
         });
     }
 
     private void finishPageLoad(int generation) {
         applyTransition();
-        preloadNext();
         scheduleAuto();
         Log.i(TAG, "showPage " + (mIndex + 1) + "/" + mPages.size()
                 + " gen=" + generation);
@@ -743,7 +820,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (bitmap == null || bitmap.isRecycled()) {
             return bitmap;
         }
-        long bytes = (long) bitmap.getWidth() * bitmap.getHeight() * 4L;
+        long bytes = bitmap.getAllocationByteCount();
         if (bytes <= SINGLE_BITMAP_LIMIT) {
             return bitmap;
         }
@@ -765,7 +842,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private Bitmap decodePage(File file, long byteBudget) {
+        return decodePage(file, byteBudget, mSettings.bool(MangaSettings.READER_CROP_BORDERS));
+    }
+
+    private Bitmap decodePage(File file, long byteBudget, boolean crop) {
         try {
+            if (MangaImageDecoder.isAvif(file)) {
+                Bitmap bitmap = MangaImageDecoder.decodeAvifWithinBudget(file, byteBudget);
+                return bitmap != null && crop ? cropBorders(bitmap) : bitmap;
+            }
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
             MangaImageDecoder.decodeBounds(file, bounds);
@@ -794,7 +879,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
             Bitmap bitmap = MangaImageDecoder.decodeSampled(file, sample, null);
-            if (bitmap != null && mSettings.bool(MangaSettings.READER_CROP_BORDERS)) {
+            if (bitmap != null && crop) {
                 Bitmap cropped = cropBorders(bitmap);
                 if (cropped != null && cropped != bitmap) {
                     return cropped;
@@ -808,6 +893,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     /** True when a page cannot be drawn as a single Bitmap and must be tiled. */
     private boolean needsTiling(File file) {
+        // Android's region decoder cannot tile AVIF; never fully decode it on the UI thread.
+        if (MangaImageDecoder.isAvif(file)) {
+            return false;
+        }
         try {
             BitmapFactory.Options bounds = new BitmapFactory.Options();
             bounds.inJustDecodeBounds = true;
@@ -937,30 +1026,126 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return (r > 238 && g > 238 && b > 238) || (r < 18 && g < 18 && b < 18);
     }
 
+    private int preloadRadius() {
+        int radius = Math.max(0, Math.min(4, mSettings.integer(MangaSettings.READER_PRELOAD)));
+        return isContinuous() ? Math.max(2, radius) : radius;
+    }
+
+    private long pageCacheBudget() {
+        long budget = (long) mCache.maxSize() * 1024 / (2 * preloadRadius() + 1);
+        return Math.min(isContinuous() ? CONTINUOUS_PAGE_BYTES : SINGLE_BITMAP_LIMIT, budget);
+    }
+
     private void preloadNext() {
-        if (isContinuous()) {
-            return; // continuous mode keeps its own +/-2 pages alive
+        if (mDestroyed || mPages.isEmpty()) {
+            return;
         }
-        int count = Math.max(0, Math.min(4, mSettings.integer(MangaSettings.READER_PRELOAD)));
-        for (int i = 1; i <= count; i++) {
-            final int target = mIndex + i;
-            if (target >= mPages.size()) {
-                break;
+        List<PageLoad> ordered = new ArrayList<>();
+        mWindowKeys.clear();
+        addWindowPage(mIndex, ordered);
+        int direction = mSettings.integer(MangaSettings.READER_DIRECTION) == 1 ? -1 : 1;
+        for (int distance = 1; distance <= preloadRadius(); distance++) {
+            addWindowPage(mIndex + direction * distance, ordered);
+        }
+        for (int distance = 1; distance <= preloadRadius(); distance++) {
+            addWindowPage(mIndex - direction * distance, ordered);
+        }
+        for (String key : new ArrayList<>(mPendingPages.keySet())) {
+            if (!mWindowKeys.contains(key)) {
+                mPendingPages.remove(key).cancelled = true;
             }
-            final File file = mPages.get(target);
-            final String key = displayKey(target);
-            if (mCache.get(key) != null
-                    || MangaSettings.hasExtension(file.getName(), mSettings.videoExtensions())) {
-                continue;
+        }
+        for (String key : mCache.snapshot().keySet()) {
+            if (!mWindowKeys.contains(key)) {
+                mCache.remove(key);
             }
-            mPreloadExecutor.execute(() -> {
-                Bitmap bitmap = decodeDisplay(target);
+        }
+        mPreloadExecutor.getQueue().clear();
+        mExecutor.getQueue().removeIf(task -> task instanceof PageLoad);
+        for (PageLoad load : ordered) {
+            if (!load.started) {
+                if (load.index == mIndex) {
+                    mExecutor.execute(load);
+                } else {
+                    mPreloadExecutor.execute(load);
+                }
+            }
+        }
+        Log.i(TAG, "preload window index=" + mIndex + " radius=" + preloadRadius()
+                + " cached=" + mCache.snapshot().size() + " pending=" + mPendingPages.size());
+    }
+
+    private void addWindowPage(int index, List<PageLoad> ordered) {
+        if (index < 0 || index >= mPages.size() || isVideoIndex(index)) {
+            return;
+        }
+        String key = isContinuous() ? stripKey(index) : displayKey(index);
+        mWindowKeys.add(key);
+        if (mCache.get(key) != null) {
+            return;
+        }
+        PageLoad load = mPendingPages.get(key);
+        if (load == null) {
+            File second = mDoublePage && !isContinuous() && index + 1 < mPages.size()
+                    && !isVideoIndex(index + 1) ? mPages.get(index + 1) : null;
+            load = new PageLoad(key, index, mPages.get(index), second,
+                    pageCacheBudget(), mSettings.bool(MangaSettings.READER_CROP_BORDERS));
+            mPendingPages.put(key, load);
+        }
+        ordered.add(load);
+    }
+
+    private final class PageLoad implements Runnable {
+        final String key;
+        final int index;
+        final File first;
+        final File second;
+        final long budget;
+        final boolean crop;
+        volatile boolean started;
+        volatile boolean cancelled;
+
+        PageLoad(String key, int index, File first, File second, long budget, boolean crop) {
+            this.key = key;
+            this.index = index;
+            this.first = first;
+            this.second = second;
+            this.budget = budget;
+            this.crop = crop;
+        }
+
+        @Override
+        public void run() {
+            synchronized (this) {
+                if (started || cancelled) {
+                    return;
+                }
+                started = true;
+            }
+            long start = android.os.SystemClock.uptimeMillis();
+            Bitmap bitmap = decodeDisplay(first, second, budget, crop, () -> cancelled);
+            mMainHandler.post(() -> {
+                if (mDestroyed || cancelled || mPendingPages.get(key) != this) {
+                    return;
+                }
+                mPendingPages.remove(key);
+                if (!mWindowKeys.contains(key)) {
+                    return;
+                }
                 if (bitmap != null) {
-                    mMainHandler.post(() -> {
-                        if (!mDestroyed && mCache.get(key) == null) {
-                            mCache.put(key, bitmap);
-                        }
-                    });
+                    mCache.put(key, bitmap);
+                }
+                Log.i(TAG, "page decoded index=" + index + " ms="
+                        + (android.os.SystemClock.uptimeMillis() - start)
+                        + " bytes=" + (bitmap == null ? 0 : bitmap.getAllocationByteCount()));
+                if (key.equals(mRequestedPageKey)) {
+                    displayLoadedPage(bitmap);
+                } else if (isContinuous() && key.equals(stripKey(index))) {
+                    int slot = index - mIndex + 2;
+                    if (slot >= 0 && slot < mStripSegments.length) {
+                        mStripSegments[slot] = bitmap;
+                        updateStripTransform();
+                    }
                 }
             });
         }
@@ -974,7 +1159,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private String stripKey(int index) {
-        return "strip:" + (mFolder == null ? "" : mFolder.getAbsolutePath()) + ":" + index;
+        return "strip:" + (mFolder == null ? "" : mFolder.getAbsolutePath()) + ":" + index
+                + ":" + pageCacheBudget() + ":" + mSettings.bool(MangaSettings.READER_CROP_BORDERS);
     }
 
     private void setStripVisible(boolean visible) {
@@ -1014,6 +1200,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void loadStripNeighbours(int generation) {
+        boolean retry = false;
         for (int slot = 0; slot < 5; slot++) {
             if (slot == 2 || mStripSegments[slot] != null) {
                 continue;
@@ -1034,22 +1221,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 updateStripTransform();
                 continue;
             }
-            mExecutor.execute(() -> {
-                final Bitmap bitmap = decodePage(file, CONTINUOUS_PAGE_BYTES);
-                if (bitmap != null) {
-                    mCache.put(key, bitmap);
-                }
-                mMainHandler.post(() -> {
-                    if (mDestroyed || generation != mStripGeneration || !isContinuous()) {
-                        return;
-                    }
-                    int expected = mIndex + (targetSlot - 2);
-                    if (expected == targetIndex) {
-                        mStripSegments[targetSlot] = bitmap;
-                        updateStripTransform();
-                    }
-                });
-            });
+            retry |= !mPendingPages.containsKey(key);
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (retry && now - mLastStripRetry >= 1000L) {
+            mLastStripRetry = now;
+            preloadNext();
         }
     }
 
@@ -1204,6 +1381,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // Keep the SAME scale and offset across a seam: recomputing the width
         // scale here would rescale the offset and make the picture jump.
         mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+        preloadNext();
         loadStripNeighbours(mStripGeneration);
         Log.d(TAG, "continuous shift to " + (mIndex + 1) + "/" + mPages.size());
     }
@@ -1461,7 +1639,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private boolean isVideoPlaying() {
         try {
-            return mMediaPlayer != null && mMediaPlayer.isPlaying();
+            return mVideoPrepared && mMediaPlayer != null && mMediaPlayer.isPlaying();
         } catch (Exception e) {
             return false;
         }
@@ -1504,6 +1682,61 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     public void onPointerPosition(float x, float y) {
         mPointerX = x;
         mPointerY = y;
+        // Activity forwards other widgets' coordinates too; dispatch establishes pointer ownership.
+        if (mVideoPointerInWidget) {
+            updateVideoPointer(x - getBorderWidth(), y - getBorderWidth());
+        }
+    }
+
+    @Override
+    public boolean dispatchHoverEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
+            mVideoPointerInWidget = false;
+            mVideoPointerX = mVideoPointerY = -1f;
+            updateVideoBarVisibility();
+        } else {
+            mVideoPointerInWidget = true;
+            updateVideoPointer(event.getX(), event.getY());
+        }
+        // Observe the widget's event, not child hover exits when crossing buttons.
+        return super.dispatchHoverEvent(event);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        mVideoPointerInWidget = event.getActionMasked() != MotionEvent.ACTION_CANCEL;
+        updateVideoPointer(event.getX(), event.getY());
+        boolean handled = super.dispatchTouchEvent(event);
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            mVideoSeekDragging = false;
+            updateVideoBarVisibility();
+        }
+        return handled;
+    }
+
+    private void updateVideoPointer(float x, float y) {
+        if (mStage == null) {
+            return;
+        }
+        mVideoStageOffset.set(0, 0, 0, 0);
+        offsetDescendantRectToMyCoords(mStage, mVideoStageOffset);
+        mVideoPointerX = x - mVideoStageOffset.left;
+        mVideoPointerY = y - mVideoStageOffset.top;
+        updateVideoBarVisibility();
+    }
+
+    private void updateVideoBarVisibility() {
+        if (mVideoBar == null) {
+            return;
+        }
+        boolean inside = mVideoPointerInWidget
+                && mVideoRect.contains(mVideoPointerX, mVideoPointerY);
+        boolean atBottom = inside && mVideoPointerY >= mVideoRect.bottom - dp(32);
+        FrameLayout.LayoutParams barLp = (FrameLayout.LayoutParams) mVideoBar.getLayoutParams();
+        boolean overBar = inside && mVideoBar.getVisibility() == VISIBLE
+                && mVideoPointerY >= barLp.topMargin;
+        showVideoBar(isVideoPage() && !mVideoRect.isEmpty()
+                && (mVideoSeekDragging || atBottom || overBar));
     }
 
     /** TEMPORARY image zoom: scales only the picture content inside a
@@ -1715,31 +1948,36 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         String path = mFolder == null ? "" : mFolder.getAbsolutePath();
         String name = mPages != null && index >= 0 && index < mPages.size()
                 ? mPages.get(index).getAbsolutePath() : "";
-        return (mDoublePage ? "d:" : "s:") + path + ":" + index + ":" + name;
+        return (mDoublePage ? "d:" : "s:") + path + ":" + index + ":" + name
+                + ":" + pageCacheBudget() + ":" + mSettings.bool(MangaSettings.READER_CROP_BORDERS);
     }
 
-    /** Builds the bitmap to display for a page index (single, or a 2-page spread). */
-    private Bitmap decodeDisplay(int index) {
-        if (mDoublePage && mSettings.integer(MangaSettings.READER_DIRECTION) != 2) {
-            Bitmap bmA = decodePage(mPages.get(index));
-            if (bmA != null && index + 1 < mPages.size()) {
-                Bitmap bmB = decodePage(mPages.get(index + 1));
-                if (bmB != null) {
-                    boolean aPortrait = bmA.getHeight() >= bmA.getWidth();
-                    boolean bPortrait = bmB.getHeight() >= bmB.getWidth();
-                    // Only two PORTRAIT pages form a spread. A landscape page
-                    // (either one) stays alone and centred, as before.
-                    if (aPortrait && bPortrait) {
-                        return combineSideBySide(bmA, bmB);
-                    }
-                }
-            }
-            return bmA;
+    private Bitmap decodeDisplay(File first, File second, long budget, boolean crop,
+                                 java.util.function.BooleanSupplier cancelled) {
+        if (cancelled.getAsBoolean()) {
+            return null;
         }
-        return decodePage(mPages.get(index));
+        Bitmap a = decodePage(first, budget, crop);
+        if (a == null || second == null || cancelled.getAsBoolean()) {
+            return a;
+        }
+        Bitmap b = decodePage(second, budget, crop);
+        if (b == null) {
+            return a;
+        }
+        if (a.getHeight() >= a.getWidth() && b.getHeight() >= b.getWidth()) {
+            Bitmap combined = combineSideBySide(a, b, budget);
+            if (combined != a) {
+                a.recycle();
+            }
+            b.recycle();
+            return combined;
+        }
+        b.recycle();
+        return a;
     }
 
-    private Bitmap combineSideBySide(Bitmap a, Bitmap b) {
+    private Bitmap combineSideBySide(Bitmap a, Bitmap b, long budget) {
         try {
             int h = Math.max(a.getHeight(), b.getHeight());
             int wa = Math.round(a.getWidth() * ((float) h / a.getHeight()));
@@ -1750,8 +1988,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // a silent fallback to a single page (or a page that won't open).
             final int MAX = 4096;
             int totalW = wa + wb;
-            if (h > MAX || totalW > MAX) {
-                float scale = Math.min((float) MAX / h, (float) MAX / totalW);
+            if (h > MAX || totalW > MAX || (long) totalW * h * 4L > budget) {
+                float scale = Math.min(Math.min((float) MAX / h, (float) MAX / totalW),
+                        (float) Math.sqrt((double) budget / ((long) totalW * h * 4L)));
                 h = Math.max(1, (int) (h * scale));
                 wa = Math.max(1, (int) (wa * scale));
                 wb = Math.max(1, (int) (wb * scale));
@@ -2074,7 +2313,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     public void persistState() {
         MediaPlayer player = mMediaPlayer;
-        if (player != null && !mVideoCompleted && mSettings.bool(MangaSettings.PROGRESS_ENABLED)
+        if (mVideoPrepared && player != null && !mVideoCompleted
+                && mSettings.bool(MangaSettings.PROGRESS_ENABLED)
                 && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
                 && mIndex >= 0 && mIndex < mPages.size()) {
             try {
@@ -2102,9 +2342,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     // -------------------------------------------------------------- video
 
-    /** A compact status/control strip shown only for video pages. It is built
-     *  in code (no new layout ids) and sits at the bottom of the picture panel,
-     *  directly above the tray control bar. */
+    /** Controls overlay the video's bottom; they never reserve canvas space. */
     private static final int VIDEO_SEEK_STEP_MS = 5000;
     private static final String[] VIDEO_FIT_LABELS = {
             "等比适应屏幕", "等比适应高度", "等比适应宽度", "原始比例(不放大)"};
@@ -2113,16 +2351,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         LinearLayout bar = new LinearLayout(getContext());
         bar.setOrientation(LinearLayout.VERTICAL);
         bar.setBackgroundColor(0xE6202028);
-        bar.setPadding(dp(10), dp(6), dp(10), dp(6));
+        bar.setPadding(dp(4), dp(2), dp(4), dp(2));
         bar.setClickable(true);
         bar.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
             if (isVideoPage()) {
-                applyVideoTransform();
+                layoutVideoOverlays();
             }
         });
 
-        // Two short rows instead of one long one: nine buttons in a single
-        // line get clipped by the VR panel width.
         LinearLayout row1 = new LinearLayout(getContext());
         row1.setOrientation(LinearLayout.HORIZONTAL);
         row1.setGravity(Gravity.CENTER_VERTICAL);
@@ -2133,7 +2369,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         bar.addView(row1, rowLp);
-        bar.addView(row2, rowLp);
 
         mVideoPlayButton = videoButton("▶ 播放");
         mVideoPlayButton.setOnClickListener(v -> toggleVideoPlay());
@@ -2151,13 +2386,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoTime.setText("00:00 / 00:00");
         mVideoTime.setTextColor(0xFFE0E0E8);
         mVideoTime.setTextSize(15f);
-        mVideoTime.setPadding(dp(10), 0, dp(10), 0);
-        row1.addView(mVideoTime);
+        mVideoTime.setGravity(Gravity.CENTER);
+        bar.addView(mVideoTime, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         mVideoSeek = new SeekBar(getContext());
         mVideoSeek.setMax(1000);
         mVideoSeek.setLayoutParams(new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
         mVideoSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -2165,8 +2401,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     return;
                 }
                 MediaPlayer player = mMediaPlayer;
-                if (player != null) {
+                if (mVideoPrepared && player != null) {
                     try {
+                        mVideoCompleted = false;
                         player.seekTo((int) (player.getDuration() * (long) progress / 1000L));
                     } catch (Exception ignored) {
                     }
@@ -2181,13 +2418,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = false;
+                updateVideoBarVisibility();
             }
         });
-        row1.addView(mVideoSeek);
+        bar.addView(mVideoSeek);
 
         mVideoFitButton = videoButton(VIDEO_FIT_LABELS[mVideoFitMode]);
         mVideoFitButton.setOnClickListener(v -> cycleVideoFit());
-        row2.addView(mVideoFitButton);
+        bar.addView(mVideoFitButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        bar.addView(row2, rowLp);
 
         Button zoomOut = videoButton("缩放 −");
         zoomOut.setOnClickListener(v -> adjustVideoZoom(-0.5f));
@@ -2201,26 +2441,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoZoomText.setTextColor(0xFFFFD080);
         mVideoZoomText.setTextSize(15f);
         mVideoZoomText.setPadding(dp(6), 0, dp(6), 0);
-        row2.addView(mVideoZoomText);
+        mVideoZoomText.setGravity(Gravity.CENTER);
+        row2.addView(mVideoZoomText, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView tip = new TextView(getContext());
-        tip.setText("视频页：摇杆 ← → 快退/快进 5 秒");
-        tip.setTextColor(0xFF9A9AA8);
-        tip.setTextSize(14f);
-        row2.addView(tip);
-
-        bar.setVisibility(GONE);
-        addView(bar, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL));
+        // INVISIBLE still measures the bar, so revealing it cannot move the video.
+        bar.setVisibility(INVISIBLE);
+        mStage.addView(bar, new FrameLayout.LayoutParams(
+                1, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT));
         mVideoBar = bar;
         updateVideoControls();
     }
 
-    /** Thin, always-visible WHITE progress bar sitting just below the video
-     *  frame, outside the picture. Only white is used: a faint white track
-     *  plus a solid white fill. */
+    /** Thin white track sits on the video's bottom edge, above the controls. */
     private void setupVideoProgressTrack() {
         FrameLayout track = new FrameLayout(getContext());
         track.setBackgroundColor(0x44FFFFFF);
@@ -2235,26 +2468,38 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         track.addView(fill);
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                1, dp(4), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+                1, dp(2), Gravity.TOP | Gravity.LEFT);
         track.setLayoutParams(lp);
         track.setVisibility(GONE);
-        addView(track);
+        mStage.addView(track);
         mVideoProgressTrack = track;
         mVideoProgressFill = fill;
     }
 
-    private void layoutVideoProgressTrack(int videoW, int top) {
-        if (mVideoProgressTrack == null) {
+    private void layoutVideoOverlays() {
+        if (mVideoBar == null || mVideoProgressTrack == null || mVideoRect.isEmpty()) {
             return;
         }
-        FrameLayout.LayoutParams lp =
-                (FrameLayout.LayoutParams) mVideoProgressTrack.getLayoutParams();
-        if (lp.width != videoW || lp.topMargin != top) {
-            lp.width = videoW;
-            lp.topMargin = top;
-            mVideoProgressTrack.setLayoutParams(lp);
-        }
+        int left = Math.round(mVideoRect.left);
+        int right = Math.round(mVideoRect.right);
+        int bottom = Math.round(mVideoRect.bottom);
+        int width = Math.max(1, right - left);
+        int trackHeight = Math.max(1, dp(2));
+        setVideoOverlayBounds(mVideoProgressTrack, left, bottom - trackHeight, width);
+        setVideoOverlayBounds(mVideoBar, left,
+                Math.max(Math.round(mVideoRect.top), bottom - mVideoBar.getMeasuredHeight()), width);
+        mVideoProgressTrack.setVisibility(isVideoPage() ? VISIBLE : GONE);
         updateVideoProgressTrackFill();
+    }
+
+    private void setVideoOverlayBounds(View view, int left, int top, int width) {
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) view.getLayoutParams();
+        if (lp.width != width || lp.leftMargin != left || lp.topMargin != top) {
+            lp.width = width;
+            lp.leftMargin = left;
+            lp.topMargin = top;
+            view.setLayoutParams(lp);
+        }
     }
 
     private void updateVideoProgressTrackFill() {
@@ -2266,7 +2511,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int total = Math.max(1, tlp.width);
         float fraction = 0f;
         MediaPlayer player = mMediaPlayer;
-        if (player != null) {
+        if (mVideoPrepared && player != null) {
             try {
                 int duration = player.getDuration();
                 if (duration > 0) {
@@ -2292,10 +2537,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         b.setTextSize(15f);
         b.setTextColor(0xFFFFFFFF);
         b.setBackgroundColor(0xFF33333F);
-        b.setMinWidth(dp(96));
-        b.setMinimumWidth(dp(96));
-        b.setMinHeight(dp(48));
-        b.setPadding(dp(6), 0, dp(6), 0);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(dp(40));
+        b.setMinimumHeight(dp(40));
+        b.setPadding(dp(2), 0, dp(2), 0);
+        b.setLayoutParams(new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         return b;
     }
 
@@ -2303,9 +2551,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mVideoBar == null) {
             return;
         }
-        mVideoBar.setVisibility(visible ? VISIBLE : GONE);
-        // The progress tick is independent of the strip: the thin white bar
-        // below the frame keeps updating while the strip is hidden.
+        int visibility = visible ? VISIBLE : INVISIBLE;
+        if (mVideoBar.getVisibility() == visibility) {
+            return;
+        }
+        mVideoBar.setVisibility(visibility);
+        // The thin track and its tick are independent of control visibility.
         if (visible) {
             updateVideoControls();
             updateVideoProgressTrackFill();
@@ -2317,7 +2568,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mVideoPlayButton != null) {
+            mVideoPlayButton.setEnabled(mMediaPlayer == null || mVideoPrepared);
             mVideoPlayButton.setText(isVideoPlaying() ? "⏸ 暂停" : "▶ 播放");
+        }
+        if (mVideoSeek != null) {
+            mVideoSeek.setEnabled(mVideoPrepared && mMediaPlayer != null);
         }
         if (mVideoFitButton != null) {
             mVideoFitButton.setText(VIDEO_FIT_LABELS[mVideoFitMode]);
@@ -2333,7 +2588,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         updateVideoProgressTrackFill();
         MediaPlayer player = mMediaPlayer;
         boolean barVisible = mVideoBar != null && mVideoBar.getVisibility() == VISIBLE;
-        if (barVisible && player != null && !mVideoSeekDragging) {
+        if (barVisible && mVideoPrepared && player != null && !mVideoSeekDragging) {
             try {
                 int duration = player.getDuration();
                 int position = player.getCurrentPosition();
@@ -2351,7 +2606,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         // Keep a single chained tick; startVideoTick() removes any pending one.
         mMainHandler.removeCallbacks(mVideoTick);
-        if (isVideoPage() && player != null && !mDestroyed) {
+        if (isVideoPage() && mVideoPrepared && player != null && !mDestroyed) {
             mMainHandler.postDelayed(mVideoTick, 400L);
         }
     }
@@ -2378,20 +2633,38 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             return;
         }
+        if (!mVideoPrepared) {
+            return;
+        }
         try {
             if (player.isPlaying()) {
                 player.pause();
             } else {
-                player.start();
+                startPreparedVideo(player);
             }
         } catch (Exception ignored) {
         }
         updateVideoControls();
     }
 
+    private void startPreparedVideo(MediaPlayer player) {
+        if (!mVideoPrepared || player == null || player != mMediaPlayer
+                || mDestroyed || mVideoPaused || !isVisible()) {
+            return;
+        }
+        try {
+            player.start();
+            mVideoCompleted = false;
+            mMainHandler.removeCallbacks(mHideHint);
+            mHideHint.run();
+        } catch (Exception e) {
+            Log.w(TAG, "video start failed", e);
+        }
+    }
+
     private void seekVideo(int deltaMs) {
         MediaPlayer player = mMediaPlayer;
-        if (player == null) {
+        if (!mVideoPrepared || player == null) {
             return;
         }
         try {
@@ -2399,6 +2672,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             int position = Math.max(0, Math.min(duration,
                     player.getCurrentPosition() + deltaMs));
             player.seekTo(position);
+            mVideoCompleted = false;
         } catch (Exception ignored) {
         }
         updateVideoControls();
@@ -2427,41 +2701,52 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         final float vw = mVideoTexture.getWidth();
         final float vh = mVideoTexture.getHeight();
-        final float controlsHeight = mVideoBar != null && mVideoBar.getVisibility() == VISIBLE
-                ? mVideoBar.getHeight() : 0;
-        final float availableHeight = Math.max(1f, vh - controlsHeight - dp(16));
+        // Fit against the WHOLE canvas, never against space left by controls.
         final float bw = mVideoWidth;
         final float bh = mVideoHeight;
         float scale;
         switch (mVideoFitMode) {
             case 1:
-                scale = availableHeight / bh;
+                scale = vh / bh;
                 break;
             case 2:
                 scale = vw / bw;
                 break;
             case 3:
-                scale = Math.min(1.0f, Math.min(vw / bw, availableHeight / bh));
+                scale = Math.min(1.0f, Math.min(vw / bw, vh / bh));
                 break;
             default:
-                scale = Math.min(vw / bw, availableHeight / bh);
+                scale = Math.min(vw / bw, vh / bh);
                 break;
         }
         scale *= mVideoZoom;
         final float drawWidth = bw * scale;
         final float drawHeight = bh * scale;
         final float left = (vw - drawWidth) / 2f;
-        final float top = (availableHeight - drawHeight) / 2f;
+        final float top = (vh - drawHeight) / 2f;
         Matrix matrix = new Matrix();
         // TextureView already stretches the buffer to its bounds; undo that stretch per axis.
         matrix.setScale(drawWidth / vw, drawHeight / vh);
         matrix.postTranslate(left, top);
         mVideoTexture.setTransform(matrix);
-        layoutVideoProgressTrack(Math.round(Math.min(vw, drawWidth)),
-                Math.round(Math.min(availableHeight, top + drawHeight) + dp(8)));
-        diagnostic("video transform view=" + vw + "x" + vh + " buffer=" + bw + "x" + bh
+        // Explicit zoom may crop the picture; overlays must stay inside the visible viewport.
+        float textureX = mVideoTexture.getX();
+        float textureY = mVideoTexture.getY();
+        mVideoRect.set(textureX + Math.max(0f, left), textureY + Math.max(0f, top),
+                textureX + Math.min(vw, left + drawWidth),
+                textureY + Math.min(vh, top + drawHeight));
+        if (!mVideoRect.intersect(0f, 0f, mStage.getWidth(), mStage.getHeight())) {
+            mVideoRect.setEmpty();
+        }
+        layoutVideoOverlays();
+        updateVideoBarVisibility();
+        String transformLog = "video transform view=" + vw + "x" + vh + " buffer=" + bw + "x" + bh
                 + " draw=" + drawWidth + "x" + drawHeight + " offset=" + left + "," + top
-                + " controls=" + controlsHeight + " fit=" + mVideoFitMode + " zoom=" + mVideoZoom);
+                + " visible=" + mVideoRect + " fit=" + mVideoFitMode + " zoom=" + mVideoZoom;
+        if (!transformLog.equals(mLastVideoTransformLog)) {
+            mLastVideoTransformLog = transformLog;
+            Log.i(TAG, transformLog);
+        }
     }
 
     private int dp(int value) {
@@ -2469,19 +2754,32 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void playVideo(File page) {
-        Log.i(TAG, "playVideo enter surface=" + (mVideoSurface != null && mVideoSurface.isValid())
-                + " destroyed=" + mDestroyed + " file=" + page.getName());
-        if (mVideoSurface == null || !mVideoSurface.isValid() || mDestroyed) {
-            showHint("视频画面尚未就绪");
+        if (mDestroyed || !isVideoPage() || !page.equals(mPages.get(mIndex))) {
             return;
         }
+        // Page opening and surface availability can request the same player concurrently.
+        if (mMediaPlayer != null && page.equals(mVideoPage)) {
+            return;
+        }
+        if (mVideoSurface == null || !mVideoSurface.isValid()) {
+            mPendingVideoPage = page;
+            return; // Normal asynchronous surface creation, not a playback failure.
+        }
+        Log.i(TAG, "playVideo file=" + page.getName());
         stopVideo(false);
+        final int generation = mLoadGeneration;
         final MediaPlayer player = new MediaPlayer();
+        mVideoPrepared = false;
         mMediaPlayer = player;
+        mVideoPage = page;
+        showHint("正在准备视频…");
+        updateVideoControls();
         player.setOnPreparedListener(mp -> {
-            if (player != mMediaPlayer || mDestroyed) {
+            if (player != mMediaPlayer || generation != mLoadGeneration || mDestroyed) {
                 return;
             }
+            // Must precede transforms: size/layout can update progress immediately.
+            mVideoPrepared = true;
             mVideoWidth = mp.getVideoWidth();
             mVideoHeight = mp.getVideoHeight();
             Log.i(TAG, "video prepared " + mVideoWidth + "x" + mVideoHeight
@@ -2497,17 +2795,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mp.seekTo(saved);
                 }
             }
-            mp.start();
+            startPreparedVideo(mp);
+            updateVideoControls();
         });
         player.setOnVideoSizeChangedListener((mp, width, height) -> {
-            if (player == mMediaPlayer && !mDestroyed && width > 0 && height > 0) {
+            if (player == mMediaPlayer && generation == mLoadGeneration
+                    && !mDestroyed && width > 0 && height > 0) {
                 mVideoWidth = width;
                 mVideoHeight = height;
                 applyVideoTransform();
             }
         });
         player.setOnCompletionListener(mp -> {
-            if (player != mMediaPlayer || mDestroyed) {
+            if (player != mMediaPlayer || generation != mLoadGeneration
+                    || !mVideoPrepared || mDestroyed) {
                 return;
             }
             mVideoCompleted = true;
@@ -2518,7 +2819,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         });
         player.setOnErrorListener((mp, what, extra) -> {
-            if (player == mMediaPlayer && !mDestroyed) {
+            if (player == mMediaPlayer && generation == mLoadGeneration && !mDestroyed) {
+                mVideoPrepared = false;
                 // Do NOT auto-advance on error. The next page is often a huge
                 // image, so an unsupported codec turned into a "video failed"
                 // hint followed immediately by a fatal Canvas crash.
@@ -2552,7 +2854,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (savePosition) {
             persistState();
         }
+        mVideoPrepared = false;
         mMediaPlayer = null;
+        mVideoPage = null;
+        mPendingVideoPage = null;
+        mVideoSeekDragging = false;
+        showVideoBar(false);
+        updateVideoControls();
         if (player == null) {
             return;
         }
@@ -2579,9 +2887,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onPause() {
+        mVideoPaused = true;
         persistState();
         MediaPlayer player = mMediaPlayer;
-        if (player != null && isVideoPlaying()) {
+        if (mVideoPrepared && player != null && isVideoPlaying()) {
             try {
                 player.pause();
             } catch (Exception ignored) {
@@ -2592,13 +2901,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onResume() {
+        mVideoPaused = false;
         updateWidget();
         MediaPlayer player = mMediaPlayer;
-        if (isVisible() && player != null && !mVideoCompleted) {
-            try {
-                player.start();
-            } catch (Exception ignored) {
-            }
+        if (isVisible() && mVideoPrepared && player != null && !mVideoCompleted) {
+            startPreparedVideo(player);
         }
         if (isVisible() && mSettings.bool(MangaSettings.READER_AUTO_ADVANCE)) {
             scheduleAuto();
@@ -2612,7 +2919,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             persistState();
             cancelAuto();
             MediaPlayer player = mMediaPlayer;
-            if (player != null && isVideoPlaying()) {
+            if (mVideoPrepared && player != null && isVideoPlaying()) {
                 try {
                     player.pause();
                 } catch (Exception ignored) {
@@ -2644,31 +2951,44 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onSurfaceTextureAvailable(SurfaceTexture surface, int width, int height) {
-        if (mDestroyed) {
+        if (mDestroyed || surface != mVideoTexture.getSurfaceTexture()) {
             return;
         }
-        if (mVideoSurface != null) {
-            mVideoSurface.release();
+        if (surface != mVideoSurfaceTexture || mVideoSurface == null) {
+            if (mVideoSurface != null) {
+                stopVideo(true);
+                mVideoSurface.release();
+            }
+            mVideoSurfaceTexture = surface;
+            mVideoSurface = new Surface(surface);
         }
-        mVideoSurface = new Surface(surface);
         Log.i(TAG, "surface available " + width + "x" + height + " video=" + isVideoPage());
-        if (isVideoPage() && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+        if (isVideoPage() && (mPages.get(mIndex).equals(mPendingVideoPage)
+                || mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY))) {
             playVideo(mPages.get(mIndex));
         }
     }
 
     @Override
     public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
-        applyVideoTransform();
+        if (!mDestroyed && surface == mVideoSurfaceTexture) {
+            applyVideoTransform();
+        }
     }
 
     @Override
     public boolean onSurfaceTextureDestroyed(SurfaceTexture surface) {
+        if (surface != mVideoSurfaceTexture) {
+            return true;
+        }
+        File pending = mVideoPage != null ? mVideoPage : mPendingVideoPage;
         stopVideo(true);
+        mPendingVideoPage = mDestroyed ? null : pending;
         if (mVideoSurface != null) {
             mVideoSurface.release();
             mVideoSurface = null;
         }
+        mVideoSurfaceTexture = null;
         return true;
     }
 
