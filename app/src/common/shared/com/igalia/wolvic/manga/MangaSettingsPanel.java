@@ -420,6 +420,7 @@ public class MangaSettingsPanel extends LinearLayout {
         addButton(sub, "阅读", v -> open("READER"));
         addButton(sub, "图源", v -> open("SOURCES"));
         addButton(sub, "下载", v -> open("DOWNLOADS"));
+        sub = addRow();
         addButton(sub, "备份与进度", v -> open("BACKUP"));
         addButton(sub, "高级", v -> open("ADVANCED"));
 
@@ -427,6 +428,7 @@ public class MangaSettingsPanel extends LinearLayout {
         LinearLayout sources = addRow();
         addButton(sources, "本地文件夹", v -> open("LOCAL"));
         addButton(sources, "SMB 共享", v -> open("SMB"));
+        sources = addRow();
         addButton(sources, "网盘 WebDAV", v -> open("WEBDAV"));
         addButton(sources, "漫画源扩展", v -> open("EXTENSIONS"));
     }
@@ -490,12 +492,12 @@ public class MangaSettingsPanel extends LinearLayout {
         button.setTextSize(15f);
         button.setTextColor(0xFFFFFFFF);
         button.setBackgroundColor(0xFF2A2A33);
-        button.setMinWidth(dp(100));
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
         button.setMinHeight(dp(50));
         button.setOnClickListener(listener);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         lp.setMargins(dp(4), dp(4), dp(4), dp(4));
         row.addView(button, lp);
         return button;

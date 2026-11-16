@@ -247,22 +247,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     (v, l, t, r, b, ol, ot, or_, ob) -> updateStripTransform());
         }
         setupReaderDrag();
+        mVideoTexture.setOpaque(false);
         mVideoTexture.setSurfaceTextureListener(this);
+        mVideoTexture.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
+            if (isVideoPage()) {
+                applyVideoTransform();
+            }
+        });
         mVideoFitMode = Math.max(0, Math.min(VIDEO_FIT_LABELS.length - 1,
                 mSettings.integer(MangaSettings.READER_VIDEO_FIT)));
         mVideoZoom = clamp(mSettings.getFloat(MangaSettings.READER_VIDEO_ZOOM, 1.0f),
                 0.5f, 4.0f);
         setupVideoBar();
         setupVideoProgressTrack();
-        // The video control strip stays out of the way until the pointer is
-        // aimed at the bottom of the picture.
-        mRootView.setOnHoverListener((v, event) -> {
-            if (isVideoPage()) {
-                onVideoBarHover(event.getY(), v.getHeight(),
-                        event.getAction() == MotionEvent.ACTION_HOVER_EXIT);
-            }
-            return false;
-        });
 
         int cacheKb = Math.max(16, mSettings.integer(MangaSettings.CACHE_MB)) * 1024;
         mCache = new LruCache<String, Bitmap>(cacheKb) {
@@ -593,7 +590,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
             setStripVisible(false);
-            showVideoBar(false);
+            showVideoBar(true);
             if (mVideoProgressTrack != null) {
                 mVideoProgressTrack.setVisibility(VISIBLE);
                 updateVideoProgressTrackFill();
@@ -1445,8 +1442,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void handleTap(float x) {
-        if (isVideoPage() && (mMediaPlayer == null || !isVideoPlaying())) {
-            playVideo(mPages.get(mIndex));
+        if (isVideoPage()) {
+            toggleVideoPlay();
             return;
         }
         if (!mSettings.bool(MangaSettings.READER_TAP_ZONES)) {
@@ -2118,16 +2115,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         bar.setBackgroundColor(0xE6202028);
         bar.setPadding(dp(10), dp(6), dp(10), dp(6));
         bar.setClickable(true);
-        // Keep the strip visible while the pointer is on one of its buttons
-        // (hover events land on the child first).
-        bar.setOnHoverListener((v, event) -> {
-            if (event.getAction() != MotionEvent.ACTION_HOVER_EXIT) {
-                mMainHandler.removeCallbacks(mHideVideoBar);
-                if (mVideoBar != null && mVideoBar.getVisibility() != VISIBLE) {
-                    showVideoBar(true);
-                }
+        bar.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
+            if (isVideoPage()) {
+                applyVideoTransform();
             }
-            return false;
         });
 
         // Two short rows instead of one long one: nine buttons in a single
@@ -2247,30 +2238,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 1, dp(4), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         track.setLayoutParams(lp);
         track.setVisibility(GONE);
-        // This strip is a sibling of readerRoot, so forward hover to the same
-        // logic - crossing the 4dp line must not hide the control strip.
-        track.setOnHoverListener((v, event) -> {
-            if (isVideoPage()) {
-                boolean exit = event.getAction() == MotionEvent.ACTION_HOVER_EXIT;
-                onVideoBarHover(exit ? 0f : mRootView.getHeight(),
-                        mRootView.getHeight(), exit);
-            }
-            return false;
-        });
         addView(track);
         mVideoProgressTrack = track;
         mVideoProgressFill = fill;
     }
 
-    /** Keep the bar exactly as wide as the video frame and directly below it. */
-    private void layoutVideoProgressTrack(int videoW, int videoH) {
+    private void layoutVideoProgressTrack(int videoW, int top) {
         if (mVideoProgressTrack == null) {
             return;
         }
-        int containerH = mRootView.getHeight();
-        int gap = dp(8);
-        int maxTop = Math.max(0, containerH - dp(6));
-        int top = Math.min(maxTop, Math.max(0, (containerH + videoH) / 2 + gap));
         FrameLayout.LayoutParams lp =
                 (FrameLayout.LayoutParams) mVideoProgressTrack.getLayoutParams();
         if (lp.width != videoW || lp.topMargin != top) {
@@ -2336,25 +2312,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    private final Runnable mHideVideoBar = () -> showVideoBar(false);
-
-    /** Show the control strip only while the pointer hovers the lower part of
-     *  the video. A short delayed hide avoids flicker when crossing the edge. */
-    private void onVideoBarHover(float y, float height, boolean exit) {
-        if (mVideoBar == null) {
-            return;
-        }
-        boolean nearBottom = !exit && height > 0 && y > height - dp(180);
-        mMainHandler.removeCallbacks(mHideVideoBar);
-        if (nearBottom) {
-            if (mVideoBar.getVisibility() != VISIBLE) {
-                showVideoBar(true);
-            }
-        } else if (mVideoBar.getVisibility() == VISIBLE) {
-            mMainHandler.postDelayed(mHideVideoBar, 700L);
-        }
-    }
-
     private void updateVideoControls() {
         if (mVideoBar == null) {
             return;
@@ -2416,6 +2373,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private void toggleVideoPlay() {
         MediaPlayer player = mMediaPlayer;
         if (player == null) {
+            if (isVideoPage()) {
+                playVideo(mPages.get(mIndex));
+            }
             return;
         }
         try {
@@ -2460,19 +2420,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         showZoomHint("视频倍率：" + mVideoZoom + "×");
     }
 
-    /** Makes the TextureView ITSELF match the video's aspect ratio instead of
-     *  relying on a transform matrix. TextureView stretches its SurfaceTexture
-     *  buffer across the whole View by default, so a View whose width/height
-     *  ratio equals the video's is the only reliable way to avoid distortion.
-     *  Gravity.CENTER also keeps it centred after any canvas resize. */
-    /** Proportional fit using ONLY TextureView.setTransform(). The View keeps
-     *  its match_parent size, so its SurfaceTexture is never re-created (that
-     *  was the cause of the sound-with-black-screen regression). setTransform
-     *  maps video buffer pixels into the View; using one uniform scale for
-     *  both axes and centring the remainder gives letterboxing, never stretch.
-     *
-     *  IMPORTANT: do NOT also change the View's LayoutParams here - that is
-     *  what made the 55d29a8 version distort, and later broke playback. */
     private void applyVideoTransform() {
         if (mVideoWidth <= 0 || mVideoHeight <= 0
                 || mVideoTexture.getWidth() <= 0 || mVideoTexture.getHeight() <= 0) {
@@ -2480,32 +2427,41 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         final float vw = mVideoTexture.getWidth();
         final float vh = mVideoTexture.getHeight();
+        final float controlsHeight = mVideoBar != null && mVideoBar.getVisibility() == VISIBLE
+                ? mVideoBar.getHeight() : 0;
+        final float availableHeight = Math.max(1f, vh - controlsHeight - dp(16));
         final float bw = mVideoWidth;
         final float bh = mVideoHeight;
         float scale;
         switch (mVideoFitMode) {
-            case 1: // fit height
-                scale = vh / bh;
+            case 1:
+                scale = availableHeight / bh;
                 break;
-            case 2: // fit width
+            case 2:
                 scale = vw / bw;
                 break;
-            case 3: // original size, never upscale, still proportional
-                scale = Math.min(1.0f, Math.min(vw / bw, vh / bh));
+            case 3:
+                scale = Math.min(1.0f, Math.min(vw / bw, availableHeight / bh));
                 break;
-            default: // fit screen
-                scale = Math.min(vw / bw, vh / bh);
+            default:
+                scale = Math.min(vw / bw, availableHeight / bh);
                 break;
         }
         scale *= mVideoZoom;
-        // Use the EXACT matrix form from the last build where video displayed
-        // correctly (55d29a8). TextureView's transform is relative to the
-        // texture's own aspect; a single uniform scale keeps it proportional.
-        // The earlier "normalized coordinate" rewrite made the frame vanish.
+        final float drawWidth = bw * scale;
+        final float drawHeight = bh * scale;
+        final float left = (vw - drawWidth) / 2f;
+        final float top = (availableHeight - drawHeight) / 2f;
         Matrix matrix = new Matrix();
-        matrix.setScale(scale, scale);
-        matrix.postTranslate((vw - bw * scale) / 2f, (vh - bh * scale) / 2f);
+        // TextureView already stretches the buffer to its bounds; undo that stretch per axis.
+        matrix.setScale(drawWidth / vw, drawHeight / vh);
+        matrix.postTranslate(left, top);
         mVideoTexture.setTransform(matrix);
+        layoutVideoProgressTrack(Math.round(Math.min(vw, drawWidth)),
+                Math.round(Math.min(availableHeight, top + drawHeight) + dp(8)));
+        diagnostic("video transform view=" + vw + "x" + vh + " buffer=" + bw + "x" + bh
+                + " draw=" + drawWidth + "x" + drawHeight + " offset=" + left + "," + top
+                + " controls=" + controlsHeight + " fit=" + mVideoFitMode + " zoom=" + mVideoZoom);
     }
 
     private int dp(int value) {

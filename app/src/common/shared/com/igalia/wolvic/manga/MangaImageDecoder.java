@@ -43,7 +43,9 @@ public final class MangaImageDecoder {
     }
 
     private static Object decodeNative(Object decoder) throws Exception {
-        return decoder.getClass().getMethod("decode").invoke(decoder);
+        return decoder.getClass()
+                .getMethod("decode", int.class, boolean.class, boolean.class)
+                .invoke(decoder, 0, false, false);
     }
 
     private static int resultInt(Object result, String name) throws Exception {
@@ -83,7 +85,7 @@ public final class MangaImageDecoder {
             out.outHeight = resultInt(result, "Height");
             return out.outWidth > 0 && out.outHeight > 0;
         } catch (Throwable t) {
-            android.util.Log.w("MangaImageDecoder", "avif bounds failed: " + t);
+            android.util.Log.w("MangaImageDecoder", "avif bounds failed", t);
             out.outWidth = -1;
             out.outHeight = -1;
             return false;
@@ -135,7 +137,7 @@ public final class MangaImageDecoder {
             full.recycle();
             return scaled;
         } catch (Throwable t) {
-            android.util.Log.w("MangaImageDecoder", "avif decode failed: " + t);
+            android.util.Log.w("MangaImageDecoder", "avif decode failed", t);
             return null;
         } finally {
             closeNativeDecoder(decoder);

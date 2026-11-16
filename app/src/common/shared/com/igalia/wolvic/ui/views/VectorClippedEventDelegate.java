@@ -6,7 +6,6 @@ import android.graphics.Region;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
-import android.view.ViewTreeObserver;
 
 import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
@@ -20,6 +19,8 @@ public class VectorClippedEventDelegate implements View.OnHoverListener, View.On
     private View mView;
     private @DrawableRes int mRes;
     private Region mRegion;
+    private int mRegionWidth;
+    private int mRegionHeight;
     private boolean mHovered;
     private boolean mTouched;
     private OnClickListener mClickListener;
@@ -29,25 +30,28 @@ public class VectorClippedEventDelegate implements View.OnHoverListener, View.On
         mRes = res;
         mHovered = false;
         mTouched = false;
-
-        view.getViewTreeObserver().addOnGlobalLayoutListener(mLayoutListener);
     }
 
-    private ViewTreeObserver.OnGlobalLayoutListener mLayoutListener = new ViewTreeObserver.OnGlobalLayoutListener() {
-        @Override
-        public void onGlobalLayout() {
-            Path path = createPathFromResource(mRes);
-            RectF bounds = new RectF();
-            path.computeBounds(bounds, true);
-
-            bounds = new RectF();
-            path.computeBounds(bounds, true);
-            mRegion = new Region();
-            mRegion.setPath(path, new Region((int) bounds.left, (int) bounds.top, (int) bounds.right, (int) bounds.bottom));
-
-            mView.getViewTreeObserver().removeOnGlobalLayoutListener(mLayoutListener);
+    private void updateRegion() {
+        int width = mView.getWidth();
+        int height = mView.getHeight();
+        if (width <= 0 || height <= 0) {
+            mRegion = null;
+            return;
         }
-    };
+        if (mRegion != null && width == mRegionWidth && height == mRegionHeight) {
+            return;
+        }
+        // Hidden tabs can receive their first global layout before their buttons are measured.
+        Path path = createPathFromResource(mRes);
+        RectF bounds = new RectF();
+        path.computeBounds(bounds, true);
+        mRegion = new Region();
+        mRegion.setPath(path, new Region((int) bounds.left, (int) bounds.top,
+                (int) bounds.right, (int) bounds.bottom));
+        mRegionWidth = width;
+        mRegionHeight = height;
+    }
 
     public void setOnClickListener(OnClickListener listener) {
         mClickListener = listener;
@@ -138,6 +142,7 @@ public class VectorClippedEventDelegate implements View.OnHoverListener, View.On
     }
 
     public boolean isInside(MotionEvent event) {
+        updateRegion();
         return event != null && mRegion != null && mRegion.contains((int)event.getX(),(int) event.getY());
     }
 

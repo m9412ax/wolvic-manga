@@ -153,26 +153,27 @@
             android:src="@drawable/ic_whats_new"
             android:text="@string/settings_whats_new"
             android:theme="@style/FxR.Dark"
-            android:layout_marginTop="10dp"
             app:icon="@drawable/ic_whats_new"
             app:layout_constraintStart_toStartOf="@id/scrollView2"
-            app:layout_constraintTop_toBottomOf="@id/scrollView2" />
+            app:layout_constraintBottom_toBottomOf="parent" />
 
         <ScrollView
             android:id="@+id/scrollView2"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
             android:layout_gravity="center_horizontal"
             android:layout_marginStart="108dp"
             android:layout_marginTop="6dp"
             android:layout_marginEnd="118dp"
+            android:layout_marginBottom="10dp"
             android:scrollbars="none"
+            app:layout_constraintBottom_toTopOf="@id/whatsNewButton"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toBottomOf="@id/settingsTabs">
 
             <LinearLayout
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
@@ -280,7 +281,7 @@
                 <!-- TAB 2: all manga settings, including the keybinding editor -->
                 <LinearLayout
                     android:id="@+id/mangaTabContent"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
                     android:visibility="gone">
@@ -295,56 +296,68 @@
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
-                    <LinearLayout
+                    <RelativeLayout
                         android:id="@+id/manga_row"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="6dp"
-                        android:orientation="horizontal">
+                        android:layout_marginTop="6dp">
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/mangaReaderButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_display"
-                            app:honeycombButtonText="阅读"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        <LinearLayout
+                            android:id="@+id/manga_first_row"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/mangaSourcesButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_icon_library"
-                            app:honeycombButtonText="图源"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/mangaReaderButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_display"
+                                app:honeycombButtonText="阅读"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/mangaDownloadsButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_icon_downloads"
-                            app:honeycombButtonText="下载"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/mangaSourcesButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_icon_library"
+                                app:honeycombButtonText="图源"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/mangaBackupButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_environment"
-                            app:honeycombButtonText="备份与进度"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/mangaDownloadsButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_icon_downloads"
+                                app:honeycombButtonText="下载"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        </LinearLayout>
 
-                        <com.igalia.wolvic.ui.views.HoneycombButton
-                            android:id="@+id/mangaAdvancedButton"
-                            style="?attr/honeycombButtonStyle"
-                            app:honeycombButtonIcon="@drawable/ic_settings_developeroptions"
-                            app:honeycombButtonText="高级"
-                            app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
-                    </LinearLayout>
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_below="@id/manga_first_row"
+                            android:layout_marginStart="65dp"
+                            android:layout_marginTop="-28dp"
+                            android:orientation="horizontal">
+
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/mangaBackupButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_environment"
+                                app:honeycombButtonText="备份与进度"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+
+                            <com.igalia.wolvic.ui.views.HoneycombButton
+                                android:id="@+id/mangaAdvancedButton"
+                                style="?attr/honeycombButtonStyle"
+                                app:honeycombButtonIcon="@drawable/ic_settings_developeroptions"
+                                app:honeycombButtonText="高级"
+                                app:honeycombButtonTextSize="@dimen/settings_main_button_text_width" />
+                        </LinearLayout>
+                    </RelativeLayout>
 
                     <!-- Hosts MangaSettingsPanel (keybindings + manga options). -->
-                    <!-- Fixed width: the panel builds a 3-column grid, so it
-                         needs a definite width instead of wrap_content (which
-                         let the old 9-button row overflow off-screen). -->
                     <FrameLayout
                         android:id="@+id/mangaPanelHost"
-                        android:layout_width="600dp"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="8dp" />
                 </LinearLayout>
