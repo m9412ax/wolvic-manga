@@ -340,7 +340,10 @@ public final class MangaSettings {
             case 3:
                 return 0x00000000; // fully transparent
             default:
-                return 0x00000000; // transparent by default so the world shows through
+                // Opaque black: a translucent window composites with the VR
+                // environment every frame, which showed up as flicker over
+                // background images. "黑色" (0) must actually be black.
+                return 0xFF000000;
         }
     }
 

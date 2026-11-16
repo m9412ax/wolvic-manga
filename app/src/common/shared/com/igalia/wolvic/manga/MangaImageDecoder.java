@@ -17,6 +17,17 @@ public final class MangaImageDecoder {
     private static final android.util.LruCache<String, int[]> DIMENSIONS =
             new android.util.LruCache<>(256);
     private static final Object AVIF_LOCK = new Object();
+    private static final java.util.concurrent.atomic.AtomicInteger sForegroundAvifWaiters =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final ThreadLocal<Boolean> AVIF_PRIORITY =
+            ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** Marks the calling thread's next AVIF decode as foreground (page the
+     *  user is waiting for). Preload/cover decodes yield while one is active,
+     *  so a page turn never queues behind a chain of 8K preloads. */
+    public static void setAvifPriority(boolean priority) {
+        AVIF_PRIORITY.set(priority);
+    }
 
     private static class NativeLibraries {
         static {
@@ -146,8 +157,24 @@ public final class MangaImageDecoder {
 
     private static Bitmap decodeAvif(File file, int sample, long byteBudget) {
         // Foreground pages, preloads and covers must not overlap full native AV1 decodes.
-        synchronized (AVIF_LOCK) {
-            return decodeAvifLocked(file, sample, byteBudget);
+        boolean priority = AVIF_PRIORITY.get();
+        if (priority) {
+            sForegroundAvifWaiters.incrementAndGet();
+        }
+        try {
+            synchronized (AVIF_LOCK) {
+                // A preload starting while the user waits for a page would add
+                // its whole multi-second decode to the black-screen time.
+                // Yield; the preload window retries on its next pass.
+                if (!priority && sForegroundAvifWaiters.get() > 0) {
+                    return null;
+                }
+                return decodeAvifLocked(file, sample, byteBudget);
+            }
+        } finally {
+            if (priority) {
+                sForegroundAvifWaiters.decrementAndGet();
+            }
         }
     }
 

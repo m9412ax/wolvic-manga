@@ -162,6 +162,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private int mStripGeneration;
     private long mLastStripRetry;
     private float mLastStripViewWidth = -1f;
+    private int mLastStripSourceWidth = 0;
 
     private final ThreadPoolExecutor mExecutor = new ThreadPoolExecutor(
             1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
@@ -724,7 +725,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             });
             return;
         }
-        Bitmap cached = mCache.get(cacheKey);
+        Bitmap cached = continuous ? null : mCache.get(detailKey(mIndex));
+        if (cached == null || cached.isRecycled()) {
+            cached = mCache.get(cacheKey);
+        }
         Log.i(TAG, "page cache " + (cached == null ? "miss" : "hit")
                 + " index=" + mIndex + " pending=" + mPendingPages.size());
         if (cached != null && !cached.isRecycled()) {
@@ -761,6 +765,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (pageCacheBudget() >= SINGLE_BITMAP_LIMIT) {
             return;
         }
+        // Already showing the cached detail pass - nothing to upgrade.
+        if (preview == mCache.get(detailKey(mIndex))) {
+            return;
+        }
         File first = mPages.get(mIndex);
         File second = mDoublePage && mIndex + 1 < mPages.size() && !isVideoIndex(mIndex + 1)
                 ? mPages.get(mIndex + 1) : null;
@@ -789,24 +797,49 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         final int generation = mLoadGeneration;
         final boolean crop = mSettings.bool(MangaSettings.READER_CROP_BORDERS);
+        final String key = detailKey(mIndex);
+        Bitmap cachedDetail = mCache.get(key);
+        if (cachedDetail != null && !cachedDetail.isRecycled()) {
+            // Revisits swap instantly instead of re-decoding for seconds; the
+            // repeated preview->detail decode was the AVIF flicker source.
+            final Bitmap detail = cachedDetail;
+            mMainHandler.post(() -> applyPageDetail(detail, preview, generation));
+            return;
+        }
         mExecutor.execute(() -> {
-            Bitmap detail = decodeDisplay(first, second, SINGLE_BITMAP_LIMIT, crop,
-                    () -> mDestroyed || generation != mLoadGeneration);
-            mMainHandler.post(() -> {
-                if (mDestroyed || generation != mLoadGeneration || mCurrent != preview
-                        || detail == null) {
-                    return;
-                }
-                // Keep the cached preview on screen until full detail is ready; never clear between them.
-                mCurrent = detail;
-                mDisplayWidth = detail.getWidth();
-                mDisplayHeight = detail.getHeight();
-                mPageImage.setImageBitmap(safeForImageView(detail));
-                applyImageTransform();
-                Log.i(TAG, "page detail index=" + mIndex + " size="
-                        + detail.getWidth() + "x" + detail.getHeight());
-            });
+            MangaImageDecoder.setAvifPriority(true);
+            Bitmap detail;
+            try {
+                detail = decodeDisplay(first, second, SINGLE_BITMAP_LIMIT, crop,
+                        () -> mDestroyed || generation != mLoadGeneration);
+            } finally {
+                MangaImageDecoder.setAvifPriority(false);
+            }
+            if (detail != null) {
+                mCache.put(key, detail);
+            }
+            final Bitmap result = detail;
+            mMainHandler.post(() -> applyPageDetail(result, preview, generation));
         });
+    }
+
+    private String detailKey(int index) {
+        return displayKey(index) + ":detail";
+    }
+
+    private void applyPageDetail(Bitmap detail, Bitmap preview, int generation) {
+        if (mDestroyed || generation != mLoadGeneration || mCurrent != preview
+                || detail == null || detail.isRecycled()) {
+            return;
+        }
+        // Keep the cached preview on screen until full detail is ready; never clear between them.
+        mCurrent = detail;
+        mDisplayWidth = detail.getWidth();
+        mDisplayHeight = detail.getHeight();
+        mPageImage.setImageBitmap(safeForImageView(detail));
+        applyImageTransform();
+        Log.i(TAG, "page detail index=" + mIndex + " size="
+                + detail.getWidth() + "x" + detail.getHeight());
     }
 
     private void finishPageLoad(int generation) {
@@ -1068,6 +1101,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         for (int distance = 1; distance <= preloadRadius(); distance++) {
             addWindowPage(mIndex - direction * distance, ordered);
         }
+        if (!isContinuous()) {
+            // Keep the upgraded detail passes of the current neighbourhood so
+            // paging back and forth never re-decodes (AVIF takes seconds).
+            for (int i = mIndex - 1; i <= mIndex + 1; i++) {
+                if (i >= 0 && i < mPages.size() && !isVideoIndex(i)) {
+                    mWindowKeys.add(detailKey(i));
+                }
+            }
+        }
         for (String key : new ArrayList<>(mPendingPages.keySet())) {
             if (!mWindowKeys.contains(key)) {
                 mPendingPages.remove(key).cancelled = true;
@@ -1141,7 +1183,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 started = true;
             }
             long start = android.os.SystemClock.uptimeMillis();
-            Bitmap bitmap = decodeDisplay(first, second, budget, crop, () -> cancelled);
+            MangaImageDecoder.setAvifPriority(index == mIndex);
+            Bitmap bitmap;
+            try {
+                bitmap = decodeDisplay(first, second, budget, crop, () -> cancelled);
+            } finally {
+                MangaImageDecoder.setAvifPriority(false);
+            }
             mMainHandler.post(() -> {
                 if (mDestroyed || cancelled || mPendingPages.get(key) != this) {
                     return;
@@ -1279,6 +1327,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mStripOffset *= vw / mLastStripViewWidth;
         }
         mLastStripViewWidth = vw;
+        // Crossing a seam changes the CURRENT page, and the strip scale is
+        // anchored on the current page's width. Keep the viewer at the same
+        // CONTENT position: offset is in view pixels, so it must follow the
+        // scale change. Without this, an up-crossing (offset ~ page height)
+        // landed a fraction of a page away - the "jump to previous page top"
+        // whenever neighbouring pages had different widths. Down-crossings
+        // (offset ~ 0) were insensitive, which is why only up-scroll jumped.
+        if (mLastStripSourceWidth > 0 && cur.getWidth() != mLastStripSourceWidth) {
+            mStripOffset *= (float) mLastStripSourceWidth / cur.getWidth();
+        }
+        mLastStripSourceWidth = cur.getWidth();
         mStripScale = newScale;
         if (mStripLastZoom > 0f && Math.abs(mZoom - mStripLastZoom) > 0.0001f) {
             mStripOffset *= mZoom / mStripLastZoom;
@@ -1342,12 +1401,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     break;
                 }
                 float prevH = mStripView.scaledHeight(1);
-                shiftStrip(-1);
                 if (prevH > 0f) {
                     // Negative offset becomes the position inside the previous
                     // page's tail; clamp so we never land past its top.
+                    // Assign BEFORE shifting: shiftStrip may rescale the offset
+                    // for the new current page's width, and that rescale must
+                    // apply to this value, not to the stale negative offset.
                     mStripOffset = Math.max(-vh, Math.min(0f, mStripOffset + prevH));
                 }
+                shiftStrip(-1);
             }
         }
         mStripView.setOffset(mStripOffset);
