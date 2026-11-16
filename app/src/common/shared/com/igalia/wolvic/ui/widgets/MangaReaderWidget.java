@@ -2485,7 +2485,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         SurfaceTexture texture = mVideoTexture.getSurfaceTexture();
         if (texture == null) {
-            return;
+            // The single onSurfaceTextureAvailable() callback can be consumed
+            // by a non-video page during widget init, and onDestroyed() then
+            // releases the texture. Force-create one so playback always has
+            // an output surface.
+            try {
+                texture = new SurfaceTexture(0);
+                mVideoTexture.setSurfaceTexture(texture);
+                Log.i(TAG, "video surface force-created");
+            } catch (Throwable t) {
+                Log.e(TAG, "video surface create failed: " + t);
+                return;
+            }
         }
         if (mVideoSurface == null || !mVideoSurface.isValid()) {
             if (mVideoSurface != null) {
@@ -2693,7 +2704,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSurface.release();
         }
         mVideoSurface = new Surface(surface);
-        if (isVideoPage() && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+        // Ignore duplicate availability callbacks while playback is already
+        // running (our force-created texture also triggers this callback).
+        boolean alreadyPlaying = mMediaPlayer != null;
+        try {
+            alreadyPlaying = mMediaPlayer != null && mMediaPlayer.isPlaying();
+        } catch (Exception ignored) { }
+        if (!alreadyPlaying && isVideoPage()
+                && mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
             playVideo(mPages.get(mIndex));
         }
     }
