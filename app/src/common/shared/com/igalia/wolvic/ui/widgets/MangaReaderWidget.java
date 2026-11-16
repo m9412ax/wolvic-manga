@@ -2447,6 +2447,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void playVideo(File page) {
+        Log.i(TAG, "playVideo enter surface=" + (mVideoSurface != null && mVideoSurface.isValid())
+                + " destroyed=" + mDestroyed + " file=" + page.getName());
         if (mVideoSurface == null || !mVideoSurface.isValid() || mDestroyed) {
             showHint("视频画面尚未就绪");
             return;
@@ -2460,6 +2462,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             mVideoWidth = mp.getVideoWidth();
             mVideoHeight = mp.getVideoHeight();
+            Log.i(TAG, "video prepared " + mVideoWidth + "x" + mVideoHeight
+                    + " duration=" + mp.getDuration());
             applyVideoTransform();
             updateVideoControls();
             startVideoTick();
@@ -2512,6 +2516,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoStream = new java.io.FileInputStream(page);
             player.setDataSource(mVideoStream.getFD());
             player.setSurface(mVideoSurface);
+            Log.i(TAG, "video prepareAsync size=" + page.length());
             player.prepareAsync();
         } catch (Exception e) {
             Log.e(TAG, "video open failed: " + e, e);
