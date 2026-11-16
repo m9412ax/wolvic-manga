@@ -22,6 +22,19 @@ public final class MangaImageDecoder {
     private static final ThreadLocal<Boolean> AVIF_PRIORITY =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
+    /** Decoded AVIF pages transcoded to JPEG on disk. A native AV1 decode takes
+     *  1-3 s on this device; the JPEG re-read takes ~100 ms, so revisits and
+     *  app restarts stay fast even after the memory cache evicts the page. */
+    private static final long DISK_CACHE_MAX = 512L * 1024 * 1024;
+    private static volatile File sDiskCacheDir;
+    private static final java.util.concurrent.ExecutorService DISK_WRITER =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "manga-avif-cache");
+                t.setDaemon(true);
+                t.setPriority(Thread.MIN_PRIORITY);
+                return t;
+            });
+
     /** Marks the calling thread's next AVIF decode as foreground (page the
      *  user is waiting for). Preload/cover decodes yield while one is active,
      *  so a page turn never queues behind a chain of 8K preloads. */
@@ -156,6 +169,10 @@ public final class MangaImageDecoder {
     }
 
     private static Bitmap decodeAvif(File file, int sample, long byteBudget) {
+        Bitmap disk = readDiskCache(file, sample, byteBudget);
+        if (disk != null) {
+            return disk;
+        }
         // Foreground pages, preloads and covers must not overlap full native AV1 decodes.
         boolean priority = AVIF_PRIORITY.get();
         if (priority) {
@@ -174,6 +191,111 @@ public final class MangaImageDecoder {
         } finally {
             if (priority) {
                 sForegroundAvifWaiters.decrementAndGet();
+            }
+        }
+    }
+
+    public static void setDiskCacheDir(File dir) {
+        sDiskCacheDir = dir;
+    }
+
+    private static File diskCacheFile(File file, int sample, long byteBudget) {
+        File dir = sDiskCacheDir;
+        if (dir == null) {
+            return null;
+        }
+        String key = fileKey(file) + ":" + sample + ":" + byteBudget;
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
+            byte[] digest = md.digest(key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder name = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                name.append(Character.forDigit((b >> 4) & 0xF, 16))
+                        .append(Character.forDigit(b & 0xF, 16));
+            }
+            return new File(dir, name + ".jpg");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Bitmap readDiskCache(File file, int sample, long byteBudget) {
+        File cached = diskCacheFile(file, sample, byteBudget);
+        if (cached == null || !cached.isFile()) {
+            return null;
+        }
+        try {
+            Bitmap bitmap = BitmapFactory.decodeFile(cached.getAbsolutePath());
+            if (bitmap != null) {
+                cached.setLastModified(System.currentTimeMillis());
+                android.util.Log.i("MangaImageDecoder", "avif disk cache hit " + file.getName());
+                return bitmap;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static void writeDiskCache(File file, int sample, long byteBudget, Bitmap bitmap) {
+        File target = diskCacheFile(file, sample, byteBudget);
+        // JPEG cannot keep alpha; transparent pages must stay on the native path.
+        if (target == null || bitmap == null || bitmap.isRecycled() || bitmap.hasAlpha()) {
+            return;
+        }
+        DISK_WRITER.execute(() -> {
+            java.io.FileOutputStream out = null;
+            File tmp = new File(target.getParentFile(),
+                    target.getName() + "." + Thread.currentThread().getId() + ".tmp");
+            try {
+                if (bitmap.isRecycled()) {
+                    return;
+                }
+                File dir = target.getParentFile();
+                if (!dir.isDirectory() && !dir.mkdirs()) {
+                    return;
+                }
+                out = new java.io.FileOutputStream(tmp);
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
+                out.close();
+                out = null;
+                if (!tmp.renameTo(target)) {
+                    tmp.delete();
+                    return;
+                }
+                evictDiskCache(dir);
+            } catch (Throwable ignored) {
+                // A recycled bitmap or full disk must never break decoding.
+            } finally {
+                if (out != null) {
+                    try { out.close(); } catch (Throwable ignored) { }
+                }
+                if (tmp.isFile()) {
+                    tmp.delete();
+                }
+            }
+        });
+    }
+
+    private static void evictDiskCache(File dir) {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return;
+        }
+        long total = 0;
+        for (File f : files) {
+            total += f.length();
+        }
+        if (total <= DISK_CACHE_MAX) {
+            return;
+        }
+        java.util.Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+        for (File f : files) {
+            if (total <= DISK_CACHE_MAX * 3 / 4) {
+                break;
+            }
+            long len = f.length();
+            if (f.delete()) {
+                total -= len;
             }
         }
     }
@@ -202,6 +324,7 @@ public final class MangaImageDecoder {
                         + " bytes=" + bitmap.getAllocationByteCount()
                         + " alpha=" + bitmap.hasAlpha()
                         + " ms=" + (android.os.SystemClock.uptimeMillis() - started));
+                writeDiskCache(file, sample, byteBudget, bitmap);
                 return bitmap;
             }
             Object result = decodeNative(decoder);

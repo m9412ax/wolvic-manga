@@ -282,6 +282,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         setupVideoProgressTrack();
 
         int cacheKb = Math.max(16, mSettings.integer(MangaSettings.CACHE_MB)) * 1024;
+        File diskCacheBase = getContext().getExternalCacheDir();
+        if (diskCacheBase == null) {
+            diskCacheBase = getContext().getCacheDir();
+        }
+        MangaImageDecoder.setDiskCacheDir(new File(diskCacheBase, "avif-cache"));
         mCache = new LruCache<String, Bitmap>(cacheKb) {
             @Override
             protected int sizeOf(String key, Bitmap value) {
@@ -770,30 +775,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         File first = mPages.get(mIndex);
+        // AVIF: the preview already matches the window resolution; a second
+        // full native decode (3+ s) only to swap bitmaps caused flicker and
+        // its 54 MB result exceeded the per-page cache budget, so it was
+        // evicted instantly and re-decoded on every revisit.
+        if (MangaImageDecoder.isAvif(first)) {
+            return;
+        }
         File second = mDoublePage && mIndex + 1 < mPages.size() && !isVideoIndex(mIndex + 1)
                 ? mPages.get(mIndex + 1) : null;
         int[] dimensions = MangaImageDecoder.cachedDimensions(first);
         if (second == null && (dimensions == null
                 || (dimensions[0] <= preview.getWidth() && dimensions[1] <= preview.getHeight()))) {
             return;
-        }
-        if (second == null && MangaImageDecoder.isAvif(first)) {
-            int bytesPerPixel = preview.getConfig() == Bitmap.Config.RGBA_F16 ? 8 : 4;
-            int cacheSample = 1;
-            while (Math.max(dimensions[0] / cacheSample, dimensions[1] / cacheSample) > 16384
-                    || (long) Math.max(1, dimensions[0] / cacheSample)
-                    * Math.max(1, dimensions[1] / cacheSample) * bytesPerPixel > pageCacheBudget()) {
-                cacheSample *= 2;
-            }
-            int detailSample = 1;
-            while (Math.max(dimensions[0] / detailSample, dimensions[1] / detailSample) > 16384
-                    || (long) Math.max(1, dimensions[0] / detailSample)
-                    * Math.max(1, dimensions[1] / detailSample) * bytesPerPixel > SINGLE_BITMAP_LIMIT) {
-                detailSample *= 2;
-            }
-            if (cacheSample == detailSample) {
-                return;
-            }
         }
         final int generation = mLoadGeneration;
         final boolean crop = mSettings.bool(MangaSettings.READER_CROP_BORDERS);
@@ -807,14 +801,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         mExecutor.execute(() -> {
-            MangaImageDecoder.setAvifPriority(true);
-            Bitmap detail;
-            try {
-                detail = decodeDisplay(first, second, SINGLE_BITMAP_LIMIT, crop,
-                        () -> mDestroyed || generation != mLoadGeneration);
-            } finally {
-                MangaImageDecoder.setAvifPriority(false);
-            }
+            Bitmap detail = decodeDisplay(first, second, SINGLE_BITMAP_LIMIT, crop,
+                    () -> mDestroyed || generation != mLoadGeneration);
             if (detail != null) {
                 mCache.put(key, detail);
             }
@@ -1397,6 +1385,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     // up-scroll jump. Holding here keeps the view at the seam
                     // so the crossing lands on the previous page's tail.
                     mStripOffset = -0.001f;
+                    Log.i(TAG, "continuous up-hold at seam index=" + mIndex
+                            + " prev decoding");
                     loadStripNeighbours(mStripGeneration);
                     break;
                 }
@@ -1464,12 +1454,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
         applyDisplaySettings();
-        // Keep the SAME scale and offset across a seam: recomputing the width
-        // scale here would rescale the offset and make the picture jump.
-        mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+        // Recompute the width-anchored scale NOW, together with the matching
+        // offset rescale in updateStripTransform(). Keeping the old scale here
+        // left the new current page drawn at the wrong width until a neighbour
+        // decode happened to trigger updateStripTransform() seconds later -
+        // the visible jump when up-scrolling across pages of different widths.
+        updateStripTransform();
         preloadNext();
         loadStripNeighbours(mStripGeneration);
-        Log.d(TAG, "continuous shift to " + (mIndex + 1) + "/" + mPages.size());
+        Log.i(TAG, "continuous shift to " + (mIndex + 1) + "/" + mPages.size()
+                + " offset=" + mStripOffset + " scale=" + mStripScale
+                + " curW=" + (mStripSegments[2] != null ? mStripSegments[2].getWidth() : 0));
     }
 
     // ---------------------------------------------------------- settings
