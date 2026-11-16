@@ -1,8 +1,13 @@
 # AGENTS.md — wolvic-manga 接手必读
 
+> **⚠️ 先读文末「## 当前未解决问题 / 交接（2026-11-17）」再动手。**
+> 该章节是最新事实来源（当前装机版本、三个未解决问题、视频完整需求、
+> 构建/依赖踩坑、参考来源、待办）。本文前半部分是历史进度，如与文末冲突，
+> **一律以文末为准**。
+
 ## 一句话接手（直接复制给下一个 AI）
 
-> 接手 `C:\Users\Administrator\Documents\Qoder\2026-11-13\96859152\wolvic-manga`（GitHub `m9412ax/wolvic-manga`，分支 `main`）：先读根目录 AGENTS.md 再动手。以 **Igalia/wolvic** 为 VR 基座、**saber1008611/mihon-webdav** 为漫画功能参照，把 Mihon 全部功能用 Wolvic 的 VR 控件 UI 复现（启动默认漫画书架、浏览器降为选项；保留原格式扩展 APK/自定义源/网盘 WebDAV/SMB/文件夹本地；加视频优先播放+无缝切图）。GitHub 凭据读 `~/.gh_pat` 注入 `GH_TOKEN`（严禁任何输出/提交打印明文），用便携 gh `C:/Users/Administrator/Documents/Qoder/2026-11-05/3de213cf/gh-cli/bin/gh.exe`；构建走 `.github/workflows/build-picoxr.yml`（CI），分段下载校验后 `adb install -r`；adb 在 `D:/YanRainOTAToolBox/resources/platform-tools/adb.exe`，Pico SN `PA7N10MGF5060233W`，VR 验证需佩戴头显从应用列表启动。出结果直接修不用问。
+> 接手 `D:\APP\wb\gzkj\2026-11-14-02-57-34\wolvic-manga`（GitHub `m9412ax/wolvic-manga`，分支 `main`）：先读根目录 AGENTS.md 再动手。以 **Igalia/wolvic** 为 VR 基座、**saber1008611/mihon-webdav** 为漫画功能参照，把 Mihon 全部功能用 Wolvic 的 VR 控件 UI 复现（启动默认漫画书架、浏览器降为选项；保留原格式扩展 APK/自定义源/网盘 WebDAV/SMB/文件夹本地；加视频优先播放+无缝切图）。GitHub 凭据读 `~/.gh_pat` 注入 `GH_TOKEN`（严禁任何输出/提交打印明文），用便携 gh `C:/Users/Administrator/Documents/Qoder/2026-11-05/3de213cf/gh-cli/bin/gh.exe`；构建走 `.github/workflows/build-picoxr.yml`（CI），分段下载校验后 `adb install -r`；adb 在 `D:/YanRainOTAToolBox/resources/platform-tools/adb.exe`，Pico SN `PA7N10MGF5060233W`，VR 验证需佩戴头显从应用列表启动。出结果直接修不用问。
 
 ## 项目定位
 
@@ -165,7 +170,7 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
 ## 本机环境 / 网络坑（实测）
 
 - 无本地 NDK/JDK/Android SDK，**只能 CI 构建**，不重试本地完整构建。
-- **C 盘可用空间为 0**：旧工作副本 `C:\Users\Administrator\Documents\Qoder\2026-11-13\96859152\wolvic-manga`
+- **C 盘可用空间为 0**：旧工作副本 `D:\APP\wb\gzkj\2026-11-14-02-57-34\wolvic-manga`
   停在 `babd3d0` 且有重复未提交增量，仅作历史参考。后续统一用 D 盘干净稀疏工作副本
   `D:/APP/wb/gzkj/2026-11-14-02-57-34/wolvic-manga`（远端 `main`）。
 - `api.github.com` 直连可用（REST/Git Data）；`github.com` git 需代理 `127.0.0.1:30000`，
@@ -224,3 +229,184 @@ Wolvic 原生层已解决 Pico OpenXR/世界锁/虚拟屏等坑，VR 部分全�
 - 不删用户数据；`adb install -r` 保数据升级。签名冲突时只处理 `.dev` 开发包，且必须
   **先完整导出并校验备份 → 卸载 → 安装 → 恢复并核对文件数/属主**；官方 `com.igalia.wolvic`
   与用户数据绝不触碰（实测官方包始终未动，342 个数据文件按新 UID 完整恢复）。
+
+---
+
+## 当前未解决问题 / 交接（2026-11-17）
+
+> 这是最新事实来源。前面的「当前进度（2026-11-14）」是历史，其中「视频优先播放」
+> 等乐观描述已被后续头显实测推翻，一律以本节为准。用户明确要求：**先别再改代码**，
+> 下一位 AI 读完本节再动手，且任何修复必须真机验证后再汇报，不许"没验证就说修好了"。
+
+### 当前装机版本 / 提交
+
+- 最新提交 `7fdf721`（本地 + 远端 main 一致），versionCode `2103201635`，
+  APK 219MB（含 libvips 原生库），已装机 Pico `PA7N10MGF5060233W`。
+- 近期提交链（视频回归与 AVIF 集成）：
+  `7fdf721`(反射调 imagedecoder) ← `b8b23b2`(Kotlin 2.4) ← `089132f`(去 AAR 元数据)
+  ← `a342a9e`(本地 AAR) ← `18eb951`(AVIF/视频矩阵回退/设置跳转)
+  ← `f71505e`(指针锚点/视频矩阵/格式) ← `e45de0b`(双页大图/平移/设置诊断)
+  ← `75e7c4f`(回退视频) ← `352dd00`(伪造 SurfaceTexture，坏) … ← `71e6714`(视频还能播)
+
+### 用户已确认正常（别回归）
+
+| 功能 | 状态 |
+|---|---|
+| 大图打开不闪退 | ✅ 124.9MB 页面走 1:1 分块（无损）；`SINGLE_BITMAP_LIMIT=72MB` + `safeForImageView()` 兜底 |
+| 双页模式（含大图） | ✅ `tiled = !continuous && !mDoublePage && needsTiling(page)`，双页强制走 `decodeDisplay()` 合并 |
+| 图片拖动看边缘 | ✅ `mPanX/mPanY` + onScroll 平移，clamp 到溢出范围 |
+| 指针位置缩放 | ✅ Activity `handleMotionEvent` → `onPointerPosition()`；`zoomByAt()` 锚点公式：`newPan = pan + (pointer-centre-pan)*(1-newZoom/oldZoom)` |
+| 快捷键 | ✅ 裸上下不缩放图片；按住侧键：左右=缩放画布、上下=缩放图片；连续模式上下滚动 |
+| 缓存串图 / 切页闪旧图 / 预读黑屏 | ✅ 缓存 key 含 folder；setFolder 清缓存；showPage 清 tiles+strip；独立预读线程、preload=2、cache=256MB |
+| 连续长滚动上跳 / 卡顿 | ✅ 跨页前确认邻居已解码、每帧最多跨一页、步长≤30%视口 |
+
+### 未解决问题 #1 — 视频（最复杂，用户最不满）
+
+**现状（7fdf721）**：有声音，但画面**不居中、拉伸变形**；**控制栏看不到**。
+用户最初只要求"比例/居中"修好（当时能播有画面有声），几轮下来反而更糟。
+
+#### 视频完整需求书（写给下一位 AI）
+1. 打开视频页自动播放（`READER_VIDEO_AUTOPLAY` 默认 true）。
+2. **等比适配、居中显示、不拉伸变形**，画面完整不超出画布、不被裁切。
+3. 4 档 fit（`mVideoFitMode`：0 适应屏幕 / 1 适应高度 / 2 适应宽度 / 3 原始不放大）
+   + 倍率 `mVideoZoom`，切换有提示。
+4. 画面随"画布缩放"（单/双页 macro zoom）变化——用户确认这点当前是对的，别破坏。
+5. **控制栏必须可见**：播放/暂停、进度拖动、fit 切换、视频下方白色进度条。
+   当前 `showVideoBar(false)` 默认隐藏，指针移到画面下缘才显示——用户抱怨看不到，
+   需重新确认可见性策略（可能改为默认/始终显示）。
+6. 摇杆左右快进/后退（VIDEO_SEEK_STEP_MS）；点画面播放/暂停。
+7. 出错不自动跳下一页（会跳到大图触发 Canvas 崩溃），只记 what/extra + 提示。
+8. 解码完全交给系统 MediaPlayer 硬解（Pico `OMX.qcom.video.decoder.avc`），不引软解。
+
+#### 回归链（读懂再改，别重蹈覆辙）
+| 提交 | 视频状态 | 改动 |
+|---|---|---|
+| 71e6714 及更早 | ✅ 能播有画面有声，比例拉伸 | 朴素 `TextureView match_parent` + `setDataSource(path)` + 回调里播 |
+| 55d29a8 | ✅ 能播 + 控制条 | `applyVideoTransform()` 用 `setTransform(matrix)`：`setScale(scale,scale)` + `postTranslate((vw-bw*scale)/2,(vh-bh*scale)/2)` —— **最后确认能显示画面的矩阵写法** |
+| 6e95976 | ⚠️ 比例好但埋雷 | TextureView LayoutParams 改成按视频比例的固定像素，动摇 surface 时序 |
+| b9633bb | ❌ | 容器从 `mPageImage` 改 `mRootView` + root `addOnLayoutChangeListener`，反复 `setLayoutParams` → SurfaceTexture 反复重建 |
+| 8da6dab | ❌ | `setDataSource(path)` → FileDescriptor（路径本来就 work） |
+| 352dd00 | ❌ 黑屏有声 | `new SurfaceTexture(0)` + `setSurfaceTexture()` 强造纹理：解码器有输出但 TextureView 不渲染 |
+| 75e7c4f | 回退 | 删 force-create/retry/FD/root listener；比例改 setTransform（归一化坐标算法） |
+| f71505e | ❌ 完全看不到 | 矩阵改"像素空间" `setScale(drawW,drawH)` + 像素 translate → 画面消失 |
+| 当前 7fdf721 | ⚠️ 有声、画面变形不居中 | 矩阵**回退 55d29a8 写法**，但用户说仍不居中且拉伸；控制栏看不到 |
+
+#### 关键代码位置（MangaReaderWidget.java）
+- `showPage()` 视频分支（~563）：`mVideoTexture.setVisibility(VISIBLE)` → `showVideoBar(false)` → `playVideo(page)`
+- `applyVideoTransform()`（~2476）：当前 `setScale(scale,scale)` + `postTranslate((vw-bw*scale)/2,(vh-bh*scale)/2)`
+- `playVideo()`（~2501）：`setDataSource(path)` → `setSurface()` → `prepareAsync()`；onError 记 what/extra 不跳页
+- `onSurfaceTextureAvailable()`（~2629）：建 Surface 后若 isVideoPage 则 playVideo
+- `showVideoBar/setupVideoBar/setupVideoProgressTrack/layoutVideoProgressTrack/updateVideoProgressTrackFill`
+
+#### 建议下一步
+- 先抓真机日志（**别用诊断 intent，时序不同**）：在 `applyVideoTransform` 打
+  `vw/vh/bw/bh/scale/mVideoFitMode/mVideoZoom` + `mVideoTexture.getLayoutParams()`，
+  tag `MangaReader`。用户从书架正常点进视频。
+- 强烈怀疑 `mVideoTexture.getWidth()/getHeight()` 是 16×16 或陈旧值（设备日志见过
+  `SurfaceTexture connect: w*h = 16*16`），导致 scale 错；或历史 LayoutParams 残留。
+- 要真正搞清 `TextureView.setTransform` 坐标语义（矩阵把归一化 0..1 纹理坐标映射到
+  View 像素）。等比居中的正确写法可能是 `setScale(drawW,drawH)` + 像素 translate，
+  但上一版这么改画面消失，必须查清早退原因（`mVideoTexture` 尺寸为 0 时 return）。
+- 若继续小改仍失败，**主动向用户提议换 VideoView/ExoPlayer 大改**（用户已明确不满反复小修）。
+
+### 未解决问题 #2 — AVIF 仍"无法解码"
+
+**现状**：目录能显示 `.avif`（扩展名已加 `SOURCE_IMAGE_FORMATS`），打开提示解码失败。
+设备 Pico Neo3，平台解码器不支持 AVIF（用户判断正确）。
+
+**当前实现**：`manga/MangaImageDecoder.java` — 非 avif 走原 BitmapFactory；avif 反射调
+`ca.mpreg.imagedecoder.ImageDecoder` 的 `new(InputStream)` 工厂（Kotlin 的 `new` 是 Java
+关键字，只能反射），`decode()` 返回 `DecodeResult{ByteBuffer image,width,height}` →
+`copyPixelsFromBuffer` → 按 sample 降采样。reader 与 `MangaCoverAdapter.decodeScaled()` 都接入。
+依赖：`app/libs/imagedecoder-14.aar`（31MB，libvips，`lib/arm64-v8a/libimagedecoder2.so`
+已确认入包）。Kotlin 已升 2.4.0。
+
+**集成踩坑（全踩过，别重复）**：
+1. `ca.mpreg:imagedecoder` 远程依赖声明 `minCompileSdk=37`，本工程 36 → `checkAarMetadata` 失败；
+   所有版本 v3~v18 都是 37，无旧版可用。
+2. 下载 AAR 到本地 `files()` 仍被查 → 从 `META-INF/com/android/build/gradle/aar-metadata.properties`
+   删掉 `minCompileSdk=37` 行重新打包才通过。
+3. 库是 Kotlin 2.4 metadata，本工程 2.2.21 报 `binary version 2.4.0, expected 2.2.0` → `kotlin = "2.4.0"`。
+4. `new` 是 Java 关键字 → 反射 `getMethod("new", InputStream.class)`。
+
+**建议下一步**：抓 `adb logcat -s MangaImageDecoder`（代码已有 `Log.w("avif decode failed: "+t)`），
+看具体异常（`NoSuchMethodException: new` / .so 加载失败 / ByteBuffer 非 RGBA）。
+对照 mihon 的 `app/.../data/coil/ImageDecoder.kt`（本地已下载，见下）；
+确认 `new` 是 `@JvmStatic` 还是 Companion 实例方法（可 `getDeclaredMethods()` 打印）。
+也要看 `needsTiling()`/`decodePage()` 是否因 AVIF `decodeBounds` 返回 -1 走错分支。
+
+### 未解决问题 #3 — 设置页 5 个漫画按钮点不动
+
+**现状**：SettingsWidget 漫画 tab 顶部 5 个 HoneycombButton（阅读/图源/下载/备份/高级）
+点击无反应。用户说"之前几个版本能打开"。
+
+**结构**：有两套五按钮 —— ①`settings.xml` 的 `manga_row` 里 5 个 HoneycombButton
+（`mangaReaderButton`/`mangaSourcesButton`/`mangaDownloadsButton`/`mangaBackupButton`/
+`mangaAdvancedButton`，在 `SettingsWidget.updateUI()` 绑定）；②`MangaSettingsPanel.buildMangaSections()`
+里的文字按钮。当前两套都走 `Activity.showMangaSettingsSubPage(key)` → 新增
+`TrayWidget.showMangaSettingsView(type)`（已可见则直接 `mSettingsWidget.showView(type)`，
+不再重跑 `show()/updateUI()`）。两处都加 `Log.i("MangaSettingsPanel", ...)`，
+漫画子页创建包了 try-catch + Toast。
+
+**关键障碍**：用户点击后 `logcat | grep MangaSettingsPanel` **无任何输出** → 点击可能没到按钮。
+Wolvic GLES 自绘，`uiautomator dump` 看不到这些控件，不能当证据。
+
+**建议下一步（别再盲改）**：请用户点一次后立即
+`adb logcat -d -v time | grep -i "MangaSettingsPanel\|MangaOptions"`：
+- 有 `honeycomb click` → 点击到达，问题在 showView 之后（看 `creating MangaOptionsView` / 异常）
+- 无日志 → 命中/布局问题：查 `HoneycombButton` 的 `VectorClippedEventDelegate` 六边形裁剪
+  命中区、`mangaTabContent` visibility、是否被 `mangaPanelHost` 覆盖。
+  曾把 `manga_row` 改 `weightSum=5` + 按钮 `layout_width=0dp`，意识到会压扁六边形命中区，**已回退，别再这样改**。
+- 历史能点版本 `6e95976` 之前：`MangaSettingsPanel.open()` 是 `if(mOpener!=null) mOpener.open(key)`，
+  opener 在 `SettingsWidget.setupSettingsTabs()` 设置。
+
+### 本轮新增踩坑（构建 / 依赖 / sparse-checkout）
+
+- **sparse-checkout 行尾坑**：`git sparse-checkout add` + `read-tree -mu` 会把 LF 写成 CRLF，
+  `git diff` 冒几千行假变更。改完 `.java/.gradle/.toml` 检查 `b'\r\n' in raw`，有就转回 LF。
+- `.gitignore` 忽略 `*.aar`，本地 AAR 要 `git add --sparse -f app/libs/imagedecoder-14.aar`。
+- 非 cone 模式 `sparse-checkout add` 传前导 `/` 会写入错误绝对路径，导致 checkout 不出文件；
+  直接编辑 `.git/info/sparse-checkout` 用相对路径再 `read-tree -mu HEAD`。
+- **Kotlin 升级到 2.4.0 后**，CI 日志出现多条
+  `D8: Unexpected error during rewriting of Kotlin metadata for class 'mozilla...'` —— 目前
+  只是 WARNING，构建成功；但要留意它是潜在隐患（某些 mozilla/androidx Kotlin 类 metadata 兼容）。
+- CI 常 queued 很久：卡住就重新 dispatch，换新 run id 写入 `build_manga.sh`；旧轮询超 10 分钟就停。
+
+### 参考来源（用户指定 + 已查证）
+
+**mihon-webdav**（`saber1008611/mihon-webdav`）：
+- git clone 被代理 502；用 GitHub API zipball 直连下载（`urllib` + `ProxyHandler({})`）：
+  `https://api.github.com/repos/saber1008611/mihon-webdav/zipball/main`
+- 本地已解压：`D:/APP/wb/gzkj/2026-11-14-02-57-34/mihon-webdav/saber1008611-mihon-webdav-60d83b9/`
+- 关键文件：
+  - `app/src/main/java/eu/kanade/tachiyomi/data/coil/ImageDecoder.kt`（libvips 解 AVIF/JXL/HEIC）
+  - `gradle/libs.versions.toml`（`ca.mpreg:imagedecoder` v14、Coil 3.6.2）
+  - `app/.../data/coil/Utils.kt`（解码选项）
+  - `app/.../source/webdav/`、`source-local/`、`source-api/`（**用户说后续网盘/自定义扩展源从这拿**）
+  - 图片优化：`core/common/.../util/system/ImageUtil.kt`、`app/.../util/waifu2x/ImageEnhancer.kt`
+    + `ImageEnhancementCache`（磁盘缓存）—— 用户明确要求"图片优化部分也看，能改善就加"，**尚未系统研究**
+- Pico 官方：用户给的 `https://github.com/Pico-Developer`（SDK 示例，Native OpenXR 有 VideoPlayer demo）。
+  设备视频编码格式文档 `https://developer-cn.picoxr.com/document/discover/xr-devices`：
+  Neo3/Pico4 硬解 H.264/H.265，**Pico 4 Ultra 才多支持 VP9/AV1** → Neo3 视频硬解没问题，
+  MediaPlayer 默认走 `OMX.qcom.video.decoder.avc`，应用层不指定解码器。
+
+### 后续待办（按优先级）
+
+1. 视频：抓日志 → 修等比居中 + 控制栏可见；继续失败就提议 VideoView/ExoPlayer 大改。
+2. AVIF：抓 `MangaImageDecoder` 日志 → 对照 mihon Kotlin 实现修正反射/生命周期。
+3. 设置五按钮：抓 `MangaSettingsPanel` 点击日志 → 按日志分支定位，别再盲改。
+4. 图片优化：研究 mihon `ImageUtil.kt`/waifu2x/磁盘缓存，挑安全的移植。
+5. 网盘/自定义扩展源：以 mihon `source/webdav/`、`source-local/`、`source-api/` 为参考。
+6. 收尾：设备上测试视频 `/storage/emulated/0/Manga/video_repro.mp4` 与 `VideoTest/` 是否删除（用户未定）。
+
+### 诊断命令备忘
+
+```
+# 构建/装机脚本（RUN_ID 每次改）
+D:/APP/wb/gzkj/2026-11-14-02-57-34/build_manga.sh
+# 诊断 intent —— 注意：会改变启动时序，不能用于视频验证
+adb shell am start -n com.igalia.wolvic.dev/.VRBrowserActivity --es manga_open_folder <目录>
+# 视频页必须从书架正常点进去，抓日志：
+adb logcat -d -v time | grep -E "MangaReader.*(video|surface)|OMX"
+```
+
