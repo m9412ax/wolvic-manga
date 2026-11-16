@@ -12,19 +12,24 @@ import androidx.annotation.Nullable;
 
 import java.io.File;
 
-/**
- * Unified still-image decoder for the manga reader/covers.
- *
- * BitmapFactory / the platform ImageDecoder cannot decode AVIF on all
- * devices (notably Pico Neo3). AVIF/HEIC/JXL go through the bundled libvips
- * decoder (ca.mpreg:imagedecoder, same as Mihon); other formats keep the
- * fast BitmapFactory path so their behaviour (including inSampleSize) stays
- * unchanged.
- */
 public final class MangaImageDecoder {
 
     private static final android.util.LruCache<String, int[]> DIMENSIONS =
             new android.util.LruCache<>(256);
+    private static final Object AVIF_LOCK = new Object();
+
+    private static class NativeLibraries {
+        static {
+            System.loadLibrary("imagedecoder2");
+            System.loadLibrary("manga-decoder");
+        }
+
+        static void load() { }
+    }
+
+    private static native int[] nativeReadBounds(String path);
+    private static native Bitmap nativeDecodeSdr(String path, int sample, long byteBudget,
+                                                 int[] sourceSize);
 
     private MangaImageDecoder() { }
 
@@ -95,30 +100,19 @@ public final class MangaImageDecoder {
             }
             return false;
         }
-        // AVIF is not decoded by the platform decoder on many devices (e.g.
-        // Pico Neo3). Use the bundled libvips decoder for a header decode.
-        java.io.InputStream in = null;
-        Object decoder = null;
-        try {
-            in = new java.io.FileInputStream(file);
-            decoder = createNativeDecoder(in);
-            Object result = decodeNative(decoder);
-            out.outWidth = resultInt(result, "Width");
-            out.outHeight = resultInt(result, "Height");
-            if (out.outWidth > 0 && out.outHeight > 0) {
-                DIMENSIONS.put(fileKey(file), new int[] {out.outWidth, out.outHeight});
+        synchronized (AVIF_LOCK) {
+            try {
+                NativeLibraries.load();
+                int[] dimensions = nativeReadBounds(file.getAbsolutePath());
+                out.outWidth = dimensions[0];
+                out.outHeight = dimensions[1];
+                DIMENSIONS.put(fileKey(file), dimensions);
                 return true;
-            }
-            return false;
-        } catch (Throwable t) {
-            android.util.Log.w("MangaImageDecoder", "avif bounds failed", t);
-            out.outWidth = -1;
-            out.outHeight = -1;
-            return false;
-        } finally {
-            closeNativeDecoder(decoder);
-            if (in != null) {
-                try { in.close(); } catch (Throwable ignored) { }
+            } catch (Throwable t) {
+                android.util.Log.w("MangaImageDecoder", "avif bounds failed", t);
+                out.outWidth = -1;
+                out.outHeight = -1;
+                return false;
             }
         }
     }
@@ -151,11 +145,38 @@ public final class MangaImageDecoder {
     }
 
     private static Bitmap decodeAvif(File file, int sample, long byteBudget) {
+        // Foreground pages, preloads and covers must not overlap full native AV1 decodes.
+        synchronized (AVIF_LOCK) {
+            return decodeAvifLocked(file, sample, byteBudget);
+        }
+    }
+
+    private static Bitmap decodeAvifLocked(File file, int sample, long byteBudget) {
         java.io.InputStream in = null;
         Object decoder = null;
+        long started = android.os.SystemClock.uptimeMillis();
         try {
+            NativeLibraries.load();
             in = new java.io.FileInputStream(file);
             decoder = createNativeDecoder(in);
+            boolean hdr = (Boolean) decoder.getClass().getMethod("isHdr").invoke(decoder);
+            if (!hdr) {
+                closeNativeDecoder(decoder);
+                decoder = null;
+                in.close();
+                in = null;
+                int[] dimensions = new int[2];
+                Bitmap bitmap = nativeDecodeSdr(file.getAbsolutePath(), sample, byteBudget,
+                        dimensions);
+                DIMENSIONS.put(fileKey(file), dimensions);
+                android.util.Log.i("MangaImageDecoder", "avif sampled "
+                        + dimensions[0] + "x" + dimensions[1] + " -> "
+                        + bitmap.getWidth() + "x" + bitmap.getHeight()
+                        + " bytes=" + bitmap.getAllocationByteCount()
+                        + " alpha=" + bitmap.hasAlpha()
+                        + " ms=" + (android.os.SystemClock.uptimeMillis() - started));
+                return bitmap;
+            }
             Object result = decodeNative(decoder);
             int w = resultInt(result, "Width");
             int h = resultInt(result, "Height");

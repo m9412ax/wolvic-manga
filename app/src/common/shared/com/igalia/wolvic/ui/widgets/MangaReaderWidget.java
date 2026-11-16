@@ -769,6 +769,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 || (dimensions[0] <= preview.getWidth() && dimensions[1] <= preview.getHeight()))) {
             return;
         }
+        if (second == null && MangaImageDecoder.isAvif(first)) {
+            int bytesPerPixel = preview.getConfig() == Bitmap.Config.RGBA_F16 ? 8 : 4;
+            int cacheSample = 1;
+            while (Math.max(dimensions[0] / cacheSample, dimensions[1] / cacheSample) > 16384
+                    || (long) Math.max(1, dimensions[0] / cacheSample)
+                    * Math.max(1, dimensions[1] / cacheSample) * bytesPerPixel > pageCacheBudget()) {
+                cacheSample *= 2;
+            }
+            int detailSample = 1;
+            while (Math.max(dimensions[0] / detailSample, dimensions[1] / detailSample) > 16384
+                    || (long) Math.max(1, dimensions[0] / detailSample)
+                    * Math.max(1, dimensions[1] / detailSample) * bytesPerPixel > SINGLE_BITMAP_LIMIT) {
+                detailSample *= 2;
+            }
+            if (cacheSample == detailSample) {
+                return;
+            }
+        }
         final int generation = mLoadGeneration;
         final boolean crop = mSettings.bool(MangaSettings.READER_CROP_BORDERS);
         mExecutor.execute(() -> {
