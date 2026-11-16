@@ -25,6 +25,35 @@ public final class MangaImageDecoder {
 
     private MangaImageDecoder() { }
 
+    /** Kotlin names its factory ImageDecoder.new(InputStream); "new" is a
+     *  Java keyword, so invoke it reflectively. */
+    private static Object createNativeDecoder(java.io.InputStream in) throws Exception {
+        Class<?> cls = Class.forName("ca.mpreg.imagedecoder.ImageDecoder");
+        java.lang.reflect.Method m = cls.getMethod("new", java.io.InputStream.class);
+        return m.invoke(null, in);
+    }
+
+    private static void closeNativeDecoder(Object decoder) {
+        if (decoder == null) {
+            return;
+        }
+        try {
+            decoder.getClass().getMethod("close").invoke(decoder);
+        } catch (Throwable ignored) { }
+    }
+
+    private static Object decodeNative(Object decoder) throws Exception {
+        return decoder.getClass().getMethod("decode").invoke(decoder);
+    }
+
+    private static int resultInt(Object result, String name) throws Exception {
+        return (Integer) result.getClass().getMethod("get" + name).invoke(result);
+    }
+
+    private static java.nio.ByteBuffer resultImage(Object result) throws Exception {
+        return (java.nio.ByteBuffer) result.getClass().getMethod("getImage").invoke(result);
+    }
+
     public static boolean isAvif(File file) {
         if (file == null) {
             return false;
@@ -45,13 +74,13 @@ public final class MangaImageDecoder {
         // AVIF is not decoded by the platform decoder on many devices (e.g.
         // Pico Neo3). Use the bundled libvips decoder for a header decode.
         java.io.InputStream in = null;
-        ca.mpreg.imagedecoder.ImageDecoder decoder = null;
+        Object decoder = null;
         try {
             in = new java.io.FileInputStream(file);
-            decoder = ca.mpreg.imagedecoder.ImageDecoder.Companion.new(in);
-            ca.mpreg.imagedecoder.ImageDecoder.DecodeResult result = decoder.decode();
-            out.outWidth = result.getWidth();
-            out.outHeight = result.getHeight();
+            decoder = createNativeDecoder(in);
+            Object result = decodeNative(decoder);
+            out.outWidth = resultInt(result, "Width");
+            out.outHeight = resultInt(result, "Height");
             return out.outWidth > 0 && out.outHeight > 0;
         } catch (Throwable t) {
             android.util.Log.w("MangaImageDecoder", "avif bounds failed: " + t);
@@ -59,9 +88,7 @@ public final class MangaImageDecoder {
             out.outHeight = -1;
             return false;
         } finally {
-            if (decoder != null) {
-                try { decoder.close(); } catch (Throwable ignored) { }
-            }
+            closeNativeDecoder(decoder);
             if (in != null) {
                 try { in.close(); } catch (Throwable ignored) { }
             }
@@ -88,14 +115,14 @@ public final class MangaImageDecoder {
             }
         }
         java.io.InputStream in = null;
-        ca.mpreg.imagedecoder.ImageDecoder decoder = null;
+        Object decoder = null;
         try {
             in = new java.io.FileInputStream(file);
-            decoder = ca.mpreg.imagedecoder.ImageDecoder.Companion.new(in);
-            ca.mpreg.imagedecoder.ImageDecoder.DecodeResult result = decoder.decode();
-            int w = result.getWidth();
-            int h = result.getHeight();
-            java.nio.ByteBuffer buffer = result.getImage();
+            decoder = createNativeDecoder(in);
+            Object result = decodeNative(decoder);
+            int w = resultInt(result, "Width");
+            int h = resultInt(result, "Height");
+            java.nio.ByteBuffer buffer = resultImage(result);
             buffer.rewind();
             Bitmap full = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
             full.copyPixelsFromBuffer(buffer);
@@ -111,9 +138,7 @@ public final class MangaImageDecoder {
             android.util.Log.w("MangaImageDecoder", "avif decode failed: " + t);
             return null;
         } finally {
-            if (decoder != null) {
-                try { decoder.close(); } catch (Throwable ignored) { }
-            }
+            closeNativeDecoder(decoder);
             if (in != null) {
                 try { in.close(); } catch (Throwable ignored) { }
             }
