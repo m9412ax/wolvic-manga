@@ -1331,7 +1331,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // yank the picture back to the top (the "upward jump").
                 Bitmap prev = mStripSegments[1];
                 if (prev == null || prev.isRecycled()) {
-                    mStripOffset = 0f;
+                    // Hold just above the seam, NOT at the current page's top:
+                    // snapping to 0 made the next frame (once the neighbour
+                    // decoded) cross the seam with a full frame of accumulated
+                    // delta and land on the previous page's TOP - the reported
+                    // up-scroll jump. Holding here keeps the view at the seam
+                    // so the crossing lands on the previous page's tail.
+                    mStripOffset = -0.001f;
                     loadStripNeighbours(mStripGeneration);
                     break;
                 }
