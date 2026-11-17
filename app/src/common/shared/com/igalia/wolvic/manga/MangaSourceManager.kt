@@ -1,5 +1,6 @@
 package com.igalia.wolvic.manga
 
+import android.app.Application
 import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -95,6 +96,9 @@ object MangaSourceManager {
             Injekt.importModule(object : InjektModule {
                 override fun InjektRegistrar.registerInjectables() {
                     addSingletonFactory<Context> { appContext }
+                    // Mihon registers the Application at startup; extensions
+                    // like jinmantiantang/picacomic resolve it in <clinit>.
+                    addSingletonFactory<Application> { appContext as Application }
                     addSingletonFactory {
                         Json {
                             ignoreUnknownKeys = true
