@@ -1822,7 +1822,7 @@ public class MangaLibraryWidget extends UIWidget {
                 LinearLayout row = addRow(content);
                 addPrefTitle(row, title, summary);
                 addButton(row, tp.isChecked() ? "开" : "关", v -> {
-                    tp.persistBoolean(!tp.isChecked());
+                    tp.setChecked(!tp.isChecked());
                     refreshPage(MangaPage.SOURCE_SETTINGS);
                 });
             } else if (p instanceof ListPreference) {
@@ -1833,7 +1833,7 @@ public class MangaLibraryWidget extends UIWidget {
                 addButton(row, entry == null ? "选择…" : entry.toString(), v -> openOptions(
                         title, lp.getEntries(), lp.getEntryValues(), lp.getValue(),
                         value -> {
-                            lp.persistString(value);
+                            lp.setValue(value);
                             refreshPage(MangaPage.SOURCE_SETTINGS);
                         },
                         MangaPage.SOURCE_SETTINGS));
@@ -1845,7 +1845,7 @@ public class MangaLibraryWidget extends UIWidget {
                 addButton(row, text == null || text.isEmpty() ? "输入…" : text, v -> openText(
                         title, text == null ? "" : text,
                         value -> {
-                            ep.persistString(value);
+                            ep.setText(value);
                             refreshPage(MangaPage.SOURCE_SETTINGS);
                         },
                         MangaPage.SOURCE_SETTINGS));

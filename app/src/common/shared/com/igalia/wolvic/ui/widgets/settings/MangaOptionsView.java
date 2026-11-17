@@ -242,6 +242,9 @@ public class MangaOptionsView extends SettingsView
         radio("页面缓存上限", MangaSettings.CACHE_MB,
                 new String[]{"64 MB", "128 MB", "256 MB", "512 MB"},
                 new int[]{64, 128, 256, 512});
+        radio("在线章节磁盘缓存上限", MangaSettings.SOURCE_CACHE_MB,
+                new String[]{"256 MB", "512 MB", "1024 MB", "2048 MB"},
+                new int[]{256, 512, 1024, 2048});
 
         section("备份文件");
         button("导出设置与进度", "导出", () -> {

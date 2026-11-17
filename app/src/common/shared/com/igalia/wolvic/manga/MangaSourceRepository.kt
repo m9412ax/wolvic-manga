@@ -170,31 +170,11 @@ object MangaSourceRepository {
                         main.post { progress.onProgress(i + 1, pages.size) }
                         return@forEachIndexed
                     }
-                    if (page.imageUrl == null && source is HttpSource) {
-                        page.imageUrl = source.getImageUrl(page)
-                    }
-                    val response = when {
-                        source is HttpSource && page.imageUrl != null -> source.getImage(page)
-                        page.imageUrl != null -> plainClient.newCall(GET(page.imageUrl!!)).awaitSuccess()
-                        else -> throw IllegalStateException("第 ${i + 1} 页没有图片地址")
-                    }
-                    response.use { resp ->
-                        val body = resp.body
-                        val ext = extensionFor(
-                            body.contentType()?.toString(),
-                            page.imageUrl ?: page.url,
-                        )
-                        val out = File(dir, "%04d.%s".format(page.index, ext))
-                        val tmp = File(dir, out.name + ".tmp")
-                        body.byteStream().use { input ->
-                            tmp.outputStream().use { output -> input.copyTo(output) }
-                        }
-                        if (tmp.length() == 0L) throw IllegalStateException("第 ${i + 1} 页下载为空")
-                        tmp.renameTo(out)
-                    }
+                    fetchPage(source, page, dir)
                     main.post { progress.onProgress(i + 1, pages.size) }
                 }
                 Log.i(TAG, "download done: $dir")
+                enforceCacheCap(context)
                 main.post { cb.onResult(dir, null) }
             } catch (e: Throwable) {
                 Log.e(TAG, "download failed: ${source.name} '${chapter.name}'", e)
@@ -202,6 +182,91 @@ object MangaSourceRepository {
             }
         }
     }
+
+    private val prefetching = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Disk-only pre-cache of the first [maxPages] pages of a chapter so the
+     *  reader can switch chapters instantly. Silent: failures are logged. */
+    fun prefetchChapter(context: Context, source: Source, manga: SManga, chapter: SChapter, maxPages: Int) {
+        val key = source.id.toString() + ":" + chapter.url
+        if (!prefetching.add(key)) return
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val dir = chapterDir(context, source, manga, chapter)
+                val existing = dir.listFiles()?.count { !it.name.endsWith(".tmp") && it.length() > 0 } ?: 0
+                if (existing >= maxPages) return@launch
+                val pages = source.getPageList(chapter)
+                dir.mkdirs()
+                var done = 0
+                for (page in pages) {
+                    if (done >= maxPages) break
+                    if (existingPage(dir, page.index) == null) {
+                        fetchPage(source, page, dir)
+                    }
+                    done++
+                }
+                Log.i(TAG, "prefetch ${source.name} '${chapter.name}' $done pages -> $dir")
+                enforceCacheCap(context)
+            } catch (e: Throwable) {
+                Log.w(TAG, "prefetch failed: ${source.name} '${chapter.name}' (${e.message})")
+            } finally {
+                prefetching.remove(key)
+            }
+        }
+    }
+
+    private suspend fun fetchPage(source: Source, page: eu.kanade.tachiyomi.source.model.Page, dir: File) {
+        if (page.imageUrl == null && source is HttpSource) {
+            page.imageUrl = source.getImageUrl(page)
+        }
+        val response = when {
+            source is HttpSource && page.imageUrl != null -> source.getImage(page)
+            page.imageUrl != null -> plainClient.newCall(GET(page.imageUrl!!)).awaitSuccess()
+            else -> throw IllegalStateException("第 ${page.index + 1} 页没有图片地址")
+        }
+        response.use { resp ->
+            val body = resp.body
+            val ext = extensionFor(body.contentType()?.toString(), page.imageUrl ?: page.url)
+            val out = File(dir, "%04d.%s".format(page.index, ext))
+            val tmp = File(dir, out.name + ".tmp")
+            body.byteStream().use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (tmp.length() == 0L) throw IllegalStateException("第 ${page.index + 1} 页下载为空")
+            tmp.renameTo(out)
+        }
+    }
+
+    /** Evicts oldest chapter cache folders once the configured cap is exceeded. */
+    private fun enforceCacheCap(context: Context) {
+        try {
+            val base = File(context.externalCacheDir ?: context.cacheDir, "manga-sources")
+            val capMb = MangaSettings.get(context).integer(MangaSettings.SOURCE_CACHE_MB)
+            val cap = capMb.toLong() * 1024 * 1024
+            val chapters = mutableListOf<File>()
+            base.listFiles()?.forEach { src ->
+                src.listFiles()?.forEach { manga ->
+                    manga.listFiles()?.forEach { ch -> if (ch.isDirectory) chapters.add(ch) }
+                }
+            }
+            var total = chapters.sumOf { dirSize(it) }
+            if (total <= cap) return
+            chapters.sortBy { it.lastModified() }
+            for (ch in chapters) {
+                if (total <= cap) break
+                val size = dirSize(ch)
+                if (ch.deleteRecursively()) {
+                    total -= size
+                    Log.i(TAG, "cache evict $ch ($size bytes)")
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "cache cap enforcement failed (${e.message})")
+        }
+    }
+
+    private fun dirSize(dir: File): Long =
+        dir.listFiles()?.sumOf { if (it.isDirectory) dirSize(it) else it.length() } ?: 0L
 
     fun chapterDir(context: Context, source: Source, manga: SManga, chapter: SChapter): File {
         val base = context.externalCacheDir ?: context.cacheDir

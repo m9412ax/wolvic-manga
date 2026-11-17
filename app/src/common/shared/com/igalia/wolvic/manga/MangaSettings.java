@@ -125,6 +125,7 @@ public final class MangaSettings {
     public static final String PROGRESS_ENABLED = "progress_enabled";
     public static final String PROGRESS_VIDEO = "progress_video";
     public static final String CACHE_MB = "cache_mb";
+    public static final String SOURCE_CACHE_MB = "source_cache_mb";
 
     // Advanced
     public static final String ADV_HW_ACCEL = "adv_hw_accel";
@@ -242,6 +243,8 @@ public final class MangaSettings {
                 return 2;
             case CACHE_MB:
                 return 256;
+            case SOURCE_CACHE_MB:
+                return 1024;
             case ADV_MAX_DECODE_PX:
                 return 1600;
             case READER_VIDEO_FIT:
