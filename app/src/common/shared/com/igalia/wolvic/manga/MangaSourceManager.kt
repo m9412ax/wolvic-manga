@@ -54,9 +54,18 @@ object MangaSourceManager {
         val extName: String,
         val versionName: String,
         val nsfw: Boolean,
+        val appLabel: String,
+        val icon: android.graphics.drawable.Drawable?,
+    )
+
+    data class LoadFailure(
+        val pkgName: String,
+        val appLabel: String,
+        val error: String,
     )
 
     private val loaded = mutableListOf<LoadedSource>()
+    private val failures = mutableListOf<LoadFailure>()
     @Volatile
     private var initialized = false
     @Volatile
@@ -65,6 +74,7 @@ object MangaSourceManager {
     @Synchronized
     fun reload(context: Context): List<LoadedSource> {
         loaded.clear()
+        failures.clear()
         initialized = false
         return init(context)
     }
@@ -122,13 +132,29 @@ object MangaSourceManager {
                 loadExtension(appContext, pm, pkg)
             } catch (e: Throwable) {
                 Log.e(TAG, "extension load failed: ${pkg.packageName}", e)
+                recordFailure(pm, pkg.packageName, e)
             }
         }
-        Log.i(TAG, "init done: ${loaded.size} sources from ${packages.count { isExtension(it) }} extension packages")
+        Log.i(TAG, "init done: ${loaded.size} sources from ${packages.count { isExtension(it) }} extension packages, failures=${failures.size}")
         return loaded.toList()
     }
 
     fun getSources(): List<LoadedSource> = synchronized(this) { loaded.toList() }
+
+    fun getFailures(): List<LoadFailure> = synchronized(this) { failures.toList() }
+
+    private fun recordFailure(pm: PackageManager, pkgName: String, e: Throwable?) {
+        val label = try {
+            pm.getApplicationLabel(pm.getApplicationInfo(pkgName, 0)).toString()
+        } catch (ignored: Exception) {
+            pkgName
+        }
+        val error = e?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "未知错误"
+        synchronized(this) {
+            failures.removeAll { it.pkgName == pkgName }
+            failures.add(LoadFailure(pkgName, label, error))
+        }
+    }
 
     fun getSource(id: Long): Source? = synchronized(this) {
         loaded.firstOrNull { it.source.id == id }?.source
@@ -166,9 +192,16 @@ object MangaSourceManager {
         val appInfo = pkg.applicationInfo ?: return
         val pkgName = pkg.packageName
         val versionName = pkg.versionName ?: ""
+        val appLabel = appInfo.loadLabel(pm).toString()
+        val icon = try {
+            appInfo.loadIcon(pm)
+        } catch (e: Exception) {
+            null
+        }
         val metaData = appInfo.metaData
         if (metaData == null) {
             Log.w(TAG, "no meta-data: $pkgName")
+            recordFailure(pm, pkgName, IllegalStateException("no meta-data"))
             return
         }
 
@@ -179,11 +212,11 @@ object MangaSourceManager {
             ?: versionName.substringBeforeLast('.').toDoubleOrNull()
         if (libVersion == null || libVersion !in SUPPORTED_LIB_VERSIONS) {
             Log.w(TAG, "unsupported lib version $libVersion for $pkgName (supported: $SUPPORTED_LIB_VERSIONS)")
+            recordFailure(pm, pkgName, IllegalStateException("unsupported lib version $libVersion"))
             return
         }
 
-        val extName = metaData.getString(METADATA_NAME)
-            ?: appInfo.loadLabel(pm).toString()
+        val extName = metaData.getString(METADATA_NAME) ?: appLabel
         val nsfw = metaData.getInt(METADATA_NSFW, 0) == 1
 
         val classLoader = try {
@@ -194,15 +227,19 @@ object MangaSourceManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "classloader creation failed: $pkgName", e)
+            recordFailure(pm, pkgName, e)
             return
         }
 
         val sourceClasses = metaData.getString(METADATA_SOURCE_CLASS)
         if (sourceClasses.isNullOrBlank()) {
             Log.w(TAG, "missing source class meta-data: $pkgName")
+            recordFailure(pm, pkgName, IllegalStateException("missing source class meta-data"))
             return
         }
+        Log.i(TAG, "ext meta: pkg=$pkgName class=$sourceClasses lib=$libVersion name=$extName")
 
+        var anyLoaded = false
         for (raw in sourceClasses.split(";")) {
             val className = raw.trim().let {
                 if (it.startsWith(".")) pkgName + it else it
@@ -222,8 +259,9 @@ object MangaSourceManager {
                 for (source in sources) {
                     synchronized(this) {
                         loaded.removeAll { it.source.id == source.id }
-                        loaded.add(LoadedSource(source, pkgName, extName, versionName, nsfw))
+                        loaded.add(LoadedSource(source, pkgName, extName, versionName, nsfw, appLabel, icon))
                     }
+                    anyLoaded = true
                     Log.i(
                         TAG,
                         "loaded source: name=${source.name} id=${source.id} lang=${source.lang} " +
@@ -232,7 +270,13 @@ object MangaSourceManager {
                 }
             } catch (e: Throwable) {
                 Log.e(TAG, "source class load failed: $className ($pkgName)", e)
+                recordFailure(pm, pkgName, e)
             }
+        }
+        if (!anyLoaded) {
+            recordFailure(pm, pkgName, IllegalStateException("no source class instantiated"))
+        } else {
+            synchronized(this) { failures.removeAll { it.pkgName == pkgName } }
         }
     }
 }

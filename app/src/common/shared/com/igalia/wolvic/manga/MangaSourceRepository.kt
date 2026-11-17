@@ -1,6 +1,8 @@
 package com.igalia.wolvic.manga
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -8,6 +10,7 @@ import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
+import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -40,25 +43,79 @@ object MangaSourceRepository {
         fun onProgress(done: Int, total: Int)
     }
 
-    fun browse(source: Source, page: Int, query: String, cb: Callback<MangasPage>) {
+    fun browse(source: Source, page: Int, query: String, filters: FilterList?, cb: Callback<MangasPage>) {
         if (source !is CatalogueSource) {
             cb.onResult(null, "该源不支持浏览")
             return
         }
         GlobalScope.launch(Dispatchers.IO) {
             try {
-                val result = if (query.isBlank()) {
+                val result = if (query.isBlank() && filters == null) {
                     source.getPopularManga(page)
                 } else {
-                    source.getSearchManga(page, query, source.getFilterList())
+                    source.getSearchManga(page, query, filters ?: source.getFilterList())
                 }
-                Log.i(TAG, "browse ${source.name} page=$page q='$query' -> ${result.mangas.size} hasNext=${result.hasNextPage}")
+                Log.i(TAG, "browse ${source.name} page=$page q='$query' filters=${filters != null} -> ${result.mangas.size} hasNext=${result.hasNextPage}")
                 main.post { cb.onResult(result, null) }
             } catch (e: Throwable) {
                 Log.e(TAG, "browse failed: ${source.name}", e)
                 main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
             }
         }
+    }
+
+    fun fetchFilters(source: Source, cb: Callback<FilterList>) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val filters = source.getFilterList()
+                main.post { cb.onResult(filters, null) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "getFilterList failed: ${source.name}", e)
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    /** Fetches a cover thumbnail with the source's own client/headers and
+     *  decodes it downsampled; null on any failure (caller shows placeholder). */
+    fun loadCover(source: Source, url: String?, cb: Callback<Bitmap>) {
+        if (url.isNullOrBlank()) {
+            cb.onResult(null, null)
+            return
+        }
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val request = if (source is HttpSource) GET(url, source.headers) else GET(url)
+                val client = if (source is HttpSource) source.client else plainClient
+                val bytes = client.newCall(request).awaitSuccess().use { it.body.bytes() }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    while (bounds.outWidth / (sample * 2) >= COVER_PX && bounds.outHeight / (sample * 2) >= COVER_PX) {
+                        sample *= 2
+                    }
+                }
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                main.post { cb.onResult(bitmap, null) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "cover load failed: $url (${e.message})")
+                main.post { cb.onResult(null, e.message) }
+            }
+        }
+    }
+
+    private const val COVER_PX = 320
+
+    private val plainClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
     }
 
     fun latest(source: Source, page: Int, cb: Callback<MangasPage>) {
@@ -107,12 +164,6 @@ object MangaSourceRepository {
                 val dir = chapterDir(context, source, manga, chapter)
                 dir.mkdirs()
                 Log.i(TAG, "download ${source.name} '${chapter.name}' pages=${pages.size} -> $dir")
-                val plainClient by lazy {
-                    OkHttpClient.Builder()
-                        .connectTimeout(30, TimeUnit.SECONDS)
-                        .readTimeout(60, TimeUnit.SECONDS)
-                        .build()
-                }
                 pages.forEachIndexed { i, page ->
                     val target = existingPage(dir, i)
                     if (target != null && target.length() > 0) {

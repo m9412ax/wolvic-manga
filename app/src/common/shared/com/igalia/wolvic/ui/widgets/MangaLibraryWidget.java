@@ -35,6 +35,13 @@ import android.widget.Toast;
 
 import androidx.core.content.FileProvider;
 
+import androidx.preference.EditTextPreference;
+import androidx.preference.ListPreference;
+import androidx.preference.Preference;
+import androidx.preference.PreferenceGroup;
+import androidx.preference.PreferenceManager;
+import androidx.preference.PreferenceScreen;
+import androidx.preference.TwoStatePreference;
 import androidx.recyclerview.widget.GridLayoutManager;
 
 import com.igalia.wolvic.R;
@@ -49,9 +56,13 @@ import com.igalia.wolvic.manga.MangaSourceManager;
 import com.igalia.wolvic.manga.MangaSourceRepository;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
+import com.igalia.wolvic.ui.adapters.SourceCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
 
+import eu.kanade.tachiyomi.source.ConfigurableSource;
 import eu.kanade.tachiyomi.source.Source;
+import eu.kanade.tachiyomi.source.model.Filter;
+import eu.kanade.tachiyomi.source.model.FilterList;
 import eu.kanade.tachiyomi.source.model.MangasPage;
 import eu.kanade.tachiyomi.source.model.SChapter;
 import eu.kanade.tachiyomi.source.model.SManga;
@@ -59,14 +70,20 @@ import eu.kanade.tachiyomi.source.model.SManga;
 import java.io.File;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.EnumMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
 /**
  * Manga content panel. Page switching is NOT implemented here: the original
@@ -88,6 +105,10 @@ public class MangaLibraryWidget extends UIWidget {
         EXTENSIONS("漫画源扩展"),
         SOURCE_BROWSE("图源浏览"),
         SOURCE_MANGA("漫画详情"),
+        SOURCE_SETTINGS("图源设置"),
+        SOURCE_FILTERS("筛选"),
+        SOURCE_OPTIONS("选择选项"),
+        SOURCE_TEXT("输入文本"),
         FOLDER("文件夹"),
         SETTINGS("设置");
 
@@ -133,6 +154,25 @@ public class MangaLibraryWidget extends UIWidget {
     private SManga mSourceManga;
     private String mSourceMangaStatus = "";
     private final List<SChapter> mSourceChapters = new ArrayList<>();
+    private final Set<String> mExpandedPkgs = new HashSet<>();
+    private boolean mExpandedInit = false;
+    private MangaSourceManager.LoadedSource mSettingsSource;
+    private PreferenceScreen mPrefScreen;
+    private FilterList mSourceFilters;
+    private boolean mSourceFiltersActive = false;
+    private CustomRecyclerView mSourceGrid;
+    private SourceCoverAdapter mSourceAdapter;
+    private Source mSourceAdapterSource;
+    private MangaPage mOptionReturn = MangaPage.SOURCE_SETTINGS;
+    private String mOptionTitle = "";
+    private String[] mOptionLabels = new String[0];
+    private String[] mOptionValues = new String[0];
+    private String mOptionCurrent = "";
+    private Consumer<String> mOptionPick;
+    private MangaPage mTextReturn = MangaPage.SOURCE_SETTINGS;
+    private String mTextTitle = "";
+    private String mTextValue = "";
+    private Consumer<String> mTextSave;
     private final List<MangaWebDav.Entry> mWebDavEntries = new ArrayList<>();
     private final ExecutorService mIoExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-io");
@@ -332,6 +372,16 @@ public class MangaLibraryWidget extends UIWidget {
         int pad = dp(20);
         content.setPadding(pad, pad, pad, pad);
 
+        if (page == MangaPage.SOURCE_BROWSE) {
+            // Cover grid needs the whole page height; a ScrollView wrapper
+            // would fight the RecyclerView for scroll gestures.
+            mSourceGrid = new CustomRecyclerView(getContext());
+            mSourceGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
+            mPageContents.put(page, content);
+            fillPage(page, content);
+            return content;
+        }
+
         ScrollView scroll = new ScrollView(getContext());
         scroll.addView(content, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
@@ -393,6 +443,18 @@ public class MangaLibraryWidget extends UIWidget {
                 break;
             case SOURCE_MANGA:
                 fillSourceMangaPage(content);
+                break;
+            case SOURCE_SETTINGS:
+                fillSourceSettingsPage(content);
+                break;
+            case SOURCE_FILTERS:
+                fillSourceFiltersPage(content);
+                break;
+            case SOURCE_OPTIONS:
+                fillSourceOptionsPage(content);
+                break;
+            case SOURCE_TEXT:
+                fillSourceTextPage(content);
                 break;
             case FOLDER:
                 fillFolderPage(content);
@@ -1302,7 +1364,7 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void fillExtensionsPage(LinearLayout content) {
         addInfo(content, "自定义漫画源 / 扩展应用",
-                "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。点“试读”抓取热门第一页，结果见 logcat(MangaSource)。");
+                "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。多源应用默认折叠，点应用名展开；源名优先显示扩展内置名称。");
         List<MangaSourceManager.LoadedSource> sources;
         try {
             sources = MangaSourceManager.INSTANCE.init(getContext());
@@ -1311,12 +1373,68 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "加载失败", String.valueOf(t));
             sources = new ArrayList<>();
         }
-        addInfo(content, "已加载图源", String.valueOf(sources.size()));
+        Map<String, List<MangaSourceManager.LoadedSource>> groups = new LinkedHashMap<>();
         for (MangaSourceManager.LoadedSource entry : sources) {
-            LinearLayout row = addRow(content);
-            addButton(row, entry.getExtName() + " [" + entry.getSource().getLang() + "] "
-                    + entry.getVersionName(), v -> openSourceBrowse(entry));
-            addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(entry));
+            List<MangaSourceManager.LoadedSource> list = groups.get(entry.getPkgName());
+            if (list == null) {
+                list = new ArrayList<>();
+                groups.put(entry.getPkgName(), list);
+            }
+            list.add(entry);
+        }
+        if (!mExpandedInit) {
+            mExpandedInit = true;
+            for (Map.Entry<String, List<MangaSourceManager.LoadedSource>> g : groups.entrySet()) {
+                if (g.getValue().size() == 1) {
+                    mExpandedPkgs.add(g.getKey());
+                }
+            }
+        }
+        addInfo(content, "已加载图源", sources.size() + " 个源 / " + groups.size() + " 个应用");
+        for (Map.Entry<String, List<MangaSourceManager.LoadedSource>> g : groups.entrySet()) {
+            final String pkg = g.getKey();
+            List<MangaSourceManager.LoadedSource> list = g.getValue();
+            MangaSourceManager.LoadedSource first = list.get(0);
+            boolean expanded = mExpandedPkgs.contains(pkg);
+            LinearLayout header = addRow(content);
+            if (first.getIcon() != null) {
+                ImageView icon = new ImageView(getContext());
+                icon.setImageDrawable(first.getIcon());
+                LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(44), dp(44));
+                ip.setMargins(0, dp(4), dp(8), dp(4));
+                header.addView(icon, ip);
+            }
+            String label = list.size() == 1 ? first.getSource().getName() : first.getAppLabel();
+            addButton(header, label + (list.size() > 1 ? "（" + list.size() + " 源）" : "")
+                    + (expanded ? " ▲" : " ▼"), v -> {
+                if (mExpandedPkgs.contains(pkg)) {
+                    mExpandedPkgs.remove(pkg);
+                } else {
+                    mExpandedPkgs.add(pkg);
+                }
+                refreshPage(MangaPage.EXTENSIONS);
+            });
+            if (!expanded) {
+                continue;
+            }
+            for (MangaSourceManager.LoadedSource entry : list) {
+                LinearLayout row = addRow(content);
+                addButton(row, entry.getSource().getName() + " [" + entry.getSource().getLang() + "]",
+                        v -> openSourceBrowse(entry));
+                if (entry.getSource() instanceof ConfigurableSource) {
+                    addButton(row, "设置", v -> openSourceSettings(entry));
+                }
+                addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(entry));
+            }
+        }
+        List<MangaSourceManager.LoadFailure> failures = MangaSourceManager.INSTANCE.getFailures();
+        if (!failures.isEmpty()) {
+            addInfo(content, "未识别扩展", failures.size() + " 个 · 点名称查看错误摘要，完整堆栈见 logcat(MangaSource)");
+            for (MangaSourceManager.LoadFailure f : failures) {
+                LinearLayout row = addRow(content);
+                addButton(row, "⚠ " + f.getAppLabel(), v ->
+                        Toast.makeText(getContext(), f.getPkgName() + "\n" + f.getError(), Toast.LENGTH_LONG).show());
+            }
         }
 
         File extDir = new File(mSettings.text(MangaSettings.SOURCE_ROOT), "Extensions");
@@ -1348,6 +1466,8 @@ public class MangaLibraryWidget extends UIWidget {
         mSourceLatest = false;
         mSourceMangas.clear();
         mSourceHasNext = false;
+        mSourceFilters = null;
+        mSourceFiltersActive = false;
         switchPage(MangaPage.SOURCE_BROWSE);
         startSourceBrowse();
     }
@@ -1375,7 +1495,8 @@ public class MangaLibraryWidget extends UIWidget {
         if (mSourceLatest) {
             MangaSourceRepository.INSTANCE.latest(source, mSourcePage, cb);
         } else {
-            MangaSourceRepository.INSTANCE.browse(source, mSourcePage, mSourceQuery, cb);
+            MangaSourceRepository.INSTANCE.browse(source, mSourcePage, mSourceQuery,
+                    mSourceFiltersActive ? mSourceFilters : null, cb);
         }
     }
 
@@ -1385,9 +1506,13 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         Source source = mSourceEntry.getSource();
-        addInfo(content, mSourceEntry.getExtName(), source.getName() + " · " + source.getLang());
+        addInfo(content, source.getName(), mSourceEntry.getAppLabel() + " · " + source.getLang());
         LinearLayout nav = addRow(content);
         addButton(nav, "← 返回扩展", v -> switchPage(MangaPage.EXTENSIONS));
+        addButton(nav, "筛选", v -> openSourceFilters());
+        if (source instanceof ConfigurableSource) {
+            addButton(nav, "设置", v -> openSourceSettings(mSourceEntry));
+        }
 
         LinearLayout searchRow = addRow(content);
         EditText input = new EditText(getContext());
@@ -1420,11 +1545,6 @@ public class MangaLibraryWidget extends UIWidget {
             });
         }
 
-        addInfo(content, "状态", mSourceStatus);
-        for (SManga manga : mSourceMangas) {
-            LinearLayout row = addRow(content);
-            addButton(row, manga.getTitle(), v -> openSourceManga(manga));
-        }
         LinearLayout pager = addRow(content);
         if (mSourcePage > 1) {
             addButton(pager, "上一页", v -> {
@@ -1438,6 +1558,371 @@ public class MangaLibraryWidget extends UIWidget {
                 startSourceBrowse();
             });
         }
+        addInfo(content, "状态", mSourceStatus
+                + (mSourceFiltersActive ? " · 已应用筛选" : ""));
+
+        if (mSourceAdapter == null || mSourceAdapterSource != source) {
+            mSourceAdapterSource = source;
+            mSourceAdapter = new SourceCoverAdapter(getContext(), source, this::openSourceManga);
+            mSourceGrid.setAdapter(mSourceAdapter);
+        }
+        mSourceGrid.setLayoutManager(new GridLayoutManager(getContext(), Math.max(2, spanCount())));
+        mSourceAdapter.update(mSourceMangas);
+        content.addView(mSourceGrid, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+    }
+
+    private void searchSourceBy(String query) {
+        mSourceQuery = query;
+        mSourceLatest = false;
+        mSourcePage = 1;
+        switchPage(MangaPage.SOURCE_BROWSE);
+        startSourceBrowse();
+    }
+
+    // ---------------------------------------------------- source filters
+
+    private void openSourceFilters() {
+        if (mSourceEntry == null) {
+            return;
+        }
+        if (mSourceFilters != null) {
+            switchPage(MangaPage.SOURCE_FILTERS);
+            return;
+        }
+        MangaSourceRepository.INSTANCE.fetchFilters(mSourceEntry.getSource(), (filters, error) -> {
+            if (filters == null) {
+                Toast.makeText(getContext(), "读取筛选失败：" + error, Toast.LENGTH_LONG).show();
+                return;
+            }
+            mSourceFilters = filters;
+            applyDefaultSort(filters);
+            switchPage(MangaPage.SOURCE_FILTERS);
+        });
+    }
+
+    /** User default: every catalogue sorts newest-first unless the extension
+     *  says otherwise; pick the matching option of any sort-like filter. */
+    @SuppressWarnings("unchecked")
+    private void applyDefaultSort(FilterList filters) {
+        for (Object o : filters.getList()) {
+            Filter f = (Filter) o;
+            if (f instanceof Filter.Select) {
+                Filter.Select sel = (Filter.Select) f;
+                String name = sel.getName().toLowerCase(Locale.ROOT);
+                if (!name.contains("sort") && !sel.getName().contains("排序")) {
+                    continue;
+                }
+                Object[] vals = sel.getValues();
+                for (int i = 0; i < vals.length; i++) {
+                    String s = String.valueOf(vals[i]);
+                    if (s.contains("新到旧") || s.contains("最新")
+                            || s.toLowerCase(Locale.ROOT).contains("newest")) {
+                        sel.setState(i);
+                        break;
+                    }
+                }
+            } else if (f instanceof Filter.Sort) {
+                Filter.Sort sort = (Filter.Sort) f;
+                if (sort.getState() != null) {
+                    continue;
+                }
+                String[] vals = sort.getValues();
+                for (int i = 0; i < vals.length; i++) {
+                    String s = vals[i];
+                    if (s.contains("新到旧") || s.contains("最新")
+                            || s.toLowerCase(Locale.ROOT).contains("newest")) {
+                        sort.setState(new Filter.Sort.Selection(i, false));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private void fillSourceFiltersPage(LinearLayout content) {
+        if (mSourceEntry == null || mSourceFilters == null) {
+            addInfo(content, "无筛选", "请先到图源浏览页点“筛选”。");
+            return;
+        }
+        addInfo(content, mSourceEntry.getSource().getName() + " · 筛选",
+                "选项来自扩展内置分类，可跨组多选；应用后回到浏览并按筛选刷新。");
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回浏览", v -> switchPage(MangaPage.SOURCE_BROWSE));
+        addButton(nav, "应用筛选", v -> {
+            mSourceFiltersActive = true;
+            mSourcePage = 1;
+            switchPage(MangaPage.SOURCE_BROWSE);
+            startSourceBrowse();
+        });
+        addButton(nav, "重置", v -> {
+            mSourceFilters = null;
+            mSourceFiltersActive = false;
+            openSourceFilters();
+        });
+        if (mSourceFilters.getList().isEmpty()) {
+            addInfo(content, "无内置筛选", "该扩展没有提供筛选选项。");
+        }
+        renderFilters(mSourceFilters.getList(), content);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void renderFilters(List<?> filters, LinearLayout content) {
+        for (Object o : filters) {
+            Filter f = (Filter) o;
+            if (f instanceof Filter.Group) {
+                endChips();
+                addInfo(content, f.getName(), null);
+                renderFilters((List<?>) ((Filter.Group) f).getState(), content);
+                endChips();
+            } else if (f instanceof Filter.Select) {
+                endChips();
+                Filter.Select sel = (Filter.Select) f;
+                addInfo(content, f.getName(), null);
+                Object[] vals = sel.getValues();
+                int state = (Integer) sel.getState();
+                for (int i = 0; i < vals.length; i++) {
+                    final int idx = i;
+                    addChip(content, String.valueOf(vals[i]) + (i == state ? " ✓" : ""), v -> {
+                        sel.setState(idx);
+                        refreshPage(MangaPage.SOURCE_FILTERS);
+                    });
+                }
+                endChips();
+            } else if (f instanceof Filter.CheckBox) {
+                boolean st = (Boolean) f.getState();
+                addChip(content, f.getName() + (st ? " ✓" : ""), v -> {
+                    f.setState(!st);
+                    refreshPage(MangaPage.SOURCE_FILTERS);
+                });
+            } else if (f instanceof Filter.TriState) {
+                int st = (Integer) f.getState();
+                String suffix = st == Filter.TriState.STATE_INCLUDE ? " ✓"
+                        : st == Filter.TriState.STATE_EXCLUDE ? " ✗" : "";
+                addChip(content, f.getName() + suffix, v -> {
+                    f.setState((st + 1) % 3);
+                    refreshPage(MangaPage.SOURCE_FILTERS);
+                });
+            } else if (f instanceof Filter.Sort) {
+                endChips();
+                Filter.Sort sort = (Filter.Sort) f;
+                addInfo(content, f.getName(), null);
+                Filter.Sort.Selection sel = (Filter.Sort.Selection) sort.getState();
+                String[] vals = sort.getValues();
+                for (int i = 0; i < vals.length; i++) {
+                    final int idx = i;
+                    boolean on = sel != null && sel.getIndex() == i;
+                    addChip(content, vals[i] + (on ? (sel.getAscending() ? " ↑" : " ↓") : ""), v -> {
+                        Filter.Sort.Selection cur = (Filter.Sort.Selection) sort.getState();
+                        boolean asc = cur != null && cur.getIndex() == idx && !cur.getAscending();
+                        sort.setState(new Filter.Sort.Selection(idx, asc));
+                        refreshPage(MangaPage.SOURCE_FILTERS);
+                    });
+                }
+                endChips();
+            } else if (f instanceof Filter.Text) {
+                endChips();
+                Filter.Text text = (Filter.Text) f;
+                LinearLayout row = addRow(content);
+                EditText input = new EditText(getContext());
+                input.setHint(f.getName());
+                input.setText((String) text.getState());
+                input.setTextColor(0xFFFFFFFF);
+                input.setHintTextColor(0xFF808088);
+                input.setTextSize(17f);
+                row.addView(input, new LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                addButton(row, "设", v -> {
+                    text.setState(input.getText().toString());
+                    refreshPage(MangaPage.SOURCE_FILTERS);
+                });
+            } else if (f instanceof Filter.Header) {
+                endChips();
+                addInfo(content, f.getName(), null);
+            } else if (f instanceof Filter.Separator) {
+                endChips();
+                View spacer = new View(getContext());
+                content.addView(spacer, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(8)));
+            }
+        }
+        endChips();
+    }
+
+    private LinearLayout mChipRow;
+    private int mChipCount;
+
+    private Button addChip(LinearLayout content, String text, View.OnClickListener listener) {
+        if (mChipRow == null || mChipCount >= 3) {
+            mChipRow = addRow(content);
+            mChipCount = 0;
+        }
+        mChipCount++;
+        Button button = addButton(mChipRow, text, listener);
+        button.setMinWidth(dp(90));
+        return button;
+    }
+
+    private void endChips() {
+        mChipRow = null;
+        mChipCount = 0;
+    }
+
+    // ------------------------------------------- per-source settings UI
+
+    private void openSourceSettings(MangaSourceManager.LoadedSource entry) {
+        mSettingsSource = entry;
+        mPrefScreen = null;
+        Source source = entry.getSource();
+        if (source instanceof ConfigurableSource) {
+            try {
+                PreferenceManager pm = new PreferenceManager(getContext());
+                pm.setSharedPreferencesName("source_" + source.getId());
+                pm.setSharedPreferencesMode(Context.MODE_PRIVATE);
+                PreferenceScreen screen = pm.createPreferenceScreen(getContext());
+                ((ConfigurableSource) source).setupPreferenceScreen(screen);
+                mPrefScreen = screen;
+            } catch (Throwable t) {
+                Log.e(TAG, "setupPreferenceScreen failed: " + entry.getPkgName(), t);
+                Toast.makeText(getContext(), "读取扩展设置失败：" + t, Toast.LENGTH_LONG).show();
+            }
+        }
+        switchPage(MangaPage.SOURCE_SETTINGS);
+    }
+
+    private void fillSourceSettingsPage(LinearLayout content) {
+        if (mSettingsSource == null) {
+            addInfo(content, "未选择图源", "");
+            return;
+        }
+        Source source = mSettingsSource.getSource();
+        addInfo(content, source.getName() + " · 设置",
+                mSettingsSource.getPkgName() + " · v" + mSettingsSource.getVersionName()
+                        + " · lang=" + source.getLang() + " · id=" + source.getId());
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回扩展", v -> switchPage(MangaPage.EXTENSIONS));
+        addButton(nav, "浏览该源", v -> openSourceBrowse(mSettingsSource));
+        if (mPrefScreen == null) {
+            addInfo(content, "无设置选项", "该扩展没有提供可配置选项（ConfigurableSource）。");
+            return;
+        }
+        renderPrefGroup(mPrefScreen, content);
+    }
+
+    private void renderPrefGroup(PreferenceGroup group, LinearLayout content) {
+        for (int i = 0; i < group.getPreferenceCount(); i++) {
+            Preference p = group.getPreference(i);
+            String title = p.getTitle() == null ? String.valueOf(p.getKey()) : p.getTitle().toString();
+            CharSequence summary = p.getSummary();
+            if (p instanceof PreferenceGroup) {
+                addInfo(content, title, summary == null ? null : summary.toString());
+                renderPrefGroup((PreferenceGroup) p, content);
+            } else if (p instanceof TwoStatePreference) {
+                TwoStatePreference tp = (TwoStatePreference) p;
+                LinearLayout row = addRow(content);
+                addPrefTitle(row, title, summary);
+                addButton(row, tp.isChecked() ? "开" : "关", v -> {
+                    tp.persistBoolean(!tp.isChecked());
+                    refreshPage(MangaPage.SOURCE_SETTINGS);
+                });
+            } else if (p instanceof ListPreference) {
+                ListPreference lp = (ListPreference) p;
+                LinearLayout row = addRow(content);
+                addPrefTitle(row, title, summary);
+                CharSequence entry = lp.getEntry();
+                addButton(row, entry == null ? "选择…" : entry.toString(), v -> openOptions(
+                        title, lp.getEntries(), lp.getEntryValues(), lp.getValue(),
+                        value -> {
+                            lp.persistString(value);
+                            refreshPage(MangaPage.SOURCE_SETTINGS);
+                        },
+                        MangaPage.SOURCE_SETTINGS));
+            } else if (p instanceof EditTextPreference) {
+                EditTextPreference ep = (EditTextPreference) p;
+                LinearLayout row = addRow(content);
+                addPrefTitle(row, title, summary);
+                String text = ep.getText();
+                addButton(row, text == null || text.isEmpty() ? "输入…" : text, v -> openText(
+                        title, text == null ? "" : text,
+                        value -> {
+                            ep.persistString(value);
+                            refreshPage(MangaPage.SOURCE_SETTINGS);
+                        },
+                        MangaPage.SOURCE_SETTINGS));
+            } else {
+                addInfo(content, title, summary == null ? null : summary.toString());
+            }
+        }
+    }
+
+    private void addPrefTitle(LinearLayout row, String title, CharSequence summary) {
+        TextView tv = new TextView(getContext());
+        tv.setText(summary == null || summary.length() == 0 ? title : title + "\n" + summary);
+        tv.setTextSize(17f);
+        tv.setTextColor(0xFFFFFFFF);
+        row.addView(tv, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+    }
+
+    private void openOptions(String title, CharSequence[] labels, CharSequence[] values,
+                             String current, Consumer<String> pick, MangaPage returnPage) {
+        mOptionTitle = title;
+        mOptionLabels = new String[labels == null ? 0 : labels.length];
+        mOptionValues = new String[values == null ? 0 : values.length];
+        for (int i = 0; i < mOptionLabels.length; i++) {
+            mOptionLabels[i] = String.valueOf(labels[i]);
+        }
+        for (int i = 0; i < mOptionValues.length; i++) {
+            mOptionValues[i] = String.valueOf(values[i]);
+        }
+        mOptionCurrent = current == null ? "" : current;
+        mOptionPick = pick;
+        mOptionReturn = returnPage;
+        switchPage(MangaPage.SOURCE_OPTIONS);
+    }
+
+    private void fillSourceOptionsPage(LinearLayout content) {
+        addInfo(content, mOptionTitle, "当前：" + mOptionCurrent);
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回", v -> switchPage(mOptionReturn));
+        for (int i = 0; i < mOptionLabels.length && i < mOptionValues.length; i++) {
+            final String value = mOptionValues[i];
+            LinearLayout row = addRow(content);
+            addButton(row, mOptionLabels[i] + (value.equals(mOptionCurrent) ? " ✓" : ""), v -> {
+                if (mOptionPick != null) {
+                    mOptionPick.accept(value);
+                }
+                switchPage(mOptionReturn);
+            });
+        }
+    }
+
+    private void openText(String title, String value, Consumer<String> save, MangaPage returnPage) {
+        mTextTitle = title;
+        mTextValue = value;
+        mTextSave = save;
+        mTextReturn = returnPage;
+        switchPage(MangaPage.SOURCE_TEXT);
+    }
+
+    private void fillSourceTextPage(LinearLayout content) {
+        addInfo(content, mTextTitle, null);
+        LinearLayout nav = addRow(content);
+        addButton(nav, "← 返回", v -> switchPage(mTextReturn));
+        EditText input = new EditText(getContext());
+        input.setText(mTextValue);
+        input.setTextColor(0xFFFFFFFF);
+        input.setTextSize(17f);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        content.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout save = addRow(content);
+        addButton(save, "保存", v -> {
+            if (mTextSave != null) {
+                mTextSave.accept(input.getText().toString());
+            }
+            switchPage(mTextReturn);
+        });
     }
 
     private void openSourceManga(SManga manga) {
@@ -1466,30 +1951,158 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "未选择漫画", "");
             return;
         }
-        String desc = mSourceManga.getDescription();
-        if (desc != null && desc.length() > 400) {
-            desc = desc.substring(0, 400) + "…";
-        }
-        addInfo(content, mSourceManga.getTitle(), desc);
+        SManga manga = mSourceManga;
         LinearLayout nav = addRow(content);
         addButton(nav, "← 返回浏览", v -> switchPage(MangaPage.SOURCE_BROWSE));
-        addButton(nav, "刷新详情", v -> openSourceManga(mSourceManga));
-        addInfo(content, "状态", mSourceMangaStatus);
-        for (SChapter chapter : mSourceChapters) {
+        addButton(nav, "刷新详情", v -> openSourceManga(manga));
+
+        LinearLayout head = addRow(content);
+        ImageView cover = new ImageView(getContext());
+        cover.setBackgroundColor(0xFF26262E);
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(dp(120), dp(160));
+        cp.setMargins(0, dp(4), dp(12), dp(4));
+        head.addView(cover, cp);
+        MangaSourceRepository.INSTANCE.loadCover(mSourceEntry.getSource(), manga.getThumbnail_url(),
+                (bitmap, error) -> {
+                    if (bitmap != null) {
+                        cover.setImageBitmap(bitmap);
+                    }
+                });
+        LinearLayout meta = new LinearLayout(getContext());
+        meta.setOrientation(LinearLayout.VERTICAL);
+        head.addView(meta, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView title = new TextView(getContext());
+        title.setText(manga.getTitle());
+        title.setTextSize(22f);
+        title.setTextColor(0xFFFFFFFF);
+        meta.addView(title);
+        TextView status = new TextView(getContext());
+        status.setText(mangaStatusText(manga.getStatus()) + " · " + mSourceMangaStatus);
+        status.setTextSize(16f);
+        status.setTextColor(0xFFB0B0B8);
+        meta.addView(status);
+
+        String author = manga.getAuthor();
+        if (author != null && !author.trim().isEmpty()) {
+            addInfo(content, "作者（点名字搜索该作者全部作品）", null);
+            for (String name : author.split(",")) {
+                String trimmed = name.trim();
+                if (!trimmed.isEmpty()) {
+                    addChip(content, trimmed, v -> searchSourceBy(trimmed));
+                }
+            }
+            endChips();
+        }
+        String genre = manga.getGenre();
+        if (genre != null && !genre.trim().isEmpty()) {
+            addInfo(content, "标签（点标签搜索同类作品）", null);
+            for (String tag : genre.split(",")) {
+                String trimmed = tag.trim();
+                if (!trimmed.isEmpty()) {
+                    addChip(content, trimmed, v -> searchSourceBy(trimmed));
+                }
+            }
+            endChips();
+        }
+        addInfo(content, "简介", manga.getDescription());
+
+        LinearLayout actions = addRow(content);
+        addButton(actions, "▶ 开始阅读", v -> startSourceReading());
+        addButton(actions, "▶▶ 继续阅读", v -> continueSourceReading());
+
+        addInfo(content, "章节列表", mSourceMangaStatus);
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
+        for (SChapter chapter : sortedChapters()) {
             LinearLayout row = addRow(content);
             File dir = MangaSourceRepository.INSTANCE.chapterDir(
-                    getContext(), mSourceEntry.getSource(), mSourceManga, chapter);
+                    getContext(), mSourceEntry.getSource(), manga, chapter);
             File[] cached = dir.listFiles();
             boolean hasCache = cached != null && cached.length > 0;
-            addButton(row, (hasCache ? "✓ " : "") + chapter.getName(),
-                    v -> readSourceChapter(chapter));
+            String date = chapter.getDate_upload() > 0
+                    ? fmt.format(new Date(chapter.getDate_upload())) : "";
+            addButton(row, (hasCache ? "✓ " : "") + chapter.getName()
+                    + (date.isEmpty() ? "" : "  ·  " + date), v -> readSourceChapter(chapter, false));
         }
     }
 
-    private void readSourceChapter(SChapter chapter) {
+    private String mangaStatusText(int status) {
+        switch (status) {
+            case 1: return "连载中";
+            case 2: return "已完结";
+            case 3: return "授权中";
+            case 4: return "出版完结";
+            case 5: return "已取消";
+            case 6: return "休刊中";
+            default: return "状态未知";
+        }
+    }
+
+    /** Reading order: chapter number when the extension provides it, else
+     *  upload date, else the source's own order. */
+    private List<SChapter> sortedChapters() {
+        List<SChapter> list = new ArrayList<>(mSourceChapters);
+        list.sort((a, b) -> {
+            float na = a.getChapter_number();
+            float nb = b.getChapter_number();
+            boolean ha = na >= 0;
+            boolean hb = nb >= 0;
+            if (ha && hb && na != nb) {
+                return Float.compare(na, nb);
+            }
+            if (ha != hb) {
+                return ha ? -1 : 1;
+            }
+            long da = a.getDate_upload();
+            long db = b.getDate_upload();
+            if (da > 0 && db > 0 && da != db) {
+                return Long.compare(da, db);
+            }
+            return 0;
+        });
+        return list;
+    }
+
+    private String srcLastKey() {
+        return "srclast:" + mSourceEntry.getSource().getId() + ":" + mSourceManga.getUrl();
+    }
+
+    private void startSourceReading() {
+        List<SChapter> list = sortedChapters();
+        if (list.isEmpty()) {
+            Toast.makeText(getContext(), "暂无章节", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        readSourceChapter(list.get(0), true);
+    }
+
+    private void continueSourceReading() {
+        String last = progressPrefs().getString(srcLastKey(), "");
+        if (last.isEmpty()) {
+            Toast.makeText(getContext(), "这部漫画还没有阅读记录", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        for (SChapter chapter : mSourceChapters) {
+            if (chapter.getUrl().equals(last)) {
+                readSourceChapter(chapter, false);
+                return;
+            }
+        }
+        Toast.makeText(getContext(), "记录的章节不在当前章节列表中", Toast.LENGTH_SHORT).show();
+    }
+
+    private void readSourceChapter(SChapter chapter, boolean fromStart) {
         if (mSourceEntry == null || mSourceManga == null) {
             return;
         }
+        File dir = MangaSourceRepository.INSTANCE.chapterDir(
+                getContext(), mSourceEntry.getSource(), mSourceManga, chapter);
+        int startPage = 0;
+        if (!fromStart && chapter.getUrl().equals(progressPrefs().getString(srcLastKey(), ""))) {
+            startPage = progressPrefs().getInt("page:" + dir.getAbsolutePath(), 0);
+        }
+        final int resumePage = startPage;
         mSourceMangaStatus = "准备下载…";
         refreshPage(MangaPage.SOURCE_MANGA);
         MangaSourceRepository.INSTANCE.downloadChapter(
@@ -1505,9 +2118,17 @@ public class MangaLibraryWidget extends UIWidget {
                         Toast.makeText(getContext(), "下载失败：" + error, Toast.LENGTH_LONG).show();
                     } else {
                         mSourceMangaStatus = "下载完成";
-                        openReader(folder);
+                        progressPrefs().edit().putString(srcLastKey(), chapter.getUrl()).apply();
+                        openReaderAtPage(folder, resumePage);
                     }
                 });
+    }
+
+    private void openReaderAtPage(File folder, int page) {
+        Context context = getContext();
+        if (context instanceof VRBrowserActivity) {
+            ((VRBrowserActivity) context).openMangaReader(folder, page);
+        }
     }
 
     private void installApk(File apk) {
