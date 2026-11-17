@@ -34,6 +34,7 @@ import android.util.Log;
 import android.util.Pair;
 import android.view.KeyEvent;
 
+import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
 import android.view.Surface;
@@ -2709,6 +2710,25 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mMangaReader.persistState();
         }
         setUiMode(UI_LIBRARY);
+    }
+
+    /** Opens the reader on a chapter playlist (local sub-folders or online
+     *  source chapters) with cross-chapter page turns and progress restore. */
+    public void openMangaReaderSession(MangaChapterSession session) {
+        if (session == null || session.dirs.isEmpty()) {
+            return;
+        }
+        if (mMangaReader == null) {
+            mMangaReader = new MangaReaderWidget(this);
+            mMangaReader.show(UIWidget.REQUEST_FOCUS);
+        }
+        mMangaReader.setChapters(session);
+        int index = Math.max(0, Math.min(session.index, session.dirs.size() - 1));
+        MangaSettings.get(this).setLastReadFolder(session.dirs.get(index).getAbsolutePath());
+        setUiMode(UI_READER);
+        mMangaReader.reapplyCanvasSize();
+        Log.i("MangaMode", "openReaderSession chapters=" + session.dirs.size()
+                + " index=" + session.index + " page=" + session.page);
     }
 
     /** Restore the stock browser UI from manga mode. */

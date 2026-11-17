@@ -42,6 +42,7 @@ import android.widget.Toast;
 import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
 import com.igalia.wolvic.browser.SettingsStore;
+import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
@@ -98,6 +99,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private final List<File> mPages = new ArrayList<>();
     private File mFolder;
     private int mIndex;
+    private List<File> mChapterDirs;
+    private int mChapterIndex;
+    private String mChapterProgressKey;
+    private MangaChapterSession.ChapterProvider mChapterProvider;
+    private boolean mLoadingChapter;
+    private boolean mChapterLoading;
+    private float mPendingStripFrac;
+    private final Runnable mChapterSaveTick = this::saveChapterProgress;
     private volatile int mLoadGeneration;
     private Bitmap mCurrent;
     private volatile boolean mDestroyed;
@@ -487,6 +496,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Opens a folder directly at a chosen page (used by the thumbnail view
      *  and "continue reading"). startIndex < 0 restores saved progress. */
     public void setFolder(File folder, int startIndex) {
+        if (!mLoadingChapter) {
+            mChapterDirs = null;
+            mChapterProvider = null;
+            mChapterProgressKey = null;
+            mPendingStripFrac = 0f;
+        }
         stopVideo(true);
         cancelAuto();
         mLoadGeneration++;
@@ -544,6 +559,129 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         showPage(Math.max(0, Math.min(saved, Math.max(0, mPages.size() - 1))));
     }
 
+    // ---------------------------------------------------- chapter playlist
+
+    /** Opens a manga as an ordered chapter list. Boundary page turns and
+     *  continuous scrolling cross into neighbouring chapters; online chapters
+     *  are downloaded on demand and pre-cached ahead of the reading window. */
+    public void setChapters(MangaChapterSession session) {
+        mChapterDirs = session.dirs;
+        mChapterProvider = session.provider;
+        mChapterProgressKey = session.progressKey;
+        mChapterIndex = session.index;
+        Log.i(TAG, "setChapters chapters=" + session.dirs.size() + " index=" + session.index
+                + " page=" + session.page + " frac=" + session.frac);
+        loadChapter(session.index, session.page, session.frac, session.startFilePath);
+    }
+
+    private void loadChapter(int index, int page, float frac, String startFilePath) {
+        if (mChapterDirs == null || index < 0 || index >= mChapterDirs.size()) {
+            return;
+        }
+        mChapterIndex = index;
+        File dir = mChapterDirs.get(index);
+        File[] files = dir.isDirectory() ? dir.listFiles() : null;
+        boolean ready = files != null && files.length > 0;
+        if (!ready && mChapterProvider != null) {
+            mChapterLoading = true;
+            showHint("加载第 " + (index + 1) + " 章…");
+            mChapterProvider.ensureChapter(index, (d, error) -> mMainHandler.post(() -> {
+                mChapterLoading = false;
+                if (mDestroyed) {
+                    return;
+                }
+                if (d == null) {
+                    showHint("章节加载失败：" + error);
+                    return;
+                }
+                mChapterDirs.set(index, d);
+                openChapterDir(d, page, frac, startFilePath);
+            }));
+        } else {
+            openChapterDir(dir, page, frac, startFilePath);
+        }
+    }
+
+    private void openChapterDir(File dir, int page, float frac, String startFilePath) {
+        mPendingStripFrac = frac;
+        mLoadingChapter = true;
+        try {
+            if (startFilePath != null) {
+                setFolder(dir, startFilePath);
+            } else {
+                setFolder(dir, page);
+            }
+        } finally {
+            mLoadingChapter = false;
+        }
+    }
+
+    private boolean hasChapter(int index) {
+        return mChapterDirs != null && index >= 0 && index < mChapterDirs.size();
+    }
+
+    /** Crosses a chapter boundary. delta=+1 lands on the next chapter's first
+     *  page, delta=-1 on the previous chapter's last page (continuous mode:
+     *  its bottom, so up-scrolling keeps reading the previous chapter tail). */
+    private void advanceChapter(int delta) {
+        if (mChapterDirs == null || mChapterDirs.size() <= 1 || mChapterLoading) {
+            showHint(delta > 0 ? "已到最后一页" : "已到第一页");
+            return;
+        }
+        int index = mChapterIndex + delta;
+        if (!hasChapter(index)) {
+            showHint(index < 0 ? "已是第一章" : "已是最后一章");
+            return;
+        }
+        saveChapterProgress();
+        int page = delta > 0 ? 0 : Integer.MAX_VALUE;
+        float frac = delta > 0 ? 0f : -1f;
+        Log.i(TAG, "advanceChapter " + mChapterIndex + " -> " + index);
+        loadChapter(index, page, frac, null);
+        showHint("第 " + (index + 1) + " / " + mChapterDirs.size() + " 章");
+    }
+
+    private String counterText() {
+        String base = (mIndex + 1) + " / " + mPages.size();
+        if (mChapterDirs != null && mChapterDirs.size() > 1) {
+            return "章" + (mChapterIndex + 1) + "/" + mChapterDirs.size() + " · " + base;
+        }
+        return base;
+    }
+
+    private void saveChapterProgress() {
+        if (mChapterProgressKey == null || mFolder == null
+                || !mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
+            return;
+        }
+        float frac = 0f;
+        if (isContinuous() && mStripView != null) {
+            float height = mStripView.scaledHeight(2);
+            frac = height > 0f ? mStripOffset / height : 0f;
+        }
+        progressPrefs().edit()
+                .putString("chap:" + mChapterProgressKey, mChapterIndex + "|" + mIndex + "|" + frac)
+                .apply();
+    }
+
+    /** Parses "chapter|page|frac" saved by saveChapterProgress(); null if absent. */
+    public static float[] readChapterProgress(SharedPreferences prefs, String progressKey) {
+        String raw = prefs.getString("chap:" + progressKey, null);
+        if (raw == null) {
+            return null;
+        }
+        String[] parts = raw.split("\\|");
+        if (parts.length != 3) {
+            return null;
+        }
+        try {
+            return new float[]{Float.parseFloat(parts[0]), Float.parseFloat(parts[1]),
+                    Float.parseFloat(parts[2])};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     private static void collectFiles(File dir, int depth, String[] imageExt, String[] videoExt,
                                      List<File> images, List<File> videos) {
         if (dir == null || !dir.isDirectory()) {
@@ -597,6 +735,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
+        saveChapterProgress();
 
         final File page = mPages.get(mIndex);
         final boolean continuous = isContinuous();
@@ -612,7 +751,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mTiledPage = false;
         applyDisplaySettings();
-        mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
+        mPageCounter.setText(counterText());
         mGotoDialog.setVisibility(GONE);
         preloadNext();
 
@@ -1121,6 +1260,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         Log.i(TAG, "preload window index=" + mIndex + " radius=" + preloadRadius()
                 + " cached=" + mCache.snapshot().size() + " pending=" + mPendingPages.size());
+        if (mChapterProvider != null && mChapterDirs != null && mChapterDirs.size() > 1) {
+            int radius = Math.max(1, preloadRadius());
+            if (mIndex + radius >= mPages.size() - 1 && hasChapter(mChapterIndex + 1)) {
+                mChapterProvider.prefetchChapter(mChapterIndex + 1);
+            }
+            if (mIndex - radius <= 0 && hasChapter(mChapterIndex - 1)) {
+                mChapterProvider.prefetchChapter(mChapterIndex - 1);
+            }
+        }
     }
 
     private void addWindowPage(int index, List<PageLoad> ordered) {
@@ -1331,6 +1479,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mStripOffset *= mZoom / mStripLastZoom;
         }
         mStripLastZoom = mZoom;
+        if (mPendingStripFrac != 0f) {
+            float pendingH = mStripView.scaledHeight(2);
+            float pendingVh = mStripView.getHeight();
+            if (pendingH > 0f) {
+                mStripOffset = mPendingStripFrac < 0f
+                        ? Math.max(0f, pendingH - pendingVh)
+                        : Math.min(mPendingStripFrac * pendingH, Math.max(0f, pendingH - pendingVh));
+                mPendingStripFrac = 0f;
+            }
+        }
         mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
     }
 
@@ -1355,7 +1513,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 break;
             }
             if (mStripOffset >= curH) {
-                if (mIndex + 1 >= mPages.size() || isVideoIndex(mIndex + 1)) {
+                if (mIndex + 1 >= mPages.size()) {
+                    if (hasChapter(mChapterIndex + 1) && !mChapterLoading) {
+                        advanceChapter(1);
+                        return;
+                    }
+                    mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
+                    break;
+                }
+                if (isVideoIndex(mIndex + 1)) {
                     mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
                     break;
                 }
@@ -1369,7 +1535,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mStripOffset -= curH;
                 shiftStrip(1);
             } else if (mStripOffset < 0f) {
-                if (mIndex - 1 < 0 || isVideoIndex(mIndex - 1)) {
+                if (mIndex - 1 < 0) {
+                    if (hasChapter(mChapterIndex - 1) && !mChapterLoading) {
+                        advanceChapter(-1);
+                        return;
+                    }
+                    mStripOffset = 0f;
+                    break;
+                }
+                if (isVideoIndex(mIndex - 1)) {
                     mStripOffset = 0f;
                     break;
                 }
@@ -1403,6 +1577,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         }
         mStripView.setOffset(mStripOffset);
+        mMainHandler.removeCallbacks(mChapterSaveTick);
+        mMainHandler.postDelayed(mChapterSaveTick, 500);
     }
 
     /** Thumbstick scrolling is expressed in CONTENT pixels so one notch always
@@ -1449,10 +1625,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mIndex--;
         }
         mCurrent = mStripSegments[2];
-        mPageCounter.setText((mIndex + 1) + " / " + mPages.size());
+        mPageCounter.setText(counterText());
         if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
+        saveChapterProgress();
         applyDisplaySettings();
         // Recompute the width-anchored scale NOW, together with the matching
         // offset rescale in updateStripTransform(). Keeping the old scale here
@@ -1590,6 +1767,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (mIndex + 1 < mPages.size()) {
             showPage(mIndex + 1);
+        } else if (mChapterDirs != null && mChapterIndex + 1 < mChapterDirs.size()) {
+            advanceChapter(1);
         } else {
             notifyTrayAuto(false);
             showHint("已到最后一页");
@@ -1619,7 +1798,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (direction == 1) {
             delta = -delta;
         }
-        showPage(mIndex + delta);
+        int target = mIndex + delta;
+        if (mChapterDirs != null && mChapterDirs.size() > 1) {
+            if (target >= mPages.size()) {
+                advanceChapter(1);
+                return;
+            }
+            if (target < 0) {
+                advanceChapter(-1);
+                return;
+            }
+        }
+        showPage(target);
     }
 
     public void cycleScale() {
@@ -2408,6 +2598,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mFolder != null && mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
+        saveChapterProgress();
         Log.i(TAG, "persistState index=" + mIndex);
     }
 

@@ -48,6 +48,7 @@ import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
 import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.browser.api.WSession;
+import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaDownloader;
 import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
@@ -613,38 +614,6 @@ public class MangaLibraryWidget extends UIWidget {
         return items;
     }
 
-    private void collectChapterDirs(File dir, boolean recursive, int depth, List<File> out) {
-        if (dir == null || !dir.isDirectory()) {
-            return;
-        }
-        File[] children = dir.listFiles();
-        if (children == null) {
-            return;
-        }
-        boolean hasMedia = false;
-        List<File> subDirs = new ArrayList<>();
-        for (File child : children) {
-            if (child == null) {
-                continue;
-            }
-            if (child.isDirectory()) {
-                subDirs.add(child);
-            } else if (isMedia(child.getName())) {
-                hasMedia = true;
-            }
-        }
-        if (hasMedia) {
-            out.add(dir);
-        }
-        if (recursive && depth < 3) {
-            for (File sub : subDirs) {
-                collectChapterDirs(sub, true, depth + 1, out);
-            }
-        } else if (!recursive) {
-            out.addAll(subDirs);
-        }
-    }
-
     private void showEmptyState(String message) {
         mAdapter.update(new ArrayList<>());
         mEmptyText.setText(message.trim());
@@ -653,14 +622,87 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void openReader(File folder) {
+        openLocalSession(folder, null, true);
+    }
+
+    /** A local manga is one folder whose media sub-folders are chapters.
+     *  Opening a chapter folder directly resolves its parent manga so page
+     *  turns can cross into sibling chapters. */
+    private void openLocalSession(File folder, String startFilePath, boolean resume) {
         if (folder == null) {
             return;
         }
         Context context = getContext();
-        if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).openMangaReader(folder);
-            Log.i(TAG, "openReader " + folder.getAbsolutePath());
+        if (!(context instanceof VRBrowserActivity)) {
+            return;
         }
+        File root = folder;
+        List<File> chapters = mediaSubDirs(folder);
+        if (chapters.size() < 2) {
+            File parent = folder.getParentFile();
+            List<File> siblings = mediaSubDirs(parent);
+            if (siblings.size() >= 2 && siblings.contains(folder)) {
+                root = parent;
+                chapters = siblings;
+            } else {
+                chapters = new ArrayList<>();
+                chapters.add(folder);
+            }
+        }
+        int index = Math.max(0, chapters.indexOf(folder));
+        int page = 0;
+        float frac = 0f;
+        if (resume) {
+            float[] saved = MangaReaderWidget.readChapterProgress(
+                    progressPrefs(), "local:" + root.getAbsolutePath());
+            if (saved != null) {
+                index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
+                page = (int) saved[1];
+                frac = saved[2];
+            } else {
+                page = progressPrefs().getInt(
+                        "page:" + chapters.get(index).getAbsolutePath(), 0);
+            }
+        } else if (startFilePath != null) {
+            for (int i = 0; i < chapters.size(); i++) {
+                if (startFilePath.startsWith(
+                        chapters.get(i).getAbsolutePath() + File.separator)) {
+                    index = i;
+                    break;
+                }
+            }
+        } else {
+            index = 0;
+        }
+        MangaChapterSession session = MangaChapterSession.local(
+                root, chapters, index, page, frac, startFilePath);
+        ((VRBrowserActivity) context).openMangaReaderSession(session);
+        Log.i(TAG, "openLocalSession root=" + root.getAbsolutePath()
+                + " chapters=" + chapters.size() + " index=" + index + " page=" + page);
+    }
+
+    private List<File> mediaSubDirs(File dir) {
+        List<File> out = new ArrayList<>();
+        File[] children = dir == null ? null : dir.listFiles();
+        if (children == null) {
+            return out;
+        }
+        String[] images = mSettings.imageExtensions();
+        String[] videos = mSettings.videoExtensions();
+        boolean includeHidden = mSettings.bool(MangaSettings.SOURCE_INCLUDE_HIDDEN);
+        for (File child : children) {
+            if (!child.isDirectory()
+                    || (!includeHidden && child.getName().startsWith("."))) {
+                continue;
+            }
+            if (hasMediaRecursive(child, images, 2) || hasMediaRecursive(child, videos, 2)) {
+                out.add(child);
+            }
+        }
+        out.sort((a, b) -> mSettings.bool(MangaSettings.SOURCE_NATURAL_SORT)
+                ? MangaCoverAdapter.naturalCompare(a.getName(), b.getName())
+                : a.getName().compareToIgnoreCase(b.getName()));
+        return out;
     }
 
     // ---------------------------------------------- bookshelf toolbar
@@ -729,25 +771,11 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void openReaderAt(File folder, File file) {
-        if (folder == null) {
-            return;
-        }
-        Context context = getContext();
-        if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).openMangaReader(folder,
-                    file == null ? null : file.getAbsolutePath());
-        }
+        openLocalSession(folder, file == null ? null : file.getAbsolutePath(), false);
     }
 
     private void continueReading(File folder) {
-        if (folder == null) {
-            return;
-        }
-        int saved = progressPrefs().getInt("page:" + folder.getAbsolutePath(), 0);
-        Context context = getContext();
-        if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).openMangaReader(folder, saved);
-        }
+        openLocalSession(folder, null, true);
     }
 
     private SharedPreferences progressPrefs() {
@@ -2064,8 +2092,8 @@ public class MangaLibraryWidget extends UIWidget {
         return list;
     }
 
-    private String srcLastKey() {
-        return "srclast:" + mSourceEntry.getSource().getId() + ":" + mSourceManga.getUrl();
+    private String srcProgressKey() {
+        return "src:" + mSourceEntry.getSource().getId() + ":" + mSourceManga.getUrl();
     }
 
     private void startSourceReading() {
@@ -2074,61 +2102,53 @@ public class MangaLibraryWidget extends UIWidget {
             Toast.makeText(getContext(), "暂无章节", Toast.LENGTH_SHORT).show();
             return;
         }
-        readSourceChapter(list.get(0), true);
+        openSourceSession(list, 0, 0, 0f);
     }
 
     private void continueSourceReading() {
-        String last = progressPrefs().getString(srcLastKey(), "");
-        if (last.isEmpty()) {
+        List<SChapter> list = sortedChapters();
+        if (list.isEmpty()) {
+            Toast.makeText(getContext(), "暂无章节", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        float[] saved = MangaReaderWidget.readChapterProgress(progressPrefs(), srcProgressKey());
+        if (saved == null) {
             Toast.makeText(getContext(), "这部漫画还没有阅读记录", Toast.LENGTH_SHORT).show();
             return;
         }
-        for (SChapter chapter : mSourceChapters) {
-            if (chapter.getUrl().equals(last)) {
-                readSourceChapter(chapter, false);
-                return;
-            }
-        }
-        Toast.makeText(getContext(), "记录的章节不在当前章节列表中", Toast.LENGTH_SHORT).show();
+        int index = Math.max(0, Math.min((int) saved[0], list.size() - 1));
+        openSourceSession(list, index, (int) saved[1], saved[2]);
     }
 
     private void readSourceChapter(SChapter chapter, boolean fromStart) {
         if (mSourceEntry == null || mSourceManga == null) {
             return;
         }
-        File dir = MangaSourceRepository.INSTANCE.chapterDir(
-                getContext(), mSourceEntry.getSource(), mSourceManga, chapter);
-        int startPage = 0;
-        if (!fromStart && chapter.getUrl().equals(progressPrefs().getString(srcLastKey(), ""))) {
-            startPage = progressPrefs().getInt("page:" + dir.getAbsolutePath(), 0);
+        List<SChapter> list = sortedChapters();
+        int index = list.indexOf(chapter);
+        if (index < 0) {
+            index = 0;
         }
-        final int resumePage = startPage;
-        mSourceMangaStatus = "准备下载…";
-        refreshPage(MangaPage.SOURCE_MANGA);
-        MangaSourceRepository.INSTANCE.downloadChapter(
-                getContext(), mSourceEntry.getSource(), mSourceManga, chapter,
-                (done, total) -> {
-                    mSourceMangaStatus = "下载中 " + done + "/" + total;
-                    refreshPage(MangaPage.SOURCE_MANGA);
-                },
-                (folder, error) -> {
-                    if (folder == null) {
-                        mSourceMangaStatus = "下载失败：" + error;
-                        refreshPage(MangaPage.SOURCE_MANGA);
-                        Toast.makeText(getContext(), "下载失败：" + error, Toast.LENGTH_LONG).show();
-                    } else {
-                        mSourceMangaStatus = "下载完成";
-                        progressPrefs().edit().putString(srcLastKey(), chapter.getUrl()).apply();
-                        openReaderAtPage(folder, resumePage);
-                    }
-                });
+        int page = 0;
+        float frac = 0f;
+        if (!fromStart) {
+            float[] saved = MangaReaderWidget.readChapterProgress(progressPrefs(), srcProgressKey());
+            if (saved != null && (int) saved[0] == index) {
+                page = (int) saved[1];
+                frac = saved[2];
+            }
+        }
+        openSourceSession(list, index, page, frac);
     }
 
-    private void openReaderAtPage(File folder, int page) {
+    private void openSourceSession(List<SChapter> chapters, int index, int page, float frac) {
         Context context = getContext();
-        if (context instanceof VRBrowserActivity) {
-            ((VRBrowserActivity) context).openMangaReader(folder, page);
+        if (!(context instanceof VRBrowserActivity)) {
+            return;
         }
+        MangaChapterSession session = MangaChapterSession.source(context,
+                mSourceEntry.getSource(), mSourceManga, chapters, index, page, frac);
+        ((VRBrowserActivity) context).openMangaReaderSession(session);
     }
 
     private void installApk(File apk) {
