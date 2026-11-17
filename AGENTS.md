@@ -46,11 +46,22 @@
 
 ## 当前阶段任务（按优先级）
 
-1. **扩展 APK / 自定义漫画源兼容（最高优先，用户最担心）**：用户设备已装多个扩展 APK，在其他 Mihon 系应用正常。必须参照 mihon-webdav 的 `source-api/` 与扩展加载器实现完整协议兼容（列表/搜索/详情/章节/页面/imageUrl）。扩展首次读取的授权弹窗改为**默认同意**。现状：扩展安装器已有，Source ABI 加载/搜索/章节/页面管线不完整。
-2. **SMB2/3 真读取**（现仅探测/配置/本地挂载）。
+1. **扩展 APK / 自定义漫画源兼容（最高优先，用户最担心）**：协议管线已打通（见下"扩展阶段进展"），剩设备逐项实测。
+2. **SMB2/3 真读取**（现仅探测/配置/本地挂载；参照仓库没有 SMB，需新写 jcifs-ng/smbj）。
 3. **115 网盘读取 + 阿里云盘（主要用于数据同步）**。
 4. WebDAV 浏览/下载已真，"下一章"与免下载阅读不完整。
 5. 下载队列持久化/断点续传；备份明文导出可能含凭据，需加密或脱敏。
+
+## 扩展阶段进展（2026-11-17 晚，main `697e6c6`）
+
+- **source-api 移植**（`source-api/` 模块）：Mihon 1.6 ABI（Source/HttpSource/ParsedHttpSource/ConfigurableSource/SourceFactory/Filter/FilterList/SManga/SChapter/Page/MangasPage + network/okhttp 拦截器 + preference store + injekt 桥）。版本钉死：okhttp **5.3.0**（5.5 要 compileSdk>36）、coroutines **1.7.3**（1.9 的三参 resume 编译不过）、injekt **1.16.1**（`Injekt.importModule` + `InjektRegistrar.registerInjectables()`）、kotlinx-serialization 1.11.0、Kotlin 2.4.0。
+- **加载器** `manga/MangaSourceManager.kt`：reqFeatures `tachiyomi.extension`；meta `tachiyomi.extension.class`（分号分隔、前导 `.` 补包名）/`.nsfw`/`tachiyomix.name`/`tachiyomix.extensionLib`；lib 1.4/1.6；`DelegateLastClassLoader(sourceDir,null,context.classLoader)`；**自动信任，无授权弹窗**。Injekt 模块注册 Context/**Application**/Json/NetworkHelper——**Application 必须注册**：jinmantiantang/picacomic 在 `<clinit>` 里 `Injekt.get<Application>()`，缺了抛 InjektionException（697e6c6 修复，设备日志证实）。每个失败包记录 `LoadFailure` 并在扩展页显示 ⚠ + 错误详情，logcat tag `MangaSource` 带完整堆栈。
+- **扩展列表 UX**（`MangaLibraryWidget.java`）：按包折叠（单源包默认展开）、应用图标、优先内置中文名（`source.name`，如 哔咔漫画/禁漫天堂），完整英文名只在设置详情；ConfigurableSource 动态设置（`PreferenceManager` prefs `source_$id` + `setupPreferenceScreen` 递归渲染，**persistBoolean/persistString 是 protected，用 setChecked/setValue/setText**）；筛选 chips 来自 `getFilterList()`（Select 单选/CheckBox/TriState/Sort/Group/Text），默认"新到旧"排序；搜索+热门+最新；封面网格浏览（`SourceCoverAdapter` + `MangaSourceRepository.loadCover`）。
+- **详情页**：封面/作者/标签/简介/状态，作者与每个标签可点击→搜索；章节列表（名称+发布日期+缓存✓，chapter_number/date_upload 稳定排序）；开始阅读=第一章第一页，继续阅读=保存位置。
+- **跨章节阅读**（Round D，`manga/MangaChapterSession.java` + 阅读器）：章节播放列表；单双页与连续模式在章末/章首自动跨章（下一页→下一章第一页；上一页→上一章末页，连续模式落到其底部）；`preloadNext` 接近章边界时磁盘预缓存相邻章首 4 页（`prefetchChapter`），缓存上限 `source_cache_mb`（256/512/1024/2048 MB，漫画设置可调），超限按最旧目录淘汰；进度键 `chap:<key>` = `章|页|滚动比例`（连续模式精确滚动位置，500ms 防抖+翻页即存）；在线 key `src:<sourceId>:<mangaUrl>`，本地 `local:<rootPath>`。
+- **本地文件夹章节化**：大文件夹=一部漫画，含媒体的子文件夹=章节（自然排序）；直接打开子文件夹自动识别父级；`openLocalSession` 统一入口，`VRBrowserActivity.openMangaReaderSession`。
+- **CI 记录**：Round C `cfe7c99` run 44058339884 success；Round D `ba2b6a5` run 44060140732 success（已 install -r）；Round E `697e6c6`（Injekt Application 修复）CI 见 run 记录。**设备实测待用户逐项确认（未验证）**。
+- 扩展 APK 分析工具：androguard（`pip install androguard`，4.x 返回 lxml，`logger.remove()` 关日志）；8 个扩展入口都是 `keiyoushi.source.Generated`（混淆继承链），meta 结构一致，差异在 dex 引用。
 
 ## 构建 / 部署要点（踩过的坑，别再踩）
 
@@ -66,8 +77,14 @@
 
 ## 关键代码位置
 
-- `app/src/common/shared/com/igalia/wolvic/ui/widgets/MangaReaderWidget.java`：阅读器+视频+连续条带（~3000 行）。
+- `app/src/common/shared/com/igalia/wolvic/ui/widgets/MangaReaderWidget.java`：阅读器+视频+连续条带+章节播放列表（~3260 行）。
 - `manga/MangaImageDecoder.java`：AVIF 解码+磁盘缓存+前台优先。
-- `manga/MangaSettings.java`：全部偏好（PREFS=manga_settings）。
+- `manga/MangaSettings.java`：全部偏好（PREFS=manga_settings；进度 PROGRESS_PREFS；`source_cache_mb` 在线缓存上限）。
 - `ui/widgets/MangaStripView.java`：连续模式 5 段条带绘制。
+- `manga/MangaSourceManager.kt`：扩展加载器+Injekt 注册+失败记录。
+- `manga/MangaSourceRepository.kt`：浏览/搜索/筛选/封面/章节下载/预缓存/缓存淘汰。
+- `manga/MangaChapterSession.java`：本地/在线章节会话与 ChapterProvider。
+- `ui/widgets/MangaLibraryWidget.java`：书架+扩展页+筛选+设置+详情+本地章节化入口。
+- `ui/adapters/SourceCoverAdapter.java`：在线封面网格。
+- `source-api/`：Mihon 1.6 ABI 移植模块。
 - `app/src/main/cpp/MangaImageDecoder.cpp` + `app/CMakeLists.txt`：native 缩放 JNI。
