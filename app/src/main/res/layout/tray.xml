@@ -461,7 +461,6 @@
                     android:paddingEnd="6dp"
                     android:textSize="13sp"
                     android:singleLine="true"
-                    android:allCaps="false"
                     android:textColor="#FFFFFFFF"
                     android:background="#FF2A2A33"
                     android:text="‹ 上一章" />
@@ -505,7 +504,6 @@
                     android:paddingEnd="6dp"
                     android:textSize="13sp"
                     android:singleLine="true"
-                    android:allCaps="false"
                     android:textColor="#FFFFFFFF"
                     android:background="#FF2A2A33"
                     android:text="下一章 ›" />
