@@ -1834,15 +1834,92 @@ public class MangaLibraryWidget extends UIWidget {
         endChips();
     }
 
-    private LinearLayout mChipRow;
-    private int mChipCount;
+    private ChipFlowLayout mChipRow;
+
+    /** Lays chips out left-to-right and wraps ONLY when the next chip would
+     *  exceed the available width. The old code hard-coded "3 per row", which
+     *  wasted the wider bookshelf/detail panel and produced many short rows. */
+    private static final class ChipFlowLayout extends LinearLayout {
+        private final int mGap;
+
+        ChipFlowLayout(Context context, int gapPx) {
+            super(context);
+            mGap = gapPx;
+            setOrientation(HORIZONTAL);
+        }
+
+        @Override
+        protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+            int width = View.MeasureSpec.getSize(widthMeasureSpec)
+                    - getPaddingLeft() - getPaddingRight();
+            int lineX = 0;
+            int lineH = 0;
+            int totalH = 0;
+            final int count = getChildCount();
+            for (int i = 0; i < count; i++) {
+                View child = getChildAt(i);
+                if (child.getVisibility() == GONE) {
+                    continue;
+                }
+                measureChildWithMargins(child, widthMeasureSpec, 0, heightMeasureSpec, 0);
+                android.view.ViewGroup.MarginLayoutParams lp =
+                        (android.view.ViewGroup.MarginLayoutParams) child.getLayoutParams();
+                int cw = child.getMeasuredWidth() + lp.leftMargin + lp.rightMargin;
+                int ch = child.getMeasuredHeight() + lp.topMargin + lp.bottomMargin;
+                if (lineX > 0 && lineX + cw > width) {
+                    totalH += lineH + mGap;
+                    lineX = 0;
+                    lineH = 0;
+                }
+                lineX += cw + mGap;
+                lineH = Math.max(lineH, ch);
+            }
+            totalH += lineH;
+            setMeasuredDimension(
+                    resolveSize(View.MeasureSpec.getSize(widthMeasureSpec), widthMeasureSpec),
+                    resolveSize(totalH + getPaddingTop() + getPaddingBottom(),
+                            heightMeasureSpec));
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            int width = r - l - getPaddingLeft() - getPaddingRight();
+            int x = getPaddingLeft();
+            int y = getPaddingTop();
+            int lineH = 0;
+            final int count = getChildCount();
+            for (int i = 0; i < count; i++) {
+                View child = getChildAt(i);
+                if (child.getVisibility() == GONE) {
+                    continue;
+                }
+                android.view.ViewGroup.MarginLayoutParams lp =
+                        (android.view.ViewGroup.MarginLayoutParams) child.getLayoutParams();
+                int cw = child.getMeasuredWidth() + lp.leftMargin + lp.rightMargin;
+                int ch = child.getMeasuredHeight() + lp.topMargin + lp.bottomMargin;
+                if (x > getPaddingLeft() && x + cw > width) {
+                    x = getPaddingLeft();
+                    y += lineH + mGap;
+                    lineH = 0;
+                }
+                int left = x + lp.leftMargin;
+                int top = y + lp.topMargin;
+                child.layout(left, top,
+                        left + child.getMeasuredWidth(),
+                        top + child.getMeasuredHeight());
+                x += cw + mGap;
+                lineH = Math.max(lineH, ch);
+            }
+        }
+    }
 
     private Button addChip(LinearLayout content, String text, View.OnClickListener listener) {
-        if (mChipRow == null || mChipCount >= 3) {
-            mChipRow = addRow(content);
-            mChipCount = 0;
+        if (mChipRow == null) {
+            mChipRow = new ChipFlowLayout(getContext(), dp(4));
+            content.addView(mChipRow, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
         }
-        mChipCount++;
         Button button = addButton(mChipRow, text, listener);
         button.setMinWidth(dp(90));
         return button;
@@ -1850,7 +1927,6 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void endChips() {
         mChipRow = null;
-        mChipCount = 0;
     }
 
     // ------------------------------------------- per-source settings UI

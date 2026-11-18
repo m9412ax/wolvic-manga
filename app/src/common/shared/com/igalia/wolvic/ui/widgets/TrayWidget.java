@@ -26,6 +26,8 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.TextView;
+import android.widget.SeekBar;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -50,6 +52,7 @@ import com.igalia.wolvic.downloads.DownloadsManager;
 import com.igalia.wolvic.ui.viewmodel.TrayViewModel;
 import com.igalia.wolvic.ui.viewmodel.WindowViewModel;
 import com.igalia.wolvic.ui.views.UIButton;
+import com.igalia.wolvic.ui.widgets.MangaReaderWidget;
 import com.igalia.wolvic.ui.widgets.settings.SettingsView;
 import com.igalia.wolvic.ui.widgets.settings.SettingsWidget;
 import com.igalia.wolvic.utils.ConnectivityReceiver;
@@ -89,6 +92,14 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private WindowViewModel mViewModel;
     private TrayViewModel mTrayViewModel;
     private TrayBinding mBinding;
+    /** Reader scrubber is visible only while the pointer hovers the reader
+     *  controls. Delayed hide lets the pointer travel into the scrubber. */
+    private boolean mReaderProgressHovered;
+    private final Runnable mHideProgressRunnable = () -> {
+        if (!mReaderProgressHovered && mBinding != null) {
+            mBinding.readerProgressRow.setVisibility(View.GONE);
+        }
+    };
     private AudioEngine mAudio;
     private SettingsWidget mSettingsWidget;
     private List<TrayListener> mTrayListeners;
@@ -279,6 +290,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         bindMangaButton(mBinding.readerBrightnessButton, "READER_BRIGHTNESS");
         bindMangaButton(mBinding.readerAutoButton, "READER_AUTO");
         bindMangaButton(mBinding.readerDoubleButton, "READER_DOUBLE");
+        setupReaderProgress();
         applyMangaMode();
 
         mBinding.wifi.setOnHoverListener((view, motionEvent) -> {
@@ -582,6 +594,97 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         }
     }
 
+    /** Wires the hover-revealed page scrubber: prev/next chapter buttons,
+     *  a draggable seek bar that jumps to any page, and a "2/15" label. */
+    private void setupReaderProgress() {
+        final View row = mBinding.readerProgressRow;
+        final View controls = mBinding.readerButtons;
+        View.OnHoverListener hover = (v, event) -> {
+            if (mMangaMode != MODE_READER) {
+                return false;
+            }
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_HOVER_ENTER) {
+                mReaderProgressHovered = true;
+                removeCallbacks(mHideProgressRunnable);
+                row.setVisibility(View.VISIBLE);
+            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                mReaderProgressHovered = false;
+                postDelayed(mHideProgressRunnable, 350L);
+            }
+            return false;
+        };
+        controls.setOnHoverListener(hover);
+        row.setOnHoverListener(hover);
+        // The extra row must never be visible when leaving reader mode.
+        mBinding.readerPrevChapterButton.setOnClickListener(
+                v -> readerChapter(-1));
+        mBinding.readerNextChapterButton.setOnClickListener(
+                v -> readerChapter(1));
+        mBinding.readerPageSeek.setOnSeekBarChangeListener(
+                new SeekBar.OnSeekBarChangeListener() {
+                    private boolean mTracking;
+
+                    @Override
+                    public void onProgressChanged(SeekBar seekBar, int progress,
+                                                  boolean fromUser) {
+                        if (fromUser && mTracking) {
+                            mBinding.readerPageLabel.setText(
+                                    (progress + 1) + "/" + seekBar.getMax());
+                        }
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar seekBar) {
+                        mTracking = true;
+                        removeCallbacks(mHideProgressRunnable);
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar seekBar) {
+                        mTracking = false;
+                        Context c = getContext();
+                        if (c instanceof VRBrowserActivity) {
+                            MangaReaderWidget reader =
+                                    ((VRBrowserActivity) c).getMangaReader();
+                            if (reader != null) {
+                                reader.jumpToPage(seekBar.getProgress());
+                            }
+                        }
+                    }
+                });
+    }
+
+    private void readerChapter(int delta) {
+        Context c = getContext();
+        if (c instanceof VRBrowserActivity) {
+            MangaReaderWidget reader = ((VRBrowserActivity) c).getMangaReader();
+            if (reader != null) {
+                reader.chapterDelta(delta);
+            }
+        }
+    }
+
+    /** Called by the reader whenever the current page / chapter changes. */
+    public void updateReaderProgress(int pageIndex, int pageCount,
+                                     int chapterIndex, int chapterCount) {
+        if (mBinding == null) {
+            return;
+        }
+        int total = Math.max(1, pageCount);
+        int index = Math.max(0, Math.min(pageIndex, total - 1));
+        SeekBar seek = mBinding.readerPageSeek;
+        seek.setMax(Math.max(1, total - 1));
+        seek.setProgress(index);
+        mBinding.readerPageLabel.setText((index + 1) + "/" + total);
+        boolean hasPrev = chapterIndex > 0;
+        boolean hasNext = chapterIndex + 1 < chapterCount;
+        mBinding.readerPrevChapterButton.setEnabled(hasPrev);
+        mBinding.readerNextChapterButton.setEnabled(hasNext);
+        mBinding.readerPrevChapterButton.setAlpha(hasPrev ? 1.0f : 0.4f);
+        mBinding.readerNextChapterButton.setAlpha(hasNext ? 1.0f : 0.4f);
+    }
+
     private void applyMangaMode() {
         if (mBinding == null) {
             return;
@@ -589,6 +692,11 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBinding.trayButtons.setVisibility(mMangaMode == MODE_BROWSER ? View.VISIBLE : View.GONE);
         mBinding.mangaButtons.setVisibility(mMangaMode == MODE_MANGA ? View.VISIBLE : View.GONE);
         mBinding.readerButtons.setVisibility(mMangaMode == MODE_READER ? View.VISIBLE : View.GONE);
+        if (mMangaMode != MODE_READER) {
+            mReaderProgressHovered = false;
+            removeCallbacks(mHideProgressRunnable);
+            mBinding.readerProgressRow.setVisibility(View.GONE);
+        }
 
         mBinding.mangaShelfButton.setActiveMode("LIBRARY".equals(mMangaPage));
         mBinding.mangaLocalButton.setActiveMode("LOCAL".equals(mMangaPage));

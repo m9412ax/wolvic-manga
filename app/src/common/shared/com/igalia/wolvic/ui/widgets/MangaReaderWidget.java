@@ -105,6 +105,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private MangaChapterSession.ChapterProvider mChapterProvider;
     private boolean mLoadingChapter;
     private boolean mChapterLoading;
+    /** Bumped on every new chapter session. Async chapter downloads from an
+     *  OLD session must never load their folder into the NEW manga - that was
+     *  the "after switching manga it still shows the previous one" bug. */
+    private volatile int mChapterSession;
+    /** Chapter downloads can fail without invoking their callback; never let
+     *  the "loading" flag block chapter crossing forever. */
+    private volatile long mChapterLoadingSince;
     private float mPendingStripFrac;
     private final Runnable mChapterSaveTick = this::saveChapterProgress;
     private volatile int mLoadGeneration;
@@ -496,11 +503,36 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Opens a folder directly at a chosen page (used by the thumbnail view
      *  and "continue reading"). startIndex < 0 restores saved progress. */
     public void setFolder(File folder, int startIndex) {
-        if (!mLoadingChapter) {
+        // Decide from the FOLDER, not the transient mLoadingChapter flag: a
+        // chapter switch passes one of the session's own dirs, a genuinely new
+        // manga passes something else. Previously mChapterDirs was cleared on
+        // every setFolder() call with mLoadingChapter=false, which silently
+        // dropped the playlist and made "next page" at the last page do
+        // nothing (showPage() rejects an out-of-range index).
+        boolean belongsToSession = false;
+        if (mChapterDirs != null && folder != null) {
+            for (File dir : mChapterDirs) {
+                if (dir != null && dir.equals(folder)) {
+                    belongsToSession = true;
+                    break;
+                }
+            }
+        }
+        if (!mLoadingChapter && !belongsToSession) {
+            // A fresh manga: invalidate in-flight async chapter downloads of
+            // the previous manga and clear its picture immediately.
+            mChapterSession++;
+            mChapterLoading = false;
             mChapterDirs = null;
             mChapterProvider = null;
             mChapterProgressKey = null;
             mPendingStripFrac = 0f;
+            mCurrent = null;
+            mPageImage.setImageDrawable(null);
+            if (mStripView != null) {
+                mStripView.clearTiles();
+                mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
+            }
         }
         stopVideo(true);
         cancelAuto();
@@ -565,12 +597,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  continuous scrolling cross into neighbouring chapters; online chapters
      *  are downloaded on demand and pre-cached ahead of the reading window. */
     public void setChapters(MangaChapterSession session) {
+        mChapterSession++;
+        mChapterLoading = false;
+        // Clear the previous manga's picture immediately. Without this the
+        // old frame stays on screen until the new page finishes decoding.
+        mCurrent = null;
+        mPageImage.setImageDrawable(null);
+        if (mStripView != null) {
+            mStripView.clearTiles();
+            mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
+        }
         mChapterDirs = session.dirs;
         mChapterProvider = session.provider;
         mChapterProgressKey = session.progressKey;
         mChapterIndex = session.index;
         Log.i(TAG, "setChapters chapters=" + session.dirs.size() + " index=" + session.index
                 + " page=" + session.page + " frac=" + session.frac);
+        notifyTrayProgress();
         loadChapter(session.index, session.page, session.frac, session.startFilePath);
     }
 
@@ -584,12 +627,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         boolean ready = files != null && files.length > 0;
         if (!ready && mChapterProvider != null) {
             mChapterLoading = true;
+            mChapterLoadingSince = android.os.SystemClock.uptimeMillis();
+            final int session = mChapterSession;
             showHint("加载第 " + (index + 1) + " 章…");
             mChapterProvider.ensureChapter(index, (d, error) -> mMainHandler.post(() -> {
-                mChapterLoading = false;
-                if (mDestroyed) {
-                    return;
+                if (session != mChapterSession || mDestroyed) {
+                    return; // stale callback from a manga the user already left
                 }
+                mChapterLoading = false;
                 if (d == null) {
                     showHint("章节加载失败：" + error);
                     return;
@@ -623,7 +668,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Crosses a chapter boundary. delta=+1 lands on the next chapter's first
      *  page, delta=-1 on the previous chapter's last page (continuous mode:
      *  its bottom, so up-scrolling keeps reading the previous chapter tail). */
+    private void chapterLoadingGuard() {
+        if (mChapterLoading && android.os.SystemClock.uptimeMillis()
+                - mChapterLoadingSince > 20000L) {
+            mChapterLoading = false;
+            Log.w(TAG, "chapter loading timed out, resetting flag");
+        }
+    }
+
+    public void chapterDelta(int delta) {
+        chapterLoadingGuard();
+        advanceChapter(delta);
+    }
+
     private void advanceChapter(int delta) {
+        chapterLoadingGuard();
         if (mChapterDirs == null || mChapterDirs.size() <= 1 || mChapterLoading) {
             showHint(delta > 0 ? "已到最后一页" : "已到第一页");
             return;
@@ -711,6 +770,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void showPage(int index) {
+        // Chapter-boundary fallback. Any path that asks for an out-of-range
+        // page (thumbstick, auto-advance, seek bar, tap zone) must cross into
+        // the neighbouring chapter instead of silently doing nothing.
+        chapterLoadingGuard();
+        if (!mDestroyed && !mPages.isEmpty() && mChapterDirs != null
+                && mChapterDirs.size() > 1 && !mChapterLoading) {
+            if (index >= mPages.size() && hasChapter(mChapterIndex + 1)) {
+                Log.i(TAG, "showPage boundary -> next chapter (" + index + ")");
+                advanceChapter(1);
+                return;
+            }
+            if (index < 0 && hasChapter(mChapterIndex - 1)) {
+                Log.i(TAG, "showPage boundary -> previous chapter (" + index + ")");
+                advanceChapter(-1);
+                return;
+            }
+        }
         if (mDestroyed || mPages.isEmpty() || index < 0 || index >= mPages.size()) {
             if (mPages.isEmpty()) {
                 mPageCounter.setText("0 / 0");
@@ -753,6 +829,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         applyDisplaySettings();
         mPageCounter.setText(counterText());
         mGotoDialog.setVisibility(GONE);
+        notifyTrayProgress();
         preloadNext();
 
         if (MangaSettings.hasExtension(page.getName(), mSettings.videoExtensions())) {
@@ -1514,6 +1591,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             if (mStripOffset >= curH) {
                 if (mIndex + 1 >= mPages.size()) {
+                    chapterLoadingGuard();
                     if (hasChapter(mChapterIndex + 1) && !mChapterLoading) {
                         advanceChapter(1);
                         return;
@@ -1536,6 +1614,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 shiftStrip(1);
             } else if (mStripOffset < 0f) {
                 if (mIndex - 1 < 0) {
+                    chapterLoadingGuard();
                     if (hasChapter(mChapterIndex - 1) && !mChapterLoading) {
                         advanceChapter(-1);
                         return;
@@ -1626,6 +1705,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mCurrent = mStripSegments[2];
         mPageCounter.setText(counterText());
+        notifyTrayProgress();
         if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)) {
             progressPrefs().edit().putInt(pageProgressKey(), mIndex).apply();
         }
@@ -1799,12 +1879,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             delta = -delta;
         }
         int target = mIndex + delta;
+        chapterLoadingGuard();
+        Log.i(TAG, "pageDelta target=" + target + " pages=" + mPages.size()
+                + " chapters=" + (mChapterDirs == null ? 0 : mChapterDirs.size())
+                + " chapterIndex=" + mChapterIndex + " loading=" + mChapterLoading);
         if (mChapterDirs != null && mChapterDirs.size() > 1) {
             if (target >= mPages.size()) {
+                Log.i(TAG, "pageDelta -> next chapter");
                 advanceChapter(1);
                 return;
             }
             if (target < 0) {
+                Log.i(TAG, "pageDelta -> previous chapter");
                 advanceChapter(-1);
                 return;
             }
@@ -1862,6 +1948,28 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             scheduleAuto();
         }
         showHint(value ? "自动翻页：开" : "自动翻页：关");
+    }
+
+    /** Jump straight to a 0-based page, used by the tray scrubber. */
+    public void jumpToPage(int index) {
+        if (mPages.isEmpty()) {
+            return;
+        }
+        showPage(Math.max(0, Math.min(index, mPages.size() - 1)));
+    }
+
+    private void notifyTrayProgress() {
+        Context context = getContext();
+        if (!(context instanceof VRBrowserActivity)) {
+            return;
+        }
+        TrayWidget tray = ((VRBrowserActivity) context).getTray();
+        if (tray == null) {
+            return;
+        }
+        int chapterCount = mChapterDirs == null ? 1 : mChapterDirs.size();
+        tray.updateReaderProgress(mIndex, mPages.size(),
+                mChapterIndex, chapterCount);
     }
 
     public void openGotoDialog() {

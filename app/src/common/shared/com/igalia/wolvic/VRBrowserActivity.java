@@ -2736,10 +2736,14 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             mMangaReader = new MangaReaderWidget(this);
             mMangaReader.show(UIWidget.REQUEST_FOCUS);
         }
+        // Make the reader widget VISIBLE before loading/decoding. Wolvic does
+        // not repaint a hidden widget's offscreen surface, so decoding while
+        // hidden left the previous manga's frame on screen until the user
+        // exited and re-entered (the "shows the old manga" bug).
+        setUiMode(UI_READER);
         mMangaReader.setChapters(session);
         int index = Math.max(0, Math.min(session.index, session.dirs.size() - 1));
         MangaSettings.get(this).setLastReadFolder(session.dirs.get(index).getAbsolutePath());
-        setUiMode(UI_READER);
         mMangaReader.reapplyCanvasSize();
         Log.i("MangaMode", "openReaderSession chapters=" + session.dirs.size()
                 + " index=" + session.index + " page=" + session.page);
