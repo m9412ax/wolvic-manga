@@ -3,6 +3,7 @@ plugins {
 }
 include ':app'
 include ':source-api'
+include ':extensions:cosjun'
 
 Properties userProperties = null;
 if (file('user.properties').canRead()) {
