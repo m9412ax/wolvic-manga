@@ -45,6 +45,9 @@ dependencies {
     // serialization) come through source-api's `api` elements. Do NOT re-declare
     // them here: a differing coroutines version caused a strict BOM conflict.
     compileOnly project(':source-api')
+    // jsoup is `implementation` in source-api (not exported); declare it here
+    // at the SAME version so Document/select and the asJsoup() extension compile.
+    compileOnly 'org.jsoup:jsoup:1.23.2'
     // Preference UI classes are implementation-only in source-api; the host
     // provides them at runtime, so compileOnly keeps them out of the APK.
     compileOnly 'androidx.preference:preference-ktx:1.2.1'
