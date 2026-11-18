@@ -184,6 +184,9 @@ public class MangaOptionsView extends SettingsView
         radio("书架列数", MangaSettings.SOURCE_SPAN_COUNT,
                 new String[]{"2 列", "3 列", "4 列", "5 列", "6 列"},
                 new int[]{2, 3, 4, 5, 6});
+        radio("书架视图大小（窗口与封面）", MangaSettings.LIBRARY_SIZE,
+                new String[]{"小", "中（默认）", "大"},
+                new int[]{0, 1, 2});
         radio("封面解码尺寸", MangaSettings.SOURCE_THUMB_PX,
                 new String[]{"320 px", "480 px", "720 px", "1080 px"},
                 new int[]{320, 480, 720, 1080});

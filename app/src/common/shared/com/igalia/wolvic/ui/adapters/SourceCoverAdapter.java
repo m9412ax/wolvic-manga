@@ -21,6 +21,7 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
+import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaSourceRepository;
 
 import java.util.ArrayList;
@@ -75,6 +76,14 @@ public class SourceCoverAdapter extends RecyclerView.Adapter<SourceCoverAdapter.
     public void onBindViewHolder(@NonNull CoverViewHolder holder, int position) {
         final SManga manga = mItems.get(position);
         holder.title.setText(manga.getTitle());
+        int targetPx = (int) (200 * MangaSettings.librarySizeFactor(
+                MangaSettings.get(mContext).integer(MangaSettings.LIBRARY_SIZE))
+                * mContext.getResources().getDisplayMetrics().density + 0.5f);
+        ViewGroup.LayoutParams lp = holder.cover.getLayoutParams();
+        if (lp != null && lp.height != targetPx) {
+            lp.height = targetPx;
+            holder.cover.setLayoutParams(lp);
+        }
         final String url = manga.getThumbnail_url();
         holder.cover.setImageDrawable(null);
         holder.cover.setTag(url);

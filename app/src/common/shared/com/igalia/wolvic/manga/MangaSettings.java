@@ -92,6 +92,8 @@ public final class MangaSettings {
     public static final String SOURCE_THUMB_PX = "source_thumb_px";
     /** Bookshelf view: 0 = icon grid, 1 = compact list. */
     public static final String LIBRARY_VIEW_MODE = "library_view_mode";
+    /** Bookshelf window size: 0 = small (legacy), 1 = medium (default), 2 = large. */
+    public static final String LIBRARY_SIZE = "library_size";
     /** Thumbnail size multiplier inside a folder, persists between visits. */
     public static final String FOLDER_THUMB_SCALE = "folder_thumb_scale";
     /** Last browsed directory - restored on the next visit when no default
@@ -225,6 +227,11 @@ public final class MangaSettings {
         }
     }
 
+    /** Window / cover scale for the 小(0) / 中(1) / 大(2) bookshelf views. */
+    public static float librarySizeFactor(int size) {
+        return size == 2 ? 1.8f : size == 1 ? 1.4f : 1.0f;
+    }
+
     public static int defaultInt(String key) {
         switch (key) {
             case READER_BRIGHTNESS:
@@ -245,6 +252,8 @@ public final class MangaSettings {
                 return 256;
             case SOURCE_CACHE_MB:
                 return 1024;
+            case LIBRARY_SIZE:
+                return 1;
             case ADV_MAX_DECODE_PX:
                 return 1600;
             case READER_VIDEO_FIT:

@@ -114,6 +114,8 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         // them unconditionally on every bind requests a layout from inside a
         // RecyclerView layout pass, which can loop forever and freeze the UI.
         int targetPx = (int) ((mCompact ? 96 : 200)
+                * MangaSettings.librarySizeFactor(
+                        MangaSettings.get(mContext).integer(MangaSettings.LIBRARY_SIZE))
                 * mContext.getResources().getDisplayMetrics().density + 0.5f);
         android.view.ViewGroup.LayoutParams lp = holder.cover.getLayoutParams();
         if (lp != null && lp.height != targetPx) {

@@ -156,7 +156,6 @@ public class MangaLibraryWidget extends UIWidget {
     private String mSourceMangaStatus = "";
     private final List<SChapter> mSourceChapters = new ArrayList<>();
     private final Set<String> mExpandedPkgs = new HashSet<>();
-    private boolean mExpandedInit = false;
     private MangaSourceManager.LoadedSource mSettingsSource;
     private PreferenceScreen mPrefScreen;
     private FilterList mSourceFilters;
@@ -296,8 +295,10 @@ public class MangaLibraryWidget extends UIWidget {
     @Override
     protected void initializeWidgetPlacement(WidgetPlacement aPlacement) {
         Context context = getContext();
-        int windowWidth = SettingsStore.getInstance(context).getWindowWidth();
-        int windowHeight = SettingsStore.getInstance(context).getWindowHeight();
+        float sizeFactor = MangaSettings.librarySizeFactor(
+                MangaSettings.get(context).integer(MangaSettings.LIBRARY_SIZE));
+        int windowWidth = (int) (SettingsStore.getInstance(context).getWindowWidth() * sizeFactor);
+        int windowHeight = (int) (SettingsStore.getInstance(context).getWindowHeight() * sizeFactor);
 
         aPlacement.width = windowWidth + mBorderWidth * 2;
         aPlacement.height = windowHeight + mBorderWidth * 2;
@@ -331,11 +332,24 @@ public class MangaLibraryWidget extends UIWidget {
 
     @Override
     public void onResume() {
-        updateWidget();
+        applyLibrarySize();
         if (hasStoragePermission()) {
             refreshCurrentPage();
         }
         Log.i(TAG, "onResume page=" + mCurrentPage.name());
+    }
+
+    /** Re-applies the 小/中/大 window size and cover scale. Same native path
+     *  as the browser window resize (placement -> updateWidgetNative). */
+    public void applyLibrarySize() {
+        initializeWidgetPlacement(mWidgetPlacement);
+        updateWidget();
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
+        }
+        if (mSourceAdapter != null) {
+            mSourceAdapter.notifyDataSetChanged();
+        }
     }
 
     @Override
@@ -739,6 +753,22 @@ public class MangaLibraryWidget extends UIWidget {
             viewToggle.setText(next == 1 ? "▦ 切换图标视图" : "☰ 切换列表视图");
         });
         bar.addView(viewToggle);
+
+        final String[] sizeNames = {"小", "中", "大"};
+        Button sizeToggle = new Button(getContext());
+        sizeToggle.setAllCaps(false);
+        sizeToggle.setTextSize(16f);
+        sizeToggle.setTextColor(0xFFFFFFFF);
+        sizeToggle.setBackgroundColor(0xFF4A3A6A);
+        sizeToggle.setMinWidth(dp(140));
+        sizeToggle.setText("⤢ 视图：" + sizeNames[mSettings.integer(MangaSettings.LIBRARY_SIZE)]);
+        sizeToggle.setOnClickListener(v -> {
+            int next = (mSettings.integer(MangaSettings.LIBRARY_SIZE) + 1) % 3;
+            mSettings.put(MangaSettings.LIBRARY_SIZE, next);
+            applyLibrarySize();
+            sizeToggle.setText("⤢ 视图：" + sizeNames[next]);
+        });
+        bar.addView(sizeToggle);
 
         Button cont = new Button(getContext());
         cont.setText("▶ 继续阅读");
@@ -1392,7 +1422,7 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void fillExtensionsPage(LinearLayout content) {
         addInfo(content, "自定义漫画源 / 扩展应用",
-                "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。多源应用默认折叠，点应用名展开；源名优先显示扩展内置名称。");
+                "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。单源应用直接列出；多源应用点名称展开。源名优先显示扩展内置名称。");
         List<MangaSourceManager.LoadedSource> sources;
         try {
             sources = MangaSourceManager.INSTANCE.init(getContext());
@@ -1410,19 +1440,29 @@ public class MangaLibraryWidget extends UIWidget {
             }
             list.add(entry);
         }
-        if (!mExpandedInit) {
-            mExpandedInit = true;
-            for (Map.Entry<String, List<MangaSourceManager.LoadedSource>> g : groups.entrySet()) {
-                if (g.getValue().size() == 1) {
-                    mExpandedPkgs.add(g.getKey());
-                }
-            }
-        }
         addInfo(content, "已加载图源", sources.size() + " 个源 / " + groups.size() + " 个应用");
         for (Map.Entry<String, List<MangaSourceManager.LoadedSource>> g : groups.entrySet()) {
             final String pkg = g.getKey();
             List<MangaSourceManager.LoadedSource> list = g.getValue();
             MangaSourceManager.LoadedSource first = list.get(0);
+            if (list.size() == 1) {
+                // Single-source package: one flat row, no collapse layer.
+                LinearLayout row = addRow(content);
+                if (first.getIcon() != null) {
+                    ImageView icon = new ImageView(getContext());
+                    icon.setImageDrawable(first.getIcon());
+                    LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(dp(40), dp(40));
+                    ip.setMargins(0, dp(4), dp(8), dp(4));
+                    row.addView(icon, ip);
+                }
+                addButton(row, first.getSource().getName() + " [" + first.getSource().getLang() + "]",
+                        v -> openSourceBrowse(first));
+                if (first.getSource() instanceof ConfigurableSource) {
+                    addButton(row, "设置", v -> openSourceSettings(first));
+                }
+                addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(first));
+                continue;
+            }
             boolean expanded = mExpandedPkgs.contains(pkg);
             LinearLayout header = addRow(content);
             if (first.getIcon() != null) {
@@ -1432,8 +1472,7 @@ public class MangaLibraryWidget extends UIWidget {
                 ip.setMargins(0, dp(4), dp(8), dp(4));
                 header.addView(icon, ip);
             }
-            String label = list.size() == 1 ? first.getSource().getName() : first.getAppLabel();
-            addButton(header, label + (list.size() > 1 ? "（" + list.size() + " 源）" : "")
+            addButton(header, first.getAppLabel() + "（" + list.size() + " 源）"
                     + (expanded ? " ▲" : " ▼"), v -> {
                 if (mExpandedPkgs.contains(pkg)) {
                     mExpandedPkgs.remove(pkg);
@@ -1512,11 +1551,14 @@ public class MangaLibraryWidget extends UIWidget {
                 mSourceStatus = "加载失败：" + error;
                 mSourceMangas.clear();
                 mSourceHasNext = false;
+                Log.w(TAG, "browse cb error: " + error);
             } else {
                 mSourceMangas.clear();
                 mSourceMangas.addAll(page.getMangas());
                 mSourceHasNext = page.getHasNextPage();
                 mSourceStatus = "第 " + mSourcePage + " 页 · " + mSourceMangas.size() + " 部";
+                Log.i(TAG, "browse cb: " + mSourceMangas.size() + " manga, hasNext=" + mSourceHasNext
+                        + (mSourceMangas.isEmpty() ? "" : ", first=" + mSourceMangas.get(0).getTitle()));
             }
             refreshPage(MangaPage.SOURCE_BROWSE);
         };
@@ -1598,6 +1640,12 @@ public class MangaLibraryWidget extends UIWidget {
         mSourceAdapter.update(mSourceMangas);
         content.addView(mSourceGrid, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        final int items = mSourceMangas.size();
+        mSourceGrid.post(() -> Log.i(TAG, "browse grid: items=" + items
+                + " adapter=" + mSourceAdapter.getItemCount()
+                + " w=" + mSourceGrid.getWidth() + " h=" + mSourceGrid.getHeight()
+                + " children=" + mSourceGrid.getChildCount()
+                + " visible=" + mSourceGrid.isShown()));
     }
 
     private void searchSourceBy(String query) {

@@ -37,6 +37,7 @@ import android.view.KeyEvent;
 import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaSettings;
+import com.igalia.wolvic.manga.MangaSourceManager;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewTreeObserver;
@@ -906,6 +907,19 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                 Log.i("MangaMode", "intent open folder=" + mangaFolder);
             } else {
                 Log.e("MangaMode", "intent folder missing=" + mangaFolder);
+            }
+        }
+
+        // Diagnostic: fetch popular page 1 for matching extensions without
+        // needing VR clicks. Usage: --es manga_test_source <pkg substring|all>
+        String mangaTestSource = intent.getStringExtra("manga_test_source");
+        if (mangaTestSource != null && !mangaTestSource.isEmpty()) {
+            for (MangaSourceManager.LoadedSource entry : MangaSourceManager.INSTANCE.init(this)) {
+                if ("all".equalsIgnoreCase(mangaTestSource)
+                        || entry.getPkgName().contains(mangaTestSource)
+                        || entry.getSource().getName().contains(mangaTestSource)) {
+                    MangaSourceManager.INSTANCE.testFetch(entry);
+                }
             }
         }
 
