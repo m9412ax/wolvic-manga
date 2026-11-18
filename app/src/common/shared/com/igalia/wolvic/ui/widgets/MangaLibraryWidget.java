@@ -1576,13 +1576,25 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         Source source = mSourceEntry.getSource();
-        addInfo(content, source.getName(), mSourceEntry.getAppLabel() + " · " + source.getLang());
+        mTitle.setText("漫画 · " + source.getName());
+        // Compact two-row header: the cover grid must keep the bulk of the
+        // window height. A tall header starved the weighted grid to 0px on
+        // the small window, which looked like "count shown but no manga".
         LinearLayout nav = addRow(content);
-        addButton(nav, "← 返回扩展", v -> switchPage(MangaPage.EXTENSIONS));
+        addButton(nav, "← 返回", v -> switchPage(MangaPage.EXTENSIONS));
         addButton(nav, "筛选", v -> openSourceFilters());
         if (source instanceof ConfigurableSource) {
             addButton(nav, "设置", v -> openSourceSettings(mSourceEntry));
         }
+        TextView status = new TextView(getContext());
+        status.setText(mSourceStatus + (mSourceFiltersActive ? " · 已筛选" : ""));
+        status.setTextSize(15f);
+        status.setTextColor(0xFFB0B0B8);
+        status.setSingleLine(true);
+        status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setPadding(dp(10), 0, 0, 0);
+        nav.addView(status, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         LinearLayout searchRow = addRow(content);
         EditText input = new EditText(getContext());
@@ -1590,7 +1602,8 @@ public class MangaLibraryWidget extends UIWidget {
         input.setText(mSourceQuery);
         input.setTextColor(0xFFFFFFFF);
         input.setHintTextColor(0xFF808088);
-        input.setTextSize(17f);
+        input.setTextSize(16f);
+        input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT);
         searchRow.addView(input, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1614,22 +1627,18 @@ public class MangaLibraryWidget extends UIWidget {
                 startSourceBrowse();
             });
         }
-
-        LinearLayout pager = addRow(content);
         if (mSourcePage > 1) {
-            addButton(pager, "上一页", v -> {
+            addButton(searchRow, "↑页", v -> {
                 mSourcePage--;
                 startSourceBrowse();
             });
         }
         if (mSourceHasNext) {
-            addButton(pager, "下一页", v -> {
+            addButton(searchRow, "↓页", v -> {
                 mSourcePage++;
                 startSourceBrowse();
             });
         }
-        addInfo(content, "状态", mSourceStatus
-                + (mSourceFiltersActive ? " · 已应用筛选" : ""));
 
         if (mSourceAdapter == null || mSourceAdapterSource != source) {
             mSourceAdapterSource = source;
