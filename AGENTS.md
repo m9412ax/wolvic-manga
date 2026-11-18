@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round H 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round I 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -45,6 +45,20 @@
 2. **换漫画仍显示上一本**：`MangaReaderWidget` 加 `mChapterSession` 代次号，切新漫画时 ++；异步章节下载回调校验代次，旧漫画的回调不再把旧目录装进新漫画；`setChapters`/`setFolder` 瞬时清空 `mCurrent`/strip/封面；`VRBrowserActivity.openMangaReaderSession` 把 `setUiMode(UI_READER)` 提前到 `setChapters` 之前（隐藏 widget 不重绘会残留旧帧）。
 3. **多章无法切下一章**：章节边界兜底——`showPage`/`pageDelta`/连续条带滚动越界时调 `advanceChapter(±1)`；`chapterLoadingGuard()` 20s 超时复位防卡死；订阅预取相邻章；页码计数显示"章n/总·页x/y"；`chap:<key>` 进度 `章|页|比例` 恢复。
 4. **隐藏式阅读进度控制行**：`tray.xml` 新增 `reader_progress_row`（上一章/可拖动 SeekBar/页码标签/下一章，默认 `gone`）；`TrayWidget.setupReaderProgress` 只在指针悬停 reader 按钮行时显示（移出 350ms 后隐藏）；SeekBar 停拖调 `reader.jumpToPage()`，章节按钮调 `reader.chapterDelta()`；阅读器 `notifyTrayProgress` 回写进度。
+
+## Round I（2026-11-18 下午）：首开图片/进度条修复 + COS君扩展
+
+### 主机修复（CI `44271638729` success，装机 versionCode `2103220859`，firstInstallTime 保留）
+- **首开图片不显示**（用户反馈"打开显示加载文字、图片不出、退出重进几次才好；切下一章正常"）：根因=异步解码落地时 widget 未 measure，`applyImageTransform()` 因 vw/vh==0 直接 return，MATRIX ImageView 不绘制。修复=`displayLoadedPage`/`applyPageDetail` 里 setImageBitmap 后 `mPageImage.post(this::applyImageTransform)` 等布局就绪再落地；`openMangaReaderSession` 把 `reapplyCanvasSize()` 提前到 `setChapters()` 之前先定尺寸。
+- **悬浮进度条无效**（用户反馈"指向控制栏没有多出进度条"）：两因叠加——① hover listener 挂在 `reader_buttons` LinearLayout 容器上，VR 射线命中子 UIButton，hover 不冒泡到容器，永不触发；② 进度行作为新行加在 66dp 托盘下方会被裁切。修复=`TrayWidget.dispatchHoverEvent()` widget 级捕获（同已验证的视频控制栏方案）；把 `reader_progress_row` 移进按钮行的 FrameLayout 叠加层（40dp 锚底、覆盖按钮行）。**以后 VR 里给容器挂 OnHoverListener 无效，必须 widget 级 dispatch。**
+
+### COS君扩展（mihon 格式，源码 `extensions/cosjun/`，专用 CI `build-extension-cosjun.yml`）
+- 站点 `https://www.cosjun.cn`：WordPress/ripro。分类 `/photo`(COS妹子)/`/benzi`/`/life`/`/zhuanqu`；列表 `article.post`，封面 `img[data-src]`(timthumb 需还原)，日期 `time[datetime]`，`fa-lock`=需登录。排序 `?orderby=date&order=asc|desc`（默认新到旧）；分页 `/page/N`；搜索 `/?s=关键词`；标签 `/tag/<urlencoded>`。
+- **登录**：`POST wp-admin/admin-ajax.php` `action=user_login&username=&password=&rememberme=forever` → `{"status":"1"}`；靠 **PHPSESSID** cookie 维持（不是 wordpress_logged_in_*），登录后 gallery 从 4 张试读变全量（如 753789：4→67 张 + 1 mp4）。扩展里用 `ConfigurableSource` 的 `EditTextPreference` 让用户填账号密码，`ensureLoggedIn()` 30 分钟缓存一次。
+- **详情**：gallery 有多个（gallery-2 试读 4 张、gallery-3 全量），取 items 最多的那个取 `.gallery-icon a[href]` 原图；视频 `<video class=wp-video-shortcode><source src=*.mp4>` 放最前。COS 名=第一个 `/tag/` 链接文本，放到 `SManga.author`（宿主可点击作者筛选）。
+- **下一本**（用户要求按点进来时的排序/搜索/筛选）：一部漫画=一个图片目录不分章；扩展内存缓存最近一次浏览列表 URL `browseQueue`，`getMangaUpdate` 把它从当前项往后的尾部当伪章节返回，宿主的跨章机制即变"下一本"。**注意 browseQueue 是内存态，app 重启后"继续阅读"进入时队列为空→只有自身一本**，此场景无下一本（已知限制）。
+- **扩展 ABI 契约**：继承 `HttpSource`+`ConfigurableSource`，直接覆写 suspend `getPopularManga/getLatestUpdates/getSearchManga/getMangaUpdate/getPageList`（**不要**覆写不存在的 `getMangaDetails/getChapterList`）；`compileOnly project(':source-api')` 绝对不能把 ABI 类打进 APK（DelegateLastClassLoader 要求）。gradle 坑：coroutines 用 source-api 传递的 1.6.1，别在扩展里显式声明 `core-jvm:1.7.3`（BOM 严格冲突）；jsoup 是 source-api 的 implementation 不传递，扩展需显式 `compileOnly 'org.jsoup:jsoup:1.23.2'` + `import eu.kanade.tachiyomi.util.asJsoup`。
+- 扩展 APK `694352 B`，SHA256(zip) `c1e0f88c...965`，zip OK、**未打包任何 eu/kanade/tachiyomi/source 类**；已 `adb install -r` 到 Pico（包 `eu.kanade.tachiyomi.extension.zh.cosjun`）。**运行时是否出现在书架"漫画源扩展"页、能否真正加载/登录/翻页，需用户戴头显实测（未验证）**。诊断 intent `manga_test_source` 在 `loadFromIntent()` 里，普通 `am start` 不触发，别用它判断加载成功。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
