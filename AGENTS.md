@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round I 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round J 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -59,6 +59,17 @@
 - **下一本**（用户要求按点进来时的排序/搜索/筛选）：一部漫画=一个图片目录不分章；扩展内存缓存最近一次浏览列表 URL `browseQueue`，`getMangaUpdate` 把它从当前项往后的尾部当伪章节返回，宿主的跨章机制即变"下一本"。**注意 browseQueue 是内存态，app 重启后"继续阅读"进入时队列为空→只有自身一本**，此场景无下一本（已知限制）。
 - **扩展 ABI 契约**：继承 `HttpSource`+`ConfigurableSource`，直接覆写 suspend `getPopularManga/getLatestUpdates/getSearchManga/getMangaUpdate/getPageList`（**不要**覆写不存在的 `getMangaDetails/getChapterList`）；`compileOnly project(':source-api')` 绝对不能把 ABI 类打进 APK（DelegateLastClassLoader 要求）。gradle 坑：coroutines 用 source-api 传递的 1.6.1，别在扩展里显式声明 `core-jvm:1.7.3`（BOM 严格冲突）；jsoup 是 source-api 的 implementation 不传递，扩展需显式 `compileOnly 'org.jsoup:jsoup:1.23.2'` + `import eu.kanade.tachiyomi.util.asJsoup`。
 - 扩展 APK `694352 B`，SHA256(zip) `c1e0f88c...965`，zip OK、**未打包任何 eu/kanade/tachiyomi/source 类**；已 `adb install -r` 到 Pico（包 `eu.kanade.tachiyomi.extension.zh.cosjun`）。**运行时是否出现在书架"漫画源扩展"页、能否真正加载/登录/翻页，需用户戴头显实测（未验证）**。诊断 intent `manga_test_source` 在 `loadFromIntent()` 里，普通 `am start` 不触发，别用它判断加载成功。
+
+## Round J（2026-11-18 晚）：进度条位置 + 扩展"未识别"修复
+
+用户反馈：① 进度条能弹出了但覆盖控制栏按钮（要浮在控制栏上方）；② cos君扩展在 VR 项目显示"未识别扩展"、官方 mihon 不显示（第三方 mihon 软件能用）。
+
+- **进度条覆盖按钮**：进度行原本 `layout_gravity=bottom` 盖住 reader_buttons。改为 `layout_gravity=top` + `translationY=-40dp`，浮到按钮行上方（status_bar 那一带），不再遮挡按钮。主机 CI `44277586393` success，装机 versionCode→`2103220938`。**需头显确认视觉位置**。
+- **扩展"未识别"根因（重要 ABI 坑）**：logcat `MangaSource: LinkageError: Cosjun.getSearchManga(... Continuation) resolves differently in superclass HttpSource: Continuation DelegateLastClassLoader vs PathClassLoader`。原因是 Kotlin 插件默认把 `kotlin-stdlib`/coroutines 当 implementation 打进扩展 APK（2.3MB dex），`DelegateLastClassLoader` 于是加载了扩展私有的 `Continuation`，与宿主 HttpSource 的不匹配。修复：根 `gradle.properties` 加 `kotlin.stdlib.default.dependency=false`（app/source-api 都显式声明 stdlib 故不受影响）+ 扩展依赖全 compileOnly。新 APK 从 2.3MB 降到 **30KB**，CI `44277595624` success。装机后 logcat 确认 `loaded source: name=COS君 id=6145523130229688195 ... failures=0`——**已成功识别加载**。
+- **扩展 logo**：下载站点 `https://www.cosjun.cn/wp-content/themes/ripro/assets/images/logo/logo.png`（380×120）存为 `extensions/cosjun/src/main/res/mipmap-hdpi/ic_launcher.png`，manifest 加 `android:icon="@mipmap/ic_launcher"`。
+- **签名变更坑**：扩展 workflow 注入了 stable debug keystore，与首版（默认 debug）签名不同，`install -r` 报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`——需先 `adb uninstall eu.kanade.tachiyomi.extension.zh.cosjun` 再装。**以后扩展重新构建若签名变了要先卸载**。
+- **官方 mihon 不显示属正常**：官方只收录其签名/仓库的扩展；本扩展是私密自签，只在 VR 项目和第三方 mihon 规则软件可用。
+- 诊断验证：扩展加载在 app 启动 `initializeWidgets→fillExtensionsPage→MangaSourceManager.init` 时就发生（不用进扩展页），冷启动后 `logcat | grep MangaSource` 看 `loaded source` / `init done`。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
