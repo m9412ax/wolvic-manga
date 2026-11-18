@@ -436,11 +436,15 @@
             <!-- Reader page scrubber. Hidden by default; TrayWidget reveals it
                  only while the VR pointer hovers the reader control row. Small
                  on purpose so it does not crowd the button row. -->
+            <!-- Floats ABOVE the button row (into the status-bar band), never
+                 covering the reader buttons. translationY lifts it one button
+                 row (40dp) up inside the FrameLayout. -->
             <LinearLayout
                 android:id="@+id/reader_progress_row"
                 android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:layout_gravity="bottom"
+                android:layout_height="30dp"
+                android:layout_gravity="top"
+                android:translationY="-40dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:paddingStart="8dp"
