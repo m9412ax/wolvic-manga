@@ -432,7 +432,6 @@
                         app:tooltipLayout="@layout/tooltip_tray"
                         android:src="@drawable/ic_icon_media_play" />
                 </LinearLayout>
-            </FrameLayout>
 
             <!-- Reader page scrubber. Hidden by default; TrayWidget reveals it
                  only while the VR pointer hovers the reader control row. Small
@@ -440,8 +439,8 @@
             <LinearLayout
                 android:id="@+id/reader_progress_row"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="30dp"
+                android:layout_height="40dp"
+                android:layout_gravity="bottom"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:paddingStart="8dp"
@@ -508,6 +507,7 @@
                     android:background="#FF2A2A33"
                     android:text="下一章 ›" />
             </LinearLayout>
+            </FrameLayout>
         </LinearLayout>
     </RelativeLayout>
 </layout>

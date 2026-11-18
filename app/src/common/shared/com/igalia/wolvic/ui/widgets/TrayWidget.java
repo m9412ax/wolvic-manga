@@ -597,26 +597,12 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     /** Wires the hover-revealed page scrubber: prev/next chapter buttons,
      *  a draggable seek bar that jumps to any page, and a "2/15" label. */
     private void setupReaderProgress() {
-        final View row = mBinding.readerProgressRow;
-        final View controls = mBinding.readerButtons;
-        View.OnHoverListener hover = (v, event) -> {
-            if (mMangaMode != MODE_READER) {
-                return false;
-            }
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_HOVER_ENTER) {
-                mReaderProgressHovered = true;
-                removeCallbacks(mHideProgressRunnable);
-                row.setVisibility(View.VISIBLE);
-            } else if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                mReaderProgressHovered = false;
-                postDelayed(mHideProgressRunnable, 350L);
-            }
-            return false;
-        };
-        controls.setOnHoverListener(hover);
-        row.setOnHoverListener(hover);
-        // The extra row must never be visible when leaving reader mode.
+        // Hover reveal is handled in dispatchHoverEvent() at the WIDGET level.
+        // A OnHoverListener on the readerButtons LinearLayout never fires in
+        // VR: the controller ray hits a child UIButton, and hover events are
+        // delivered only to the view actually under the pointer (unlike touch,
+        // they do not bubble up to the parent container). The video bar uses
+        // the same widget-level dispatchHoverEvent trick and works.
         mBinding.readerPrevChapterButton.setOnClickListener(
                 v -> readerChapter(-1));
         mBinding.readerNextChapterButton.setOnClickListener(
@@ -653,6 +639,29 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                         }
                     }
                 });
+    }
+
+    /** Reveal the reader scrubber whenever the VR pointer is inside this tray
+     *  while in reader mode. Hover events in VR are delivered only to the view
+     *  under the ray (they do not bubble to a parent LinearLayout), so the
+     *  widget-level dispatch is the reliable place to observe them — same
+     *  approach as MangaReaderWidget's video bar. */
+    @Override
+    public boolean dispatchHoverEvent(MotionEvent event) {
+        if (mMangaMode == MODE_READER && mBinding != null) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_HOVER_EXIT) {
+                mReaderProgressHovered = false;
+                removeCallbacks(mHideProgressRunnable);
+                postDelayed(mHideProgressRunnable, 400L);
+            } else if (action == MotionEvent.ACTION_HOVER_ENTER
+                    || action == MotionEvent.ACTION_HOVER_MOVE) {
+                mReaderProgressHovered = true;
+                removeCallbacks(mHideProgressRunnable);
+                mBinding.readerProgressRow.setVisibility(View.VISIBLE);
+            }
+        }
+        return super.dispatchHoverEvent(event);
     }
 
     private void readerChapter(int delta) {

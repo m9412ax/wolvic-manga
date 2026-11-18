@@ -974,6 +974,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             } else {
                 mPageImage.setImageBitmap(safeForImageView(bitmap));
                 applyImageTransform();
+                // FIRST-OPEN FIX: when a manga is opened for the very first time
+                // the widget has just been created and shown; the async decode
+                // can land before the ImageView has been measured, so
+                // applyImageTransform() bails out on vw/vh==0 and the MATRIX
+                // ImageView draws nothing (only the hint text is visible).
+                // Re-apply on the next frame once layout has produced a real
+                // size. Subsequent chapter/page turns are unaffected because
+                // the view is already measured by then.
+                mPageImage.post(this::applyImageTransform);
                 restorePageDetail(bitmap);
             }
         } else {
@@ -1042,6 +1051,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mDisplayHeight = detail.getHeight();
         mPageImage.setImageBitmap(safeForImageView(detail));
         applyImageTransform();
+        mPageImage.post(this::applyImageTransform);
         Log.i(TAG, "page detail index=" + mIndex + " size="
                 + detail.getWidth() + "x" + detail.getHeight());
     }
