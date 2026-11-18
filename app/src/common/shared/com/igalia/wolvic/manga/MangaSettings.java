@@ -94,6 +94,8 @@ public final class MangaSettings {
     public static final String LIBRARY_VIEW_MODE = "library_view_mode";
     /** Bookshelf window size: 0 = small (legacy), 1 = medium (default), 2 = large. */
     public static final String LIBRARY_SIZE = "library_size";
+    /** DNS-over-HTTPS provider for extension network requests (-1 = off). */
+    public static final String NET_DOH = "net_doh";
     /** Thumbnail size multiplier inside a folder, persists between visits. */
     public static final String FOLDER_THUMB_SCALE = "folder_thumb_scale";
     /** Last browsed directory - restored on the next visit when no default
@@ -254,6 +256,8 @@ public final class MangaSettings {
                 return 1024;
             case LIBRARY_SIZE:
                 return 1;
+            case NET_DOH:
+                return -1;
             case ADV_MAX_DECODE_PX:
                 return 1600;
             case READER_VIDEO_FIT:

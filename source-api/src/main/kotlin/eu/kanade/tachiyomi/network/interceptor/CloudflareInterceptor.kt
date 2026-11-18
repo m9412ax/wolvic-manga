@@ -32,7 +32,30 @@ class CloudflareInterceptor(
         // Check if Cloudflare anti-bot is on
         // Checking the cf-mitigated header is the official way to detect a Cloudflare challenge:
         // https://developers.cloudflare.com/cloudflare-challenges/challenge-types/challenge-pages/detect-response/
-        return response.header("cf-mitigated") == "challenge" && response.header("Server") in SERVER_CHECK
+        if (response.header("cf-mitigated") == "challenge" && response.header("Server") in SERVER_CHECK) {
+            return true
+        }
+        // Some CF setups serve the challenge without cf-mitigated (older JS
+        // challenges, 403/503 interstitials). Detect by body markers so the
+        // WebView resolver runs instead of leaking HTML into JSON parsers.
+        val server = response.header("Server") ?: ""
+        if (server.contains("cloudflare", ignoreCase = true) &&
+            (response.code == 403 || response.code == 503)
+        ) {
+            val body = try {
+                response.peekBody(4096).string()
+            } catch (_: Exception) {
+                ""
+            }
+            if (body.contains("challenge-platform") ||
+                body.contains("Just a moment") ||
+                body.contains("cf-chl-") ||
+                body.contains("Enable JavaScript and cookies to continue")
+            ) {
+                return true
+            }
+        }
+        return false
     }
 
     override fun intercept(

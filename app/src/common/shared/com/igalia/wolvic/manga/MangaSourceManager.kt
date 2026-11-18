@@ -108,14 +108,14 @@ object MangaSourceManager {
                         }
                     }
                     addSingletonFactory {
+                        val netStore = AndroidPreferenceStore(
+                            appContext.getSharedPreferences("manga_source_prefs", Context.MODE_PRIVATE),
+                        )
+                        netStore.getInt("doh_provider", -1)
+                            .set(MangaSettings.get(appContext).integer(MangaSettings.NET_DOH))
                         NetworkHelper(
                             appContext,
-                            NetworkPreferences(
-                                AndroidPreferenceStore(
-                                    appContext.getSharedPreferences("manga_source_prefs", Context.MODE_PRIVATE),
-                                ),
-                                false,
-                            ),
+                            NetworkPreferences(netStore, false),
                         )
                     }
                 }

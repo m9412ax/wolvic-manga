@@ -248,6 +248,9 @@ public class MangaOptionsView extends SettingsView
         radio("在线章节磁盘缓存上限", MangaSettings.SOURCE_CACHE_MB,
                 new String[]{"256 MB", "512 MB", "1024 MB", "2048 MB"},
                 new int[]{256, 512, 1024, 2048});
+        radio("图源 DNS over HTTPS（重启生效）", MangaSettings.NET_DOH,
+                new String[]{"关闭", "Cloudflare", "Google", "阿里 DNS", "DNSPod"},
+                new int[]{-1, 1, 2, 5, 6});
 
         section("备份文件");
         button("导出设置与进度", "导出", () -> {
