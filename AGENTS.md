@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-17 稳定存档版）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round H 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -32,6 +32,19 @@
 - APK 存档：`D:/APP/wb/gzkj/2026-11-14-02-57-34/stable/wolvic-manga-stable-2026-11-17-8313c5a.apk`（219620100 B，SHA256 `e211b21283513d2515bdb8fbfebd3107f76c448f560048525f919810ad19f631`，同目录 SHA256SUMS.txt）。
 - 回退方法：直接 `adb install -r` 该 APK（同签名保数据）；或代码回退 `git checkout stable-2026-11-17` 后走 CI。
 - 之后新功能出问题，先回退到此版本再排查。
+
+## 当前装机版本（Round H，2026-11-18）
+
+- 远端 main `2abadec4`（iOS/AGP 构建修复后），**CI run `44263887430` success**，artifact `14410110154` 用 `gh run download` 下载（直连 Range+token 会 302 丢 Authorization 报 401，gh 处理签名）。APK `222291463 B`，SHA256 `712aeadc923bb22d655eea0703939d96b3aec6ea88872377197fe0ab1fe79a3a`，ZIP CRC `testzip OK`、29 dex；`adb install -r` Success，versionCode `2103220645`→`2103220805`，firstInstallTime 保留 `2026-11-14 04:25:15`。
+- 装机后 APK 内 9 个新符号全命中：`MangaChapterSession/chapterDelta/jumpToPage/notifyTrayProgress/updateReaderProgress/readerPageSeek/ChipFlowLayout/reader_progress_row/openMangaReaderSession`。**功能本身待用户头显逐项实测（未验证）**。
+- 本轮提交经 Git Data API 推送（本地 `4ec681d` 与远端 Round F/G 分叉，远端更新，以远端为 base 用 blobs→tree(base_tree)→commit→PATCH ref 合入 5 个代码文件，AGENTS.md 保远端版）。首构 run `44263456102` 失败：`android:allCaps` 属性不被本 AGP 资源编译器识别（tray.xml 两处），删除该属性后重构建成功——**以后 tray.xml 按钮别写 `android:allCaps`**。
+
+### Round H 修复（用户本轮 4 项，代码已装机未头显实测）
+
+1. **标签/筛选 chip 按实际宽度换行**：`MangaLibraryWidget.ChipFlowLayout` 自定义 `onMeasure/onLayout`，按测量宽度换行替代旧"每行硬编码 3 个"；`addChip/endChips` 改为创建/关闭该布局。
+2. **换漫画仍显示上一本**：`MangaReaderWidget` 加 `mChapterSession` 代次号，切新漫画时 ++；异步章节下载回调校验代次，旧漫画的回调不再把旧目录装进新漫画；`setChapters`/`setFolder` 瞬时清空 `mCurrent`/strip/封面；`VRBrowserActivity.openMangaReaderSession` 把 `setUiMode(UI_READER)` 提前到 `setChapters` 之前（隐藏 widget 不重绘会残留旧帧）。
+3. **多章无法切下一章**：章节边界兜底——`showPage`/`pageDelta`/连续条带滚动越界时调 `advanceChapter(±1)`；`chapterLoadingGuard()` 20s 超时复位防卡死；订阅预取相邻章；页码计数显示"章n/总·页x/y"；`chap:<key>` 进度 `章|页|比例` 恢复。
+4. **隐藏式阅读进度控制行**：`tray.xml` 新增 `reader_progress_row`（上一章/可拖动 SeekBar/页码标签/下一章，默认 `gone`）；`TrayWidget.setupReaderProgress` 只在指针悬停 reader 按钮行时显示（移出 350ms 后隐藏）；SeekBar 停拖调 `reader.jumpToPage()`，章节按钮调 `reader.chapterDelta()`；阅读器 `notifyTrayProgress` 回写进度。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
