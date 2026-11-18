@@ -41,12 +41,11 @@ repositories {
 }
 
 dependencies {
-    // ABI + transitive libraries: compile-time only, never packaged.
+    // ABI + all transitive libraries (okhttp/jsoup/coroutines/injekt/
+    // serialization) come through source-api's `api` elements. Do NOT re-declare
+    // them here: a differing coroutines version caused a strict BOM conflict.
     compileOnly project(':source-api')
-    compileOnly 'com.squareup.okhttp3:okhttp:5.3.0'
-    compileOnly 'org.jsoup:jsoup:1.23.2'
-    compileOnly 'org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.7.3'
-    compileOnly 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0'
-    compileOnly 'uy.kohesive.injekt:injekt-core:1.16.1'
-    implementation 'androidx.preference:preference-ktx:1.2.1'
+    // Preference UI classes are implementation-only in source-api; the host
+    // provides them at runtime, so compileOnly keeps them out of the APK.
+    compileOnly 'androidx.preference:preference-ktx:1.2.1'
 }
