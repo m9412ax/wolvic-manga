@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round K 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round L 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -85,6 +85,16 @@
 - **构建坑**：Kotlin `var opened` 必须声明在 try 外（catch 要用），放 try 内会 `Unresolved reference` 编译失败（`MangaSourceRepository.kt`）。
 - CI：扩展 `44500883269` success、主机 `44501704559` success（首构 `44500875432` 因 opened 作用域编译失败）。主机装机 versionCode `2103220938`→`2103231002`，firstInstallTime 保留。远端 main 最终 `0a2b59c2`；扩展已装（先 uninstall 旧版）。logcat 确认 `loaded source: name=COS君 ... failures=0`。
 - **待头显实测**：进度条位置、首图速度、切章完整张数、其他源串本/章节完整性、连续模式回滚、滚动流畅度。
+
+## Round L（2026-11-19 晚）：进度条常驻/状态栏/返回键/视频栏/快滚
+
+用户反馈：滚动好点了但快滚仍不流畅（移动方式）；进度条效果可以但要常驻；恢复状态栏（时间/电量）+圆角协调；手柄返回键不生效；视频控制栏进度条不可点+移出消失太快。
+
+- **手柄返回键（重要链路）**：native B/APP → `VRBrowserActivity.handleBack()` → `dispatchKeyEvent` → `onBackPressed()` → `mBackHandlers` 栈顶。根因：`setUiMode()` 只在 UI_BROWSER push handler，READER/LIBRARY 不 push；且 `dispatchMangaKey()` 会把绑到 BACK 的动作吞掉。修复：① `dispatchMangaKey` 开头 `if (code==KEYCODE_BACK) return false`；② `MangaLibraryWidget.goBack()`（FOLDER→上级、LOCAL→上级、WEBDAV→上级、SOURCE_*→EXTENSIONS、其它→LIBRARY）；③ Activity `setUiMode` 按模式切换 back handler（READER→`closeMangaReader` 回书架、LIBRARY→`handleMangaLibraryBack` 返回上级，书架根则回浏览器），用 `mMangaBackHandlerMode` 避免叠加。
+- **视频控制栏**：`MangaReaderWidget.setupVideoBar()` 代码构建，`mVideoSeek` 有 OnSeekBarChangeListener（fromUser→seekTo）。"点不到/晃一下就没"根因：`dispatchHoverEvent` HOVER_EXIT 无差别即时隐藏（无 timer；tray 的 400ms timer 是翻页 scrubber 不是视频栏）。修复：加 `mHideVideoBarRunnable` 延时 `VIDEO_BAR_HIDE_DELAY_MS=1000`，HOVER_EXIT→postDelayed，ENTER/MOVE→removeCallbacks 立即显示，拖动 seek 时 `scheduleVideoBarHide` 不隐藏；显示仍走 `updateVideoBarVisibility` 即时。
+- **进度条常驻+状态栏+圆角**：reader 模式进度行不再 hover 显示，`applyMangaMode` 里 MODE_READER 直接 VISIBLE、status_bar 所有模式恢复 VISIBLE；新增 `tray_height_reader=88dp` + `setTrayHeightForMode()` 在 reader 增高 placement.height 并同步 mBaseTrayHeight（onMangaParentResized 会 re-pin）；**tray.xml 根高度必须 match_parent**（原来固定 `@dimen/tray_height` 66dp 会裁掉增高后的三行——这个坑导致二次构建）；进度行 26dp 独立行、背景 `tray_background_middle_plain.xml` 无圆角，配 top/bottom 圆角协调；mHideProgressRunnable 改 no-op、dispatchHoverEvent 不再控制进度行显隐。
+- **快滚流畅度**：`MangaStripView.setStrip` 加变化检测（无变化不 invalidate，改 postInvalidateOnAnimation 合并帧）；`setOffset` 检测帧间 delta>12% 屏高时临时关 FILTER_BITMAP_FLAG，120ms 后恢复。Round K 已做 RGB_565+去DITHER。
+- CI：主机 `44524305832` success（但发现根布局裁切 bug），修复 tray 根 match_parent 后重构 `44525027525` success。本地 `89d652c`+tray fix，远端 main `c1b66363`。扩展无改动不重建。**待头显实测**：进度条常驻+状态栏圆角视觉、手柄返回键、视频进度条点击+1s消失、快滚流畅度。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
