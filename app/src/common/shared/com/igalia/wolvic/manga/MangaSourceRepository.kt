@@ -169,13 +169,13 @@ object MangaSourceRepository {
         cb: Callback<File>,
     ) {
         GlobalScope.launch(Dispatchers.IO) {
+            var opened = false
             try {
                 val pages = source.getPageList(chapter)
                 if (pages.isEmpty()) throw IllegalStateException("章节页面列表为空")
                 val dir = chapterDir(context, source, manga, chapter)
                 dir.mkdirs()
                 Log.i(TAG, "download ${source.name} '${chapter.name}' pages=${pages.size} -> $dir")
-                var opened = false
                 // First pass: leading window, then report the folder so the
                 // reader can show page 1 while the tail keeps downloading.
                 val head = pages.take(OPEN_AFTER_PAGES)
