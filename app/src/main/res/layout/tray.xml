@@ -14,7 +14,7 @@
 
     <RelativeLayout
         android:layout_width="match_parent"
-        android:layout_height="@dimen/tray_height">
+        android:layout_height="match_parent">
 
         <!-- Manga uses Wolvic's own tray chrome. Three rows share the original
              UIButton styles, tooltips and backgrounds; TrayWidget chooses the
