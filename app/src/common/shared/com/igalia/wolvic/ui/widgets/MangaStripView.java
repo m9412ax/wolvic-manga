@@ -40,6 +40,18 @@ public class MangaStripView extends View {
     private Bitmap[] mTiles;
     private boolean mTileMode = false;
     private final Matrix mTileMatrix = new Matrix();
+    // Fast continuous scrolling: bilinear-filtering huge bitmaps every frame is
+    // expensive. Turn filtering off while the offset jumps a lot per frame and
+    // restore it shortly after scrolling settles, so normal reading stays crisp.
+    private float mLastOffset = 0f;
+    private boolean mFilterOff = false;
+    private final Runnable mRestoreFilter = () -> {
+        if (mFilterOff) {
+            mFilterOff = false;
+            mPaint.setFilterBitmap(true);
+            postInvalidateOnAnimation();
+        }
+    };
 
     public MangaStripView(Context context) {
         super(context);
@@ -50,13 +62,23 @@ public class MangaStripView extends View {
     }
 
     public void setStrip(Bitmap[] segments, float scale, float zoom, float offset) {
+        boolean changed = mScale != (scale > 0 ? scale : 1.0f)
+                || mZoom != (zoom > 0 ? zoom : 1.0f);
         for (int i = 0; i < 5; i++) {
-            mSegments[i] = segments != null && i < segments.length ? segments[i] : null;
+            Bitmap b = segments != null && i < segments.length ? segments[i] : null;
+            if (mSegments[i] != b) {
+                changed = true;
+                mSegments[i] = b;
+            }
         }
         mScale = scale > 0 ? scale : 1.0f;
         mZoom = zoom > 0 ? zoom : 1.0f;
         mOffset = offset;
-        invalidate();
+        // Decode completions call setStrip several times with identical content;
+        // skip redundant invalidates that compete with the scroll frames.
+        if (changed) {
+            postInvalidateOnAnimation();
+        }
     }
 
     /** Draws one page that is too large for a single Canvas bitmap as a
@@ -86,6 +108,17 @@ public class MangaStripView extends View {
     }
 
     public void setOffset(float offset) {
+        float step = Math.abs(offset - mLastOffset);
+        float height = getHeight() > 0 ? getHeight() : 1000f;
+        // A large per-frame jump means a fast flick; drop bilinear filtering to
+        // keep the frame budget. Restore it 120 ms after the motion settles.
+        if (step > height * 0.12f && !mFilterOff) {
+            mFilterOff = true;
+            mPaint.setFilterBitmap(false);
+        }
+        removeCallbacks(mRestoreFilter);
+        postDelayed(mRestoreFilter, 120L);
+        mLastOffset = offset;
         mOffset = offset;
         postInvalidateOnAnimation();
     }

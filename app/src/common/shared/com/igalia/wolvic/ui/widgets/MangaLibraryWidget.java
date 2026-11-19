@@ -490,6 +490,53 @@ public class MangaLibraryWidget extends UIWidget {
         }
     }
 
+    /** Handles the controller's back button while the bookshelf is showing.
+     *  Mirrors the on-screen "返回" buttons: step up one folder / leave a
+     *  source sub-page, otherwise fall back to the main bookshelf. */
+    public boolean goBack() {
+        if (mCurrentPage == MangaPage.FOLDER) {
+            File parent = mFolderDir != null ? mFolderDir.getParentFile() : null;
+            if (parent != null) {
+                openFolderView(parent, false);
+                return true;
+            }
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
+        if (mCurrentPage == MangaPage.LOCAL) {
+            File parent = mLocalDir != null ? mLocalDir.getParentFile() : null;
+            if (parent != null) {
+                mLocalDir = parent;
+                mSettings.setLastDir(parent.getAbsolutePath());
+                refreshPage(MangaPage.LOCAL);
+                return true;
+            }
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
+        if (mCurrentPage == MangaPage.WEBDAV) {
+            int slash = mWebDavUrl == null ? -1 : mWebDavUrl.lastIndexOf('/', Math.max(0, mWebDavUrl.length() - 2));
+            if (slash > 8) {
+                mWebDavUrl = mWebDavUrl.substring(0, slash + 1);
+                refreshPage(MangaPage.WEBDAV);
+                return true;
+            }
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
+        if (mCurrentPage == MangaPage.SOURCE_BROWSE || mCurrentPage == MangaPage.SOURCE_MANGA
+                || mCurrentPage == MangaPage.SOURCE_SETTINGS || mCurrentPage == MangaPage.SOURCE_FILTERS
+                || mCurrentPage == MangaPage.SOURCE_OPTIONS || mCurrentPage == MangaPage.SOURCE_TEXT) {
+            switchPage(MangaPage.EXTENSIONS);
+            return true;
+        }
+        if (mCurrentPage != MangaPage.LIBRARY) {
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
+        return false; // already at the bookshelf root
+    }
+
     private void switchPage(MangaPage page) {
         // Leaving the settings page cancels any in-progress key capture.
         if (mCurrentPage == MangaPage.SETTINGS && page != MangaPage.SETTINGS) {

@@ -94,12 +94,10 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private TrayBinding mBinding;
     /** Reader scrubber is visible only while the pointer hovers the reader
      *  controls. Delayed hide lets the pointer travel into the scrubber. */
+    // The reader scrubber is now permanent in reader mode, so there is no
+    // hover-based hide/show any more. Kept as no-ops to avoid touching callers.
     private boolean mReaderProgressHovered;
-    private final Runnable mHideProgressRunnable = () -> {
-        if (!mReaderProgressHovered && mBinding != null) {
-            mBinding.readerProgressRow.setVisibility(View.GONE);
-        }
-    };
+    private final Runnable mHideProgressRunnable = () -> { };
     private AudioEngine mAudio;
     private SettingsWidget mSettingsWidget;
     private List<TrayListener> mTrayListeners;
@@ -648,19 +646,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
      *  approach as MangaReaderWidget's video bar. */
     @Override
     public boolean dispatchHoverEvent(MotionEvent event) {
-        if (mMangaMode == MODE_READER && mBinding != null) {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_HOVER_EXIT) {
-                mReaderProgressHovered = false;
-                removeCallbacks(mHideProgressRunnable);
-                postDelayed(mHideProgressRunnable, 400L);
-            } else if (action == MotionEvent.ACTION_HOVER_ENTER
-                    || action == MotionEvent.ACTION_HOVER_MOVE) {
-                mReaderProgressHovered = true;
-                removeCallbacks(mHideProgressRunnable);
-                mBinding.readerProgressRow.setVisibility(View.VISIBLE);
-            }
-        }
+        // The scrubber is permanently visible in reader mode; no hover-driven
+        // show/hide. Just pass through so child buttons/tooltips still work.
         return super.dispatchHoverEvent(event);
     }
 
@@ -694,6 +681,24 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBinding.readerNextChapterButton.setAlpha(hasNext ? 1.0f : 0.4f);
     }
 
+    /** Grows the tray quad to fit the extra scrubber row in reader mode, and
+     *  restores the normal height otherwise. mBaseTrayHeight is kept in sync
+     *  because onMangaParentResized() re-pins to it during canvas zoom. */
+    private void setTrayHeightForMode(boolean reader) {
+        if (mWidgetManager == null) {
+            return;
+        }
+        int height = WidgetPlacement.dpDimension(getContext(),
+                reader ? R.dimen.tray_height_reader : R.dimen.tray_height);
+        WidgetPlacement p = getPlacement();
+        if (p.height == height && mBaseTrayHeight == height) {
+            return;
+        }
+        p.height = height;
+        mBaseTrayHeight = height;
+        mWidgetManager.updateWidget(this);
+    }
+
     private void applyMangaMode() {
         if (mBinding == null) {
             return;
@@ -701,13 +706,19 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBinding.trayButtons.setVisibility(mMangaMode == MODE_BROWSER ? View.VISIBLE : View.GONE);
         mBinding.mangaButtons.setVisibility(mMangaMode == MODE_MANGA ? View.VISIBLE : View.GONE);
         mBinding.readerButtons.setVisibility(mMangaMode == MODE_READER ? View.VISIBLE : View.GONE);
-        // In reader mode give the scrubber the status-bar band so it sits above
-        // the buttons and stays inside the fixed 66dp tray surface.
-        mBinding.statusBar.setVisibility(mMangaMode == MODE_READER ? View.GONE : View.VISIBLE);
-        if (mMangaMode != MODE_READER) {
+        // Reader mode: keep the status bar (time / battery / controllers) AND
+        // show the page scrubber permanently as its own row. Grow the tray
+        // surface to fit three rows; other modes keep the original 66dp.
+        mBinding.statusBar.setVisibility(View.VISIBLE);
+        if (mMangaMode == MODE_READER) {
             mReaderProgressHovered = false;
             removeCallbacks(mHideProgressRunnable);
+            mBinding.readerProgressRow.setVisibility(View.VISIBLE);
+            setTrayHeightForMode(true);
+        } else {
+            removeCallbacks(mHideProgressRunnable);
             mBinding.readerProgressRow.setVisibility(View.GONE);
+            setTrayHeightForMode(false);
         }
 
         mBinding.mangaShelfButton.setActiveMode("LIBRARY".equals(mMangaPage));

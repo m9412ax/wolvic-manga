@@ -150,23 +150,22 @@
                         android:scaleType="fitCenter"/>
                 </LinearLayout>
             </RelativeLayout>
-            <!-- Reader page scrubber. Hidden by default; TrayWidget reveals it
-                 only while the VR pointer hovers the reader control row. It is
-                 a sibling ABOVE the button row (TrayWidget hides status_bar in
-                 reader mode to make room), so it never covers the buttons and
-                 stays inside the 66dp tray surface - no translationY (which
-                 used to push it outside the parent and get it clipped away). -->
+            <!-- Reader page scrubber: ALWAYS visible in reader mode (no hover
+                 needed). Sits between the status bar and the button row; the
+                 reader tray surface is taller (tray_height_reader) to fit all
+                 three rows. Plain middle background keeps the rounded corners
+                 on the top/bottom rows only. Hidden in other manga modes. -->
             <LinearLayout
                 android:id="@+id/reader_progress_row"
                 android:layout_width="match_parent"
-                android:layout_height="24dp"
+                android:layout_height="26dp"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
                 android:paddingStart="8dp"
                 android:paddingEnd="8dp"
                 android:paddingTop="2dp"
                 android:paddingBottom="2dp"
-                android:background="@drawable/tray_background_bottom"
+                android:background="@drawable/tray_background_middle_plain"
                 android:visibility="gone">
 
                 <Button

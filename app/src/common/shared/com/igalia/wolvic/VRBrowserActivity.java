@@ -253,6 +253,9 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     private long mLastNativeKeyTime = 0L;
     private final Runnable mMangaBrowserBackHandler = this::showMangaLibraryFromBrowser;
     private boolean mMangaBrowserBackHandlerActive;
+    /** Back handler for manga UI modes (reader -> bookshelf, bookshelf -> up). */
+    private Runnable mMangaBackHandler;
+    private int mMangaBackHandlerMode = -1;
     private boolean mMangaMode = true;
     PermissionDelegate mPermissionDelegate;
     LinkedList<UpdateListener> mWidgetUpdateListeners;
@@ -1123,6 +1126,12 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
      *  the top-level key dispatch. Returns true when the event was consumed. */
     private boolean dispatchMangaKey(KeyEvent event) {
         final int code = event.getKeyCode();
+        // The controller's back button must always reach onBackPressed() so the
+        // manga back handlers can navigate. Never let a custom page-turn binding
+        // swallow KEYCODE_BACK (it is bindable in the settings UI).
+        if (code == KeyEvent.KEYCODE_BACK) {
+            return false;
+        }
         if (MangaKeyCapture.active) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
                 MangaKeyCapture.feed(code);
@@ -2556,6 +2565,41 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
             popBackHandler(mMangaBrowserBackHandler);
             mMangaBrowserBackHandlerActive = false;
         }
+        // Controller back button: reading -> bookshelf, bookshelf -> parent.
+        // Swap the handler whenever the manga UI mode changes so handlers do
+        // not stack up. UI_BROWSER is handled above (browser -> bookshelf).
+        Runnable handler = null;
+        if (mode == UI_READER) {
+            handler = this::closeMangaReader;
+        } else if (mode == UI_LIBRARY) {
+            handler = this::handleMangaLibraryBack;
+        }
+        if (mMangaBackHandlerMode != mode) {
+            if (mMangaBackHandler != null) {
+                popBackHandler(mMangaBackHandler);
+            }
+            if (handler != null) {
+                pushBackHandler(handler);
+            }
+            mMangaBackHandler = handler;
+            mMangaBackHandlerMode = mode;
+        }
+    }
+
+    /** Bookshelf back: step up a folder / leave a source sub-page. If already
+     *  at the bookshelf root, remove this handler and fall through to Wolvic's
+     *  default back (browser / exit confirmation). */
+    private void handleMangaLibraryBack() {
+        if (mMangaLibrary != null && mMangaLibrary.goBack()) {
+            return;
+        }
+        if (mMangaBackHandler != null) {
+            popBackHandler(mMangaBackHandler);
+            mMangaBackHandler = null;
+            mMangaBackHandlerMode = -1;
+        }
+        // Fall back to the browser.
+        showBrowserFromManga();
     }
 
     /** Opens the merged settings dialog directly on the manga tab. */

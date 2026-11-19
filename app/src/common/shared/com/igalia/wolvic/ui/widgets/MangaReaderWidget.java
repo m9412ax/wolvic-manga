@@ -146,6 +146,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private int mVideoWidth = 0;
     private int mVideoHeight = 0;
     private boolean mVideoSeekDragging = false;
+    // The video bar hides on a delay so the pointer can travel into it (and
+    // actually reach the seek bar) instead of vanishing on a brief glance.
+    private static final long VIDEO_BAR_HIDE_DELAY_MS = 1000L;
+    private final Runnable mHideVideoBarRunnable = () -> showVideoBar(false);
     // Progress geometry stays fixed when hover controls appear.
     private FrameLayout mVideoProgressTrack;
     private View mVideoProgressFill;
@@ -2241,16 +2245,31 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public boolean dispatchHoverEvent(MotionEvent event) {
-        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT) {
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_HOVER_EXIT) {
             mVideoPointerInWidget = false;
             mVideoPointerX = mVideoPointerY = -1f;
-            updateVideoBarVisibility();
+            // Delay hiding: a controller ray crossing between the video and the
+            // bar (or flicking past) used to hide the bar instantly, making the
+            // seek bar impossible to click. Keep it up for a full second.
+            scheduleVideoBarHide();
         } else {
             mVideoPointerInWidget = true;
+            // Show immediately - the hide delay must not slow down reveal.
+            mMainHandler.removeCallbacks(mHideVideoBarRunnable);
             updateVideoPointer(event.getX(), event.getY());
         }
         // Observe the widget's event, not child hover exits when crossing buttons.
         return super.dispatchHoverEvent(event);
+    }
+
+    private void scheduleVideoBarHide() {
+        mMainHandler.removeCallbacks(mHideVideoBarRunnable);
+        // While the user is dragging the seek bar, never auto-hide.
+        if (mVideoSeekDragging) {
+            return;
+        }
+        mMainHandler.postDelayed(mHideVideoBarRunnable, VIDEO_BAR_HIDE_DELAY_MS);
     }
 
     @Override
@@ -2286,8 +2305,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         FrameLayout.LayoutParams barLp = (FrameLayout.LayoutParams) mVideoBar.getLayoutParams();
         boolean overBar = inside && mVideoBar.getVisibility() == VISIBLE
                 && mVideoPointerY >= barLp.topMargin;
-        showVideoBar(isVideoPage() && !mVideoRect.isEmpty()
-                && (mVideoSeekDragging || atBottom || overBar));
+        boolean shouldShow = isVideoPage() && !mVideoRect.isEmpty()
+                && (mVideoSeekDragging || atBottom || overBar);
+        if (shouldShow) {
+            // Reveal at once and cancel any pending hide.
+            mMainHandler.removeCallbacks(mHideVideoBarRunnable);
+            showVideoBar(true);
+        } else {
+            // Do not yank the bar away mid-interaction; let the delayed hide
+            // run so the pointer can still reach the seek bar / buttons.
+            scheduleVideoBarHide();
+        }
     }
 
     /** TEMPORARY image zoom: scales only the picture content inside a
@@ -2972,12 +3000,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = true;
+                mMainHandler.removeCallbacks(mHideVideoBarRunnable);
+                showVideoBar(true);
             }
 
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = false;
-                updateVideoBarVisibility();
+                scheduleVideoBarHide();
             }
         });
         bar.addView(mVideoSeek);
