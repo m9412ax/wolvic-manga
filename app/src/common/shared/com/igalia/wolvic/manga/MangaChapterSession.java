@@ -89,12 +89,13 @@ public class MangaChapterSession {
                 if (i < 0 || i >= chapters.size()) {
                     return;
                 }
-                // Prefetch a generous head (not just 4 pages). A too-small
-                // prefetch left a non-empty-but-incomplete folder that the
-                // reader mistook for a ready chapter, so switching here showed
-                // only 4 images. Large head + idempotent skip keeps it cheap.
+                // Only warm a small head. The page LIST is now cached (so the
+                // chapter opens with all URLs instantly) and downloadChapter
+                // streams the rest on demand. Prefetching 64 full images used
+                // to saturate the host connection and make the just-switched
+                // chapter's own images crawl. A few pages keeps it cheap.
                 MangaSourceRepository.INSTANCE.prefetchChapter(context, source, manga,
-                        chapters.get(i), 64);
+                        chapters.get(i), 3);
             }
         };
         return new MangaChapterSession(dirs, index, page, frac, null,

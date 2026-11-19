@@ -98,8 +98,13 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     // ------------------------------------------------------------------ login
 
-    @Volatile
-    private var loginStamp = 0L
+    /** Last successful login time, PERSISTED. An in-memory-only stamp resets to
+     *  0 on process restart while [hasSession] stays true (session is in prefs),
+     *  which made every request re-login synchronously - the "everything slow"
+     *  bug. Persisting it keeps the 30-minute throttle across restarts. */
+    private var loginStamp: Long
+        get() = prefs.getLong(KEY_LOGIN_STAMP, 0L)
+        set(value) = prefs.edit().putLong(KEY_LOGIN_STAMP, value).apply()
 
     /** Whether a persisted login session is known to work. Once we log in
      *  successfully the PHPSESSID is saved to prefs and injected on every
@@ -152,11 +157,32 @@ class Cosjun : HttpSource(), ConfigurableSource {
                     it.body.string().contains("\"status\":\"1\"")
                 }
                 loginStamp = if (ok) System.currentTimeMillis() else 0L
+                if (ok) docCache.clear() // anonymous preview -> full gallery
             } catch (e: Exception) {
                 // Keep any previously persisted session on transient failures.
                 if (!hasSession) loginStamp = 0L
             }
         }
+    }
+
+    /** A detail page is fetched for both metadata and the image list. Cache the
+     *  parsed HTML briefly so opening a manga and then its picture folder does
+     *  not download the same large page twice (the main cause of "slow to open"
+     *  and "slow after switching"). Cleared on every (re)login because the
+     *  logged-in page has the full gallery while the anonymous one has 4. */
+    private data class DocEntry(val at: Long, val doc: Document)
+    private val docCache = java.util.concurrent.ConcurrentHashMap<String, DocEntry>()
+    private val DOC_TTL_MS = 60_000L
+
+    private suspend fun detailDoc(url: String): Document {
+        val cached = docCache[url]
+        if (cached != null && System.currentTimeMillis() - cached.at < DOC_TTL_MS) {
+            return cached.doc
+        }
+        val resp = client.newCall(GET(url, headers)).awaitSuccess()
+        val doc = resp.use { it.asJsoup() }
+        docCache[url] = DocEntry(System.currentTimeMillis(), doc)
+        return doc
     }
 
     private val ajaxHeaders: Headers by lazy {
@@ -189,6 +215,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
         private const val KEY_USER = "cosjun_user"
         private const val KEY_PASS = "cosjun_pass"
         private const val KEY_SESSION = "cosjun_phpsessid"
+        private const val KEY_LOGIN_STAMP = "cosjun_login_stamp"
         private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         // Popular COS names used as tag shortcuts; /tags lists the full set, but
@@ -335,8 +362,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
     ): SMangaUpdate {
         ensureLoggedIn()
         val detailResult = if (fetchDetails) {
-            val resp = client.newCall(mangaDetailsRequest(manga)).awaitSuccess()
-            resp.use { parseDetails(it.asJsoup(), manga) }
+            parseDetails(detailDoc(baseUrl + manga.url), manga)
         } else manga
         val chapterResult = if (fetchChapters) chapterChain(detailResult) else chapters
         return SMangaUpdate(detailResult, chapterResult)
@@ -386,8 +412,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
         ensureLoggedIn()
-        val resp = client.newCall(pageListRequest(chapter)).awaitSuccess()
-        return resp.use { parsePages(it.asJsoup()) }
+        return parsePages(detailDoc(baseUrl + chapter.url))
     }
 
     private fun parsePages(doc: Document): List<Page> {

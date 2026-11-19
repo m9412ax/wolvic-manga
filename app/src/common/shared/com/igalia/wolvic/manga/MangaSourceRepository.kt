@@ -35,6 +35,30 @@ object MangaSourceRepository {
     private const val TAG = "MangaSource"
     private val main = Handler(Looper.getMainLooper())
 
+    /** A source's page list is the SAME network request (usually the whole
+     *  detail HTML) for details, prefetch and download. Cache it briefly so
+     *  switching into a chapter does not re-fetch the page three times. Value
+     *  is (timestamp, pages); entries older than TTL are re-fetched. */
+    private data class PageListEntry(val at: Long, val pages: List<eu.kanade.tachiyomi.source.model.Page>)
+    private val pageListCache = java.util.concurrent.ConcurrentHashMap<String, PageListEntry>()
+    private const val PAGE_LIST_TTL_MS = 5 * 60 * 1000L
+
+    private fun pageListKey(source: Source, chapter: SChapter): String =
+        source.id.toString() + ":" + chapter.url
+
+    /** Returns the page list from a short-lived cache, fetching once on miss.
+     *  Concurrent callers may still race, but subsequent switches are instant. */
+    private suspend fun cachedPageList(source: Source, chapter: SChapter): List<eu.kanade.tachiyomi.source.model.Page> {
+        val key = pageListKey(source, chapter)
+        val cached = pageListCache[key]
+        if (cached != null && System.currentTimeMillis() - cached.at < PAGE_LIST_TTL_MS) {
+            return cached.pages
+        }
+        val pages = source.getPageList(chapter)
+        pageListCache[key] = PageListEntry(System.currentTimeMillis(), pages)
+        return pages
+    }
+
     fun interface Callback<T> {
         fun onResult(value: T?, error: String?)
     }
@@ -147,19 +171,12 @@ object MangaSourceRepository {
         }
     }
 
-    /** Number of leading pages downloaded before the reader is allowed to open
-     *  a chapter. Small enough for a fast first page, large enough that the
-     *  user never hits the end of the pre-downloaded window immediately. */
-    private const val OPEN_AFTER_PAGES = 8
-
     /** Downloads a chapter into a stable cache folder and returns that folder
-     *  so the existing file-based reader can open it. The first [OPEN_AFTER_PAGES]
-     *  pages are fetched first and the folder is handed back immediately so the
-     *  first picture appears fast; the remaining pages keep downloading in the
-     *  background (idempotent - already cached pages are skipped). This also
-     *  fixes the "only 4 images after switching chapter" bug: pre-fetch used to
-     *  leave 4 pages on disk and the reader mistook a non-empty folder for a
-     *  complete chapter, so it never downloaded the rest. */
+     *  so the existing file-based reader can open it. The FIRST page is handed
+     *  back the moment it lands so the reader shows a picture immediately; the
+     *  rest keep downloading in the background (idempotent - cached pages are
+     *  skipped). The page list itself is cached briefly so entering a chapter
+     *  does not re-fetch the (large, often HTML) page list a second time. */
     fun downloadChapter(
         context: Context,
         source: Source,
@@ -171,32 +188,21 @@ object MangaSourceRepository {
         GlobalScope.launch(Dispatchers.IO) {
             var opened = false
             try {
-                val pages = source.getPageList(chapter)
+                val pages = cachedPageList(source, chapter)
                 if (pages.isEmpty()) throw IllegalStateException("章节页面列表为空")
                 val dir = chapterDir(context, source, manga, chapter)
                 dir.mkdirs()
                 Log.i(TAG, "download ${source.name} '${chapter.name}' pages=${pages.size} -> $dir")
-                // First pass: leading window, then report the folder so the
-                // reader can show page 1 while the tail keeps downloading.
-                val head = pages.take(OPEN_AFTER_PAGES)
-                val tail = pages.drop(OPEN_AFTER_PAGES)
-                for ((i, page) in head.withIndex()) {
+                pages.forEachIndexed { i, page ->
                     if (existingPage(dir, page.index) == null) fetchPage(source, page, dir)
-                    main.post { progress.onProgress(i + 1, pages.size) }
-                }
-                opened = true
-                main.post { cb.onResult(dir, null) }
-                // Second pass: the rest of the chapter. Failures here are
-                // non-fatal - the reader is already open on the head pages.
-                tail.forEachIndexed { k, page ->
-                    try {
-                        if (existingPage(dir, page.index) == null) {
-                            fetchPage(source, page, dir)
-                        }
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "page ${page.index} failed: ${e.message}")
+                    // Open on the very first landed page instead of waiting for
+                    // a whole head window: this is the "preload a few, show now"
+                    // behaviour. Later pages stream in while the user reads.
+                    if (!opened) {
+                        opened = true
+                        main.post { cb.onResult(dir, null) }
                     }
-                    main.post { progress.onProgress(OPEN_AFTER_PAGES + k + 1, pages.size) }
+                    main.post { progress.onProgress(i + 1, pages.size) }
                 }
                 Log.i(TAG, "download done: $dir (opened=$opened)")
                 enforceCacheCap(context)
@@ -219,7 +225,10 @@ object MangaSourceRepository {
                 val dir = chapterDir(context, source, manga, chapter)
                 val existing = dir.listFiles()?.count { !it.name.endsWith(".tmp") && it.length() > 0 } ?: 0
                 if (existing >= maxPages) return@launch
-                val pages = source.getPageList(chapter)
+                // Reuse the cached page list: the detail HTML is expensive to
+                // fetch. This warm-up also primes the cache for the moment the
+                // reader actually opens this chapter.
+                val pages = cachedPageList(source, chapter)
                 dir.mkdirs()
                 var done = 0
                 for (page in pages) {
