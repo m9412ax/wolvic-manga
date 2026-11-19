@@ -147,8 +147,19 @@ object MangaSourceRepository {
         }
     }
 
-    /** Downloads every page of a chapter into a stable cache folder and
-     *  returns that folder so the existing file-based reader can open it. */
+    /** Number of leading pages downloaded before the reader is allowed to open
+     *  a chapter. Small enough for a fast first page, large enough that the
+     *  user never hits the end of the pre-downloaded window immediately. */
+    private const val OPEN_AFTER_PAGES = 8
+
+    /** Downloads a chapter into a stable cache folder and returns that folder
+     *  so the existing file-based reader can open it. The first [OPEN_AFTER_PAGES]
+     *  pages are fetched first and the folder is handed back immediately so the
+     *  first picture appears fast; the remaining pages keep downloading in the
+     *  background (idempotent - already cached pages are skipped). This also
+     *  fixes the "only 4 images after switching chapter" bug: pre-fetch used to
+     *  leave 4 pages on disk and the reader mistook a non-empty folder for a
+     *  complete chapter, so it never downloaded the rest. */
     fun downloadChapter(
         context: Context,
         source: Source,
@@ -164,21 +175,34 @@ object MangaSourceRepository {
                 val dir = chapterDir(context, source, manga, chapter)
                 dir.mkdirs()
                 Log.i(TAG, "download ${source.name} '${chapter.name}' pages=${pages.size} -> $dir")
-                pages.forEachIndexed { i, page ->
-                    val target = existingPage(dir, i)
-                    if (target != null && target.length() > 0) {
-                        main.post { progress.onProgress(i + 1, pages.size) }
-                        return@forEachIndexed
-                    }
-                    fetchPage(source, page, dir)
+                var opened = false
+                // First pass: leading window, then report the folder so the
+                // reader can show page 1 while the tail keeps downloading.
+                val head = pages.take(OPEN_AFTER_PAGES)
+                val tail = pages.drop(OPEN_AFTER_PAGES)
+                for ((i, page) in head.withIndex()) {
+                    if (existingPage(dir, page.index) == null) fetchPage(source, page, dir)
                     main.post { progress.onProgress(i + 1, pages.size) }
                 }
-                Log.i(TAG, "download done: $dir")
-                enforceCacheCap(context)
+                opened = true
                 main.post { cb.onResult(dir, null) }
+                // Second pass: the rest of the chapter. Failures here are
+                // non-fatal - the reader is already open on the head pages.
+                tail.forEachIndexed { k, page ->
+                    try {
+                        if (existingPage(dir, page.index) == null) {
+                            fetchPage(source, page, dir)
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "page ${page.index} failed: ${e.message}")
+                    }
+                    main.post { progress.onProgress(OPEN_AFTER_PAGES + k + 1, pages.size) }
+                }
+                Log.i(TAG, "download done: $dir (opened=$opened)")
+                enforceCacheCap(context)
             } catch (e: Throwable) {
                 Log.e(TAG, "download failed: ${source.name} '${chapter.name}'", e)
-                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+                if (!opened) main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
             }
         }
     }

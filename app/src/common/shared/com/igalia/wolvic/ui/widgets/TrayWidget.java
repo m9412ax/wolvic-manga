@@ -701,6 +701,9 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBinding.trayButtons.setVisibility(mMangaMode == MODE_BROWSER ? View.VISIBLE : View.GONE);
         mBinding.mangaButtons.setVisibility(mMangaMode == MODE_MANGA ? View.VISIBLE : View.GONE);
         mBinding.readerButtons.setVisibility(mMangaMode == MODE_READER ? View.VISIBLE : View.GONE);
+        // In reader mode give the scrubber the status-bar band so it sits above
+        // the buttons and stays inside the fixed 66dp tray surface.
+        mBinding.statusBar.setVisibility(mMangaMode == MODE_READER ? View.GONE : View.VISIBLE);
         if (mMangaMode != MODE_READER) {
             mReaderProgressHovered = false;
             removeCallbacks(mHideProgressRunnable);

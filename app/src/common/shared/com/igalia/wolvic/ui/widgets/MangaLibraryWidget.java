@@ -1460,7 +1460,6 @@ public class MangaLibraryWidget extends UIWidget {
                 if (first.getSource() instanceof ConfigurableSource) {
                     addButton(row, "设置", v -> openSourceSettings(first));
                 }
-                addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(first));
                 continue;
             }
             boolean expanded = mExpandedPkgs.contains(pkg);
@@ -1491,7 +1490,6 @@ public class MangaLibraryWidget extends UIWidget {
                 if (entry.getSource() instanceof ConfigurableSource) {
                     addButton(row, "设置", v -> openSourceSettings(entry));
                 }
-                addButton(row, "试读", v -> MangaSourceManager.INSTANCE.testFetch(entry));
             }
         }
         List<MangaSourceManager.LoadFailure> failures = MangaSourceManager.INSTANCE.getFailures();

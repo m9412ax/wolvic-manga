@@ -24,6 +24,10 @@ public class MangaChapterSession {
 
     public interface DirCallback {
         void onDir(File dir, String error);
+        /** Fired as pages land on disk so the reader can grow its page list
+         *  while a chapter is still downloading. Default no-op for callers
+         *  that do not care about progressive updates. */
+        default void onProgress(int done, int total) { }
     }
 
     public interface ChapterProvider {
@@ -76,7 +80,7 @@ public class MangaChapterSession {
                     return;
                 }
                 MangaSourceRepository.INSTANCE.downloadChapter(context, source, manga,
-                        chapters.get(i), (done, total) -> { },
+                        chapters.get(i), callback::onProgress,
                         (dir, error) -> callback.onDir(dir, error));
             }
 
@@ -85,8 +89,12 @@ public class MangaChapterSession {
                 if (i < 0 || i >= chapters.size()) {
                     return;
                 }
+                // Prefetch a generous head (not just 4 pages). A too-small
+                // prefetch left a non-empty-but-incomplete folder that the
+                // reader mistook for a ready chapter, so switching here showed
+                // only 4 images. Large head + idempotent skip keeps it cheap.
                 MangaSourceRepository.INSTANCE.prefetchChapter(context, source, manga,
-                        chapters.get(i), 4);
+                        chapters.get(i), 64);
             }
         };
         return new MangaChapterSession(dirs, index, page, frac, null,

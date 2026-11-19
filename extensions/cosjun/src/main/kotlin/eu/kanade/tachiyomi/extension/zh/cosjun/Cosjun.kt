@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.Headers
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.Jsoup
@@ -67,6 +68,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
             setOnPreferenceChangeListener { _, v ->
                 summary = v.toString()
                 loginStamp = 0L
+                prefs.edit().remove(KEY_SESSION).apply()
                 true
             }
         })
@@ -74,7 +76,23 @@ class Cosjun : HttpSource(), ConfigurableSource {
             key = KEY_PASS
             title = "COS君密码"
             summary = "仅本机保存，用于登录解锁全量图片与视频"
-            setOnPreferenceChangeListener { _, _ -> loginStamp = 0L; true }
+            setOnPreferenceChangeListener { _, _ ->
+                loginStamp = 0L
+                prefs.edit().remove(KEY_SESSION).apply()
+                true
+            }
+        })
+        screen.addPreference(androidx.preference.Preference(screen.context).apply {
+            key = "cosjun_logout"
+            title = "退出登录 / 重新登录"
+            summary = if (hasSession) "当前已登录（会话已保存，重启后仍有效）。点此清除后重新登录。"
+                      else "未登录。填写账号密码后自动登录并保存会话。"
+            setOnPreferenceClickListener {
+                prefs.edit().remove(KEY_SESSION).apply()
+                loginStamp = 0L
+                summary = "登录已清除，下次浏览时用账号密码重新登录。"
+                true
+            }
         })
     }
 
@@ -83,14 +101,38 @@ class Cosjun : HttpSource(), ConfigurableSource {
     @Volatile
     private var loginStamp = 0L
 
+    /** Whether a persisted login session is known to work. Once we log in
+     *  successfully the PHPSESSID is saved to prefs and injected on every
+     *  request via [client], so login survives process restarts ("permanent"). */
+    private val hasSession: Boolean
+        get() = !prefs.getString(KEY_SESSION, "").isNullOrEmpty()
+
+    // Inject the persisted PHPSESSID into every cosjun.cn request. Built lazily
+    // on top of the shared client so it keeps the host's cookie jar / cf_clearance.
+    override val client: OkHttpClient by lazy {
+        network.client.newBuilder()
+            .addInterceptor { chain ->
+                val sid = prefs.getString(KEY_SESSION, "")
+                val original = chain.request()
+                val req = if (!sid.isNullOrEmpty()
+                    && original.url.host.contains("cosjun.cn")
+                    && !original.header("Cookie").orEmpty().contains("PHPSESSID")) {
+                    original.newBuilder().addHeader("Cookie", "PHPSESSID=$sid").build()
+                } else original
+                chain.proceed(req)
+            }
+            .build()
+    }
+
     private suspend fun ensureLoggedIn() = withContext(Dispatchers.IO) {
         val user = prefs.getString(KEY_USER, "")?.trim().orEmpty()
         val pass = prefs.getString(KEY_PASS, "")?.trim().orEmpty()
         if (user.isEmpty() || pass.isEmpty()) return@withContext
-        // Refresh at most once every 30 minutes.
-        if (System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@withContext
+        // A persisted session means we are already logged in; only re-login on
+        // a 30-minute refresh cadence (or when the session is not known good).
+        if (hasSession && System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@withContext
         synchronized(this@Cosjun) {
-            if (System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@synchronized
+            if (hasSession && System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@synchronized
             try {
                 val body = FormBody.Builder()
                     .add("action", "user_login")
@@ -100,10 +142,19 @@ class Cosjun : HttpSource(), ConfigurableSource {
                     .build()
                 val req = POST("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, body)
                 val resp = client.newCall(req).execute()
-                val ok = resp.use { it.body.string().contains("\"status\":\"1\"") }
+                val ok = resp.use {
+                    // Capture PHPSESSID from Set-Cookie (one or more headers).
+                    val setCookies = it.headers("Set-Cookie")
+                    val sid = setCookies.firstNotNullOfOrNull { c ->
+                        Regex("PHPSESSID=([^;]+)").find(c)?.groupValues?.get(1)
+                    }
+                    if (sid != null) prefs.edit().putString(KEY_SESSION, sid).apply()
+                    it.body.string().contains("\"status\":\"1\"")
+                }
                 loginStamp = if (ok) System.currentTimeMillis() else 0L
             } catch (e: Exception) {
-                loginStamp = 0L
+                // Keep any previously persisted session on transient failures.
+                if (!hasSession) loginStamp = 0L
             }
         }
     }
@@ -137,6 +188,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
     companion object {
         private const val KEY_USER = "cosjun_user"
         private const val KEY_PASS = "cosjun_pass"
+        private const val KEY_SESSION = "cosjun_phpsessid"
         private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
         // Popular COS names used as tag shortcuts; /tags lists the full set, but

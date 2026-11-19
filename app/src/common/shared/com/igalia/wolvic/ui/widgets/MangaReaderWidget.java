@@ -607,6 +607,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mStripView.clearTiles();
             mStripView.setStrip(new Bitmap[5], 1.0f, 1.0f, 0.0f);
         }
+        // Full reset like setFolder(): drop the old manga's page list and every
+        // in-flight decode/download. Otherwise a manual page turn while the new
+        // online chapter is still downloading falls back to the stale mPages
+        // and shows the PREVIOUS manga until the user exits and re-enters.
+        mPages.clear();
+        mIndex = 0;
+        mLoadGeneration++;
+        mStripGeneration++;
+        mRequestedPageKey = null;
+        mPendingStripFrac = 0f;
+        for (PageLoad load : mPendingPages.values()) {
+            load.cancelled = true;
+        }
+        mPendingPages.clear();
+        if (mCache != null) {
+            mCache.evictAll();
+        }
+        mPreloadExecutor.getQueue().clear();
+        mExecutor.getQueue().removeIf(task -> task instanceof PageLoad);
+        clearStripSegments();
         mChapterDirs = session.dirs;
         mChapterProvider = session.provider;
         mChapterProgressKey = session.progressKey;
@@ -624,27 +644,160 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mChapterIndex = index;
         File dir = mChapterDirs.get(index);
         File[] files = dir.isDirectory() ? dir.listFiles() : null;
-        boolean ready = files != null && files.length > 0;
-        if (!ready && mChapterProvider != null) {
+        boolean hasPages = countImageFiles(dir) > 0;
+        final int session = mChapterSession;
+        if (hasPages) {
+            // Open immediately with whatever is already cached (fast first
+            // page). If it is only a partial/prefetched head, top it up in the
+            // background and grow the page list as pages land - this fixes
+            // "only 4 images after switching chapters".
+            openChapterDir(dir, page, frac, startFilePath);
+            if (mChapterProvider != null) {
+                mChapterProvider.ensureChapter(index, new MangaChapterSession.DirCallback() {
+                    @Override
+                    public void onDir(File d, String error) {
+                        // The folder is already open; onProgress grows mPages.
+                    }
+                    @Override
+                    public void onProgress(int done, int total) {
+                        mMainHandler.post(() -> {
+                            if (session == mChapterSession && !mDestroyed) {
+                                refreshChapterPageList();
+                            }
+                        });
+                    }
+                });
+            }
+            return;
+        }
+        if (mChapterProvider != null) {
             mChapterLoading = true;
             mChapterLoadingSince = android.os.SystemClock.uptimeMillis();
-            final int session = mChapterSession;
             showHint("加载第 " + (index + 1) + " 章…");
-            mChapterProvider.ensureChapter(index, (d, error) -> mMainHandler.post(() -> {
-                if (session != mChapterSession || mDestroyed) {
-                    return; // stale callback from a manga the user already left
+            mChapterProvider.ensureChapter(index, new MangaChapterSession.DirCallback() {
+                private boolean opened;
+                @Override
+                public void onDir(File d, String error) {
+                    mMainHandler.post(() -> {
+                        if (session != mChapterSession || mDestroyed) {
+                            return; // stale callback from a manga the user left
+                        }
+                        mChapterLoading = false;
+                        if (d == null) {
+                            if (!opened) showHint("章节加载失败：" + error);
+                            return;
+                        }
+                        mChapterDirs.set(index, d);
+                        // onProgress may have already opened the folder on the
+                        // first landed page. Re-opening here would snap the
+                        // reader back to the start page mid-reading.
+                        if (!opened) {
+                            opened = true;
+                            openChapterDir(d, page, frac, startFilePath);
+                        }
+                    });
                 }
-                mChapterLoading = false;
-                if (d == null) {
-                    showHint("章节加载失败：" + error);
-                    return;
+                @Override
+                public void onProgress(int done, int total) {
+                    mMainHandler.post(() -> {
+                        if (session != mChapterSession || mDestroyed
+                                || mChapterDirs == null || index >= mChapterDirs.size()) {
+                            return;
+                        }
+                        if (!opened) {
+                            // First page landed: show it now instead of making
+                            // the user stare at a hint for the whole chapter.
+                            File d = mChapterDirs.get(index);
+                            if (d != null && countImageFiles(d) > 0) {
+                                opened = true;
+                                mChapterLoading = false;
+                                mChapterDirs.set(index, d);
+                                openChapterDir(d, page, frac, startFilePath);
+                            }
+                        } else {
+                            // Already open: grow the page list as the tail lands.
+                            refreshChapterPageList();
+                        }
+                    });
                 }
-                mChapterDirs.set(index, d);
-                openChapterDir(d, page, frac, startFilePath);
-            }));
+            });
         } else {
             openChapterDir(dir, page, frac, startFilePath);
         }
+    }
+
+    /** Counts only readable image/video files, ignoring .tmp and 0-byte files
+     *  left by an interrupted download (a folder of those is NOT "ready"). */
+    private int countImageFiles(File dir) {
+        if (dir == null || !dir.isDirectory()) {
+            return 0;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return 0;
+        }
+        String[] imageExt = mSettings.imageExtensions();
+        String[] videoExt = mSettings.videoExtensions();
+        int n = 0;
+        for (File f : files) {
+            if (f != null && f.isFile() && f.length() > 0 && !f.getName().endsWith(".tmp")
+                    && (MangaSettings.hasExtension(f.getName(), imageExt)
+                        || MangaSettings.hasExtension(f.getName(), videoExt))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** Re-scans the currently open online chapter folder and appends pages that
+     *  finished downloading after the folder was first opened. Keeps the
+     *  current page index, so progressive download never yanks the view. */
+    private void refreshChapterPageList() {
+        if (mDestroyed || mFolder == null || mChapterDirs == null || mChapterIndex < 0
+                || mChapterIndex >= mChapterDirs.size()) {
+            return;
+        }
+        File current = mPages.isEmpty() ? null : mPages.get(Math.min(mIndex, mPages.size() - 1));
+        List<File> videos = new ArrayList<>();
+        List<File> images = new ArrayList<>();
+        String[] imageExt = mSettings.imageExtensions();
+        String[] videoExt = mSettings.videoExtensions();
+        collectFiles(mFolder, mSettings.bool(MangaSettings.SOURCE_RECURSIVE) ? 2 : 0,
+                imageExt, videoExt, images, videos);
+        boolean natural = mSettings.bool(MangaSettings.SOURCE_NATURAL_SORT);
+        java.util.Comparator<File> comparator = natural
+                ? (a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName())
+                : (a, b) -> a.getName().compareToIgnoreCase(b.getName());
+        videos.sort(comparator);
+        images.sort(comparator);
+        List<File> all = new ArrayList<>();
+        if (mSettings.bool(MangaSettings.SOURCE_VIDEO_FIRST)) {
+            all.addAll(videos);
+            all.addAll(images);
+        } else {
+            all.addAll(videos);
+            all.addAll(images);
+            all.sort(comparator);
+        }
+        if (all.size() <= mPages.size()) {
+            return; // nothing new landed
+        }
+        int keepIndex = 0;
+        if (current != null) {
+            for (int i = 0; i < all.size(); i++) {
+                if (all.get(i).equals(current)) {
+                    keepIndex = i;
+                    break;
+                }
+            }
+        }
+        mPages.clear();
+        mPages.addAll(all);
+        mIndex = keepIndex;
+        mPageCounter.setText(counterText());
+        notifyTrayProgress();
+        preloadNext();
+        Log.i(TAG, "chapter pages grew to " + mPages.size() + " keepIndex=" + keepIndex);
     }
 
     private void openChapterDir(File dir, int page, float frac, String startFilePath) {
@@ -1143,7 +1296,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
-            Bitmap bitmap = MangaImageDecoder.decodeSampled(file, sample, null);
+            // RGB_565 halves pixel memory/bandwidth vs ARGB_8888. On manga
+            // (mostly greyscale line art) the difference is imperceptible, and
+            // it roughly doubles the number of strip tiles that fit in cache -
+            // the main cause of scroll stutter in long-strip mode.
+            Bitmap bitmap = MangaImageDecoder.decodeSampled(file, sample,
+                    Bitmap.Config.RGB_565);
             if (bitmap != null && crop) {
                 Bitmap cropped = cropBorders(bitmap);
                 if (cropped != null && cropped != bitmap) {
@@ -1613,10 +1771,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
                     break;
                 }
-                // Never advance onto a neighbour that is still decoding.
+                // Never advance onto a neighbour that is still decoding. Hold
+                // just past the bottom seam instead of clamping a whole viewport
+                // back to the current page's bottom: clamping made a held stick
+                // oscillate ("scrolls down then rolls back"). Once the neighbour
+                // decodes the same delta crosses the seam smoothly.
                 Bitmap next = mStripSegments[3];
                 if (next == null || next.isRecycled()) {
-                    mStripOffset = Math.max(0f, curH - Math.max(0f, vh));
+                    mStripOffset = curH + 0.001f;
                     loadStripNeighbours(mStripGeneration);
                     break;
                 }
@@ -2480,7 +2642,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mMainHandler.postDelayed(mScrollDecay, 220);
             return;
         }
-        if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.22f) {
+        // In seamless long-strip mode a diagonal stick gesture has an
+        // unavoidable horizontal component. Treating it as a page turn calls
+        // showPage(), which resets the strip and snaps scroll back to the top
+        // of a page - the reported "scrolls down but jumps back a few pages".
+        // Continuous navigation is vertical-only, so discard horizontal drift.
+        if (isContinuous()) {
+            mScrollAccumX = 0f;
+        } else if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.22f) {
             pageDelta(mScrollAccumX > 0 ? -1 : 1);
             mScrollAccumX = 0f;
             mJoyPageCooldown = true;

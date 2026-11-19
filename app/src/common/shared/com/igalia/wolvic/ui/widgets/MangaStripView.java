@@ -28,7 +28,10 @@ public class MangaStripView extends View {
 
     /** [index-2, index-1, index, index+1, index+2] */
     private final Bitmap[] mSegments = new Bitmap[5];
-    private final Paint mPaint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
+    // FILTER_BITMAP_FLAG keeps scaled tiles smooth; DITHER_FLAG was dropped
+    // because per-frame dithering of large bitmaps cost measurable GPU time
+    // during continuous scrolling with no visible benefit on line art.
+    private final Paint mPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final Matrix mMatrix = new Matrix();
     private float mScale = 1.0f;
     private float mZoom = 1.0f;
