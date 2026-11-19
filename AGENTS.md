@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-18 Round J 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round K 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -70,6 +70,21 @@
 - **签名变更坑**：扩展 workflow 注入了 stable debug keystore，与首版（默认 debug）签名不同，`install -r` 报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`——需先 `adb uninstall eu.kanade.tachiyomi.extension.zh.cosjun` 再装。**以后扩展重新构建若签名变了要先卸载**。
 - **官方 mihon 不显示属正常**：官方只收录其签名/仓库的扩展；本扩展是私密自签，只在 VR 项目和第三方 mihon 规则软件可用。
 - 诊断验证：扩展加载在 app 启动 `initializeWidgets→fillExtensionsPage→MangaSourceManager.init` 时就发生（不用进扩展页），冷启动后 `logcat | grep MangaSource` 看 `loaded source` / `init done`。
+
+## Round K（2026-11-19）：进度条裁切/渐进下载/登录持久化/滚动
+
+用户反馈：① 进度条又完全不显示；② 首图慢、后续秒切；③ 切章只 4 张、外面重开完整（怀疑登录）；④ 其他源首开串上一本、章节偶无图；⑤ 去掉"试读"；⑥ 连续模式下滑回滚；⑦ 滚动卡顿。
+
+- **进度条完全不显示根因**：Round J 的 `translationY=-40dp` 把进度行整体移出父 FrameLayout 边界被裁，且 tray surface 仅 66dp 放不下两行。修复：进度行从按钮 FrameLayout **移出** 为 tray_rows 独立子元素（按钮行上方）；`applyMangaMode` 在 MODE_READER 隐藏 `status_bar` 腾 20dp；进度行 24dp+按钮 40dp=64dp<66dp。**别再用 translationY 负偏移，会被父容器裁掉**。
+- **"切章只 4 张"根因（关键，非登录）**：切章复用同一 source/client/cookieJar，登录态没丢。真因=`prefetchChapter(...,4)` 只落 4 页 + `loadChapter` 把"目录非空"当完整章节 → 永久停 4 页；"4"与匿名试读 gallery 撞号。修复：① `downloadChapter` 渐进式——先下前 `OPEN_AFTER_PAGES=8` 页即 `cb.onResult(dir)` 打开，剩余后台续传；② prefetch 4→64；③ `loadChapter` 有页立即打开+后台 `ensureChapter` 补齐，`DirCallback.onProgress` 增量 `refreshChapterPageList()` 增长 mPages（保持 mIndex）；④ ready 判定 `countImageFiles()` 只数真实图片/视频（排 .tmp/0字节）。
+- **其他源串上一本**：`setChapters` 补齐 setFolder 式完整重置（mPages.clear/mIndex=0/mLoadGeneration++/取消 mPendingPages/cache.evictAll/清 executor 队列）。
+- **连续模式回滚**：`onControllerScroll` 里 continuous 仍把水平漂移当 pageDelta→showPage 重置 strip。修复：isContinuous() 时 `mScrollAccumX=0`；向下 neighbour 未解码钳在 seam(`curH+0.001f`) 而非整页底避免来回弹。
+- **流畅度**：`decodeSampled(..., Bitmap.Config.RGB_565)`（内存/带宽减半）+ MangaStripView 去 `DITHER_FLAG` 留 FILTER_BITMAP_FLAG。
+- **"试读"按钮**：删 MangaLibraryWidget 两处 `addButton("试读",...testFetch)`。
+- **登录持久化**：扩展加 `KEY_SESSION=cosjun_phpsessid`，登录成功后从 `Set-Cookie` 提取 PHPSESSID 存 prefs；覆写 `client` 加 interceptor 对 cosjun.cn 请求注入 `Cookie: PHPSESSID=...`（进程重启仍有效）；加"退出登录/重新登录" Preference；账号/密码变更清 session。之前 cookie 只在 WebView CookieManager（会话级、重启丢）。站点若轮换 session 仍可能失效，30 分钟节流会重登刷新。
+- **构建坑**：Kotlin `var opened` 必须声明在 try 外（catch 要用），放 try 内会 `Unresolved reference` 编译失败（`MangaSourceRepository.kt`）。
+- CI：扩展 `44500883269` success、主机 `44501704559` success（首构 `44500875432` 因 opened 作用域编译失败）。主机装机 versionCode `2103220938`→`2103231002`，firstInstallTime 保留。远端 main 最终 `0a2b59c2`；扩展已装（先 uninstall 旧版）。logcat 确认 `loaded source: name=COS君 ... failures=0`。
+- **待头显实测**：进度条位置、首图速度、切章完整张数、其他源串本/章节完整性、连续模式回滚、滚动流畅度。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
