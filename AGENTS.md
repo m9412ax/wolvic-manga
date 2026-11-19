@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round L 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round M 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -95,6 +95,15 @@
 - **进度条常驻+状态栏+圆角**：reader 模式进度行不再 hover 显示，`applyMangaMode` 里 MODE_READER 直接 VISIBLE、status_bar 所有模式恢复 VISIBLE；新增 `tray_height_reader=88dp` + `setTrayHeightForMode()` 在 reader 增高 placement.height 并同步 mBaseTrayHeight（onMangaParentResized 会 re-pin）；**tray.xml 根高度必须 match_parent**（原来固定 `@dimen/tray_height` 66dp 会裁掉增高后的三行——这个坑导致二次构建）；进度行 26dp 独立行、背景 `tray_background_middle_plain.xml` 无圆角，配 top/bottom 圆角协调；mHideProgressRunnable 改 no-op、dispatchHoverEvent 不再控制进度行显隐。
 - **快滚流畅度**：`MangaStripView.setStrip` 加变化检测（无变化不 invalidate，改 postInvalidateOnAnimation 合并帧）；`setOffset` 检测帧间 delta>12% 屏高时临时关 FILTER_BITMAP_FLAG，120ms 后恢复。Round K 已做 RGB_565+去DITHER。
 - CI：主机 `44524305832` success（但发现根布局裁切 bug），修复 tray 根 match_parent 后重构 `44525027525` success。本地 `89d652c`+tray fix，远端 main `c1b66363`。扩展无改动不重建。**待头显实测**：进度条常驻+状态栏圆角视觉、手柄返回键、视频进度条点击+1s消失、快滚流畅度。
+
+## Round M（2026-11-19 夜）：COS君点击/切章慢 —— 重复抓 HTML + 登录节流失效
+
+用户反馈：COS君点进去章节很慢"无法点击进去"；从上一本切下一本若没加载完，后面图片很慢很慢。
+
+- **根因（探查确认，非"等图片下载"）**：UI 线程无阻塞（全 IO + main.post）；getMangaUpdate 不下载图；getImageUrl 灾难排除（COS君 parsePages 已填 imageUrl，1图1直链）。真因：① **同一详情页 HTML 被抓 2-3 次**（getMangaUpdate 详情文本 + prefetch getPageList + download getPageList 各抓一次 `/photo/ID` 大 HTML）；② **登录节流失效**——loginStamp 是内存变量，进程重启=0，而 session cookie 由 prefs 持久=true → `currentMillis-0` 远超30分钟 → 每次 ensureLoggedIn 都 `synchronized + client.execute()` 同步登录，每个请求前多一次往返；③ downloadChapter 旧版 head=8 全下完才回调，首图被前置 HTML 抓取拖累。
+- **修复**：Host `MangaSourceRepository` 新增 `pageListCache`（key=sourceId:chapter.url，TTL 5min）`cachedPageList()` 供 download/prefetch 共用；downloadChapter **第一页落地即 cb.onResult 打开**（去 OPEN_AFTER_PAGES=8）；`MangaChapterSession` prefetch 64→3 页（64 页预取占满同主机 5 并发，反而拖慢刚切的章）。扩展 `Cosjun`：`loginStamp` 持久化 prefs（KEY_LOGIN_STAMP）；`docCache`（Document+60s TTL）供 getMangaUpdate/getPageList 共用，登录成功 clear（匿名4图→全量）。
+- **教训**：COS君 chapter.url == manga.url == 详情页 URL；page list 抓取=大 HTML 请求，必须缓存复用，别在 prefetch/download 里重复抓。首图快的关键是缓存前置 HTML + 首图落地即显示，不是多预下载。
+- CI：主机 `44530431447`、扩展 `44530447102` 均 success。本地 `d6bc022`，远端 `75667d3e`。扩展已装（先 uninstall），logcat 确认 `loaded source: name=COS君 ... failures=0`。**待头显实测**：点详情/章节速度、切章后图片速度。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
