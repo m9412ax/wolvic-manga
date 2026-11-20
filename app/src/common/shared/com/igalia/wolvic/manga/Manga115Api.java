@@ -218,7 +218,8 @@ public final class Manga115Api {
     }
 
     private static String enc(String value) {
-        return URLEncoder.encode(value == null ? "" : value, "UTF-8");
+        // encode(String, Charset) does not throw a checked exception (Java 10+).
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
     private static String hostOf(String url) {
