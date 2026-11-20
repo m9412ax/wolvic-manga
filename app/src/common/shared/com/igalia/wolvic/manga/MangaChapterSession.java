@@ -108,4 +108,34 @@ public class MangaChapterSession {
         return new MangaChapterSession(dirs, index, page, frac, null,
                 "src:" + source.getId() + ":" + manga.getUrl(), provider);
     }
+
+    /** Builds a session for an ONLINE remote manga (SMB / 115). Each chapter
+     *  maps to a stable local cache folder; pages are fetched on demand through
+     *  RemoteChapterLoader with the same layered/concurrent pipeline as source
+     *  chapters (first page shows immediately, the rest stream in). */
+    public static MangaChapterSession remote(final RemoteManga manga,
+                                             final List<RemoteManga.ChapterInfo> chapters,
+                                             final List<File> dirs,
+                                             int index, int page, float frac) {
+        ChapterProvider provider = new ChapterProvider() {
+            @Override
+            public void ensureChapter(int i, int startPage, DirCallback callback) {
+                if (i < 0 || i >= chapters.size()) {
+                    callback.onDir(null, "章节序号越界");
+                    return;
+                }
+                RemoteChapterLoader.download(manga, chapters.get(i), dirs.get(i),
+                        startPage, callback::onProgress,
+                        (dir, error) -> callback.onDir(dir, error));
+            }
+
+            @Override
+            public void prefetchChapter(int i) {
+                if (i < 0 || i >= chapters.size()) return;
+                RemoteChapterLoader.prefetch(manga, chapters.get(i), dirs.get(i), 3);
+            }
+        };
+        return new MangaChapterSession(dirs, index, page, frac, null,
+                "remote:" + manga.key(), provider);
+    }
 }

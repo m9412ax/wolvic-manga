@@ -371,6 +371,11 @@ public final class MangaSmb {
         return safeName(name);
     }
 
+    /** Public media filter for remote (on-demand) reading. */
+    public static boolean isMediaFile(String name, String[] exts) {
+        return isMedia(name, exts);
+    }
+
     private static String normalizePath(String path) {
         if (path == null) {
             return "";

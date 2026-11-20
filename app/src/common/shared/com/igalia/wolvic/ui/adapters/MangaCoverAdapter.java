@@ -41,6 +41,9 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     /** Click callback. The folder is the manga root directory. */
     public interface OnMangaClickListener {
         void onMangaClick(@NonNull File folder);
+        /** Called for remote (SMB/115) bookshelf entries that have no local
+         *  folder. Default delegates with a dummy file for compatibility. */
+        default void onRemoteMangaClick(@NonNull String remoteKey) { }
     }
 
     /** Long-press callback, e.g. to reset reading progress for a folder. */
@@ -48,19 +51,28 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         void onMangaLongClick(@NonNull File folder);
     }
 
-    /** One manga entry: a folder plus its discovered cover / video flag. */
+    /** One manga entry: a folder plus its discovered cover / video flag.
+     *  Remote entries (SMB/115) have a non-null remoteKey and a null folder. */
     public static class MangaItem {
         @NonNull public final File folder;
         @NonNull public final String title;
         @Nullable public final File cover;
         public final boolean hasVideo;
+        @Nullable public final String remoteKey;
 
         public MangaItem(@NonNull File folder, @NonNull String title,
                          @Nullable File cover, boolean hasVideo) {
+            this(folder, title, cover, hasVideo, null);
+        }
+
+        public MangaItem(@NonNull File folder, @NonNull String title,
+                         @Nullable File cover, boolean hasVideo,
+                         @Nullable String remoteKey) {
             this.folder = folder;
             this.title = title;
             this.cover = cover;
             this.hasVideo = hasVideo;
+            this.remoteKey = remoteKey;
         }
     }
 
@@ -125,7 +137,11 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         loadCover(holder.cover, item.cover);
         holder.itemView.setOnClickListener(v -> {
             if (mListener != null) {
-                mListener.onMangaClick(item.folder);
+                if (item.remoteKey != null) {
+                    mListener.onRemoteMangaClick(item.remoteKey);
+                } else {
+                    mListener.onMangaClick(item.folder);
+                }
             }
         });
         holder.itemView.setOnLongClickListener(v -> {

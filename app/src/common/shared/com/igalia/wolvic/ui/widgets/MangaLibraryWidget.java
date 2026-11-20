@@ -58,6 +58,9 @@ import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.manga.MangaSourceManager;
 import com.igalia.wolvic.manga.MangaSourceRepository;
 import com.igalia.wolvic.manga.MangaWebDav;
+import com.igalia.wolvic.manga.RemoteManga;
+import com.igalia.wolvic.manga.SmbRemoteManga;
+import com.igalia.wolvic.manga.Netdisk115RemoteManga;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.adapters.SourceCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
@@ -192,6 +195,11 @@ public class MangaLibraryWidget extends UIWidget {
     // 115 QR login state
     private Manga115Api.QrSession mP115Qr;
     private android.graphics.Bitmap mP115QrBitmap;
+    /** 115 online browser state (cid "0" = root). */
+    private String mP115Cid = "0";
+    private String mP115Title = "115 漫画";
+    private final List<Manga115Api.DirEntry> mP115Entries = new ArrayList<>();
+    private String mP115DirStatus = "";
     private String mP115Status = "未登录";
     private final Handler mP115PollHandler = new Handler(Looper.getMainLooper());
     private final Runnable mP115Poll = new Runnable() {
@@ -236,7 +244,17 @@ public class MangaLibraryWidget extends UIWidget {
         mFolderThumbScale = Math.max(0.5f, Math.min(2.0f,
                 mSettings.getFloat(MangaSettings.FOLDER_THUMB_SCALE, 1.0f)));
         mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
-        mAdapter = new MangaCoverAdapter(getContext(), this::openFolder, this::resetProgress);
+        mAdapter = new MangaCoverAdapter(getContext(),
+                new MangaCoverAdapter.OnMangaClickListener() {
+                    @Override
+                    public void onMangaClick(File folder) {
+                        openFolder(folder);
+                    }
+                    @Override
+                    public void onRemoteMangaClick(String remoteKey) {
+                        openRemoteFromShelf(remoteKey);
+                    }
+                }, this::resetProgress);
         mAdapter.setCompact(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1);
         mGrid.setAdapter(mAdapter);
         setupLibraryToolbar();
@@ -673,7 +691,13 @@ public class MangaLibraryWidget extends UIWidget {
                 }
             }
         }
+        // Remote (SMB/115) bookshelf entries are tagged strings, not paths.
+        List<String> remoteShelfKeys = new ArrayList<>();
         for (String saved : mSettings.bookshelf()) {
+            if (saved.startsWith(SHELF_SMB) || saved.startsWith(SHELF_115)) {
+                remoteShelfKeys.add(saved);
+                continue;
+            }
             File extra = new File(saved);
             if (extra.isDirectory() && !dirs.contains(extra)) {
                 dirs.add(extra);
@@ -702,6 +726,12 @@ public class MangaLibraryWidget extends UIWidget {
                 continue;
             }
             items.add(new MangaCoverAdapter.MangaItem(dir, dir.getName(), cover, hasVideo));
+        }
+        // Remote entries first (online, no local folder / cover).
+        for (String key : remoteShelfKeys) {
+            // folder may be @NonNull in MangaItem; use a harmless placeholder.
+            items.add(0, new MangaCoverAdapter.MangaItem(
+                    new File("/remote"), remoteShelfTitle(key), null, false, key));
         }
         return items;
     }
@@ -865,6 +895,126 @@ public class MangaLibraryWidget extends UIWidget {
             continueReading(folder);
         });
         bar.addView(cont);
+    }
+
+    // ------------------------------------------- ONLINE remote manga (SMB/115)
+
+    private static final String SHELF_SMB = "remote:smb:";
+    private static final String SHELF_115 = "remote:115:";
+
+    /** Stable cache dir for one remote chapter: <cache>/remote-manga/<hash(key)>/<chapterIdx>. */
+    private File remoteChapterDir(RemoteManga manga, int chapterIndex) {
+        File base = getContext().getExternalCacheDir();
+        if (base == null) base = getContext().getCacheDir();
+        return new File(new File(base, "remote-manga"),
+                stableHash(manga.key()) + File.separator + chapterIndex);
+    }
+
+    private static String stableHash(String s) {
+        int h = (s == null ? 0 : s.hashCode()) & 0x7fffffff;
+        return String.format(java.util.Locale.ROOT, "%08x", h);
+    }
+
+    /** Opens a remote manga ONLINE: chapters are listed first (no image
+     *  download), then the reader fetches pages on demand with the same
+     *  layered/concurrent pipeline as extension sources. */
+    private void openRemoteManga(final RemoteManga manga) {
+        Toast.makeText(getContext(), "正在读取 " + manga.title() + " 的章节…", Toast.LENGTH_SHORT).show();
+        mIoExecutor.execute(() -> {
+            try {
+                final List<RemoteManga.ChapterInfo> chapters = manga.listChapters();
+                if (chapters.isEmpty()) {
+                    mMain.post(() -> {
+                        Toast.makeText(getContext(), "该文件夹内没有子章节", Toast.LENGTH_SHORT).show();
+                    });
+                    return;
+                }
+                final List<File> dirs = new ArrayList<>();
+                for (int i = 0; i < chapters.size(); i++) {
+                    dirs.add(remoteChapterDir(manga, i));
+                }
+                // Restore reading progress by the same key the reader saves.
+                int index = 0;
+                int page = 0;
+                float frac = 0f;
+                float[] saved = MangaReaderWidget.readChapterProgress(
+                        progressPrefs(), "remote:" + manga.key());
+                if (saved != null) {
+                    index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
+                    page = (int) saved[1];
+                    frac = saved[2];
+                }
+                final int fi = index, fp = page;
+                final float ff = frac;
+                mMain.post(() -> {
+                    MangaChapterSession session = MangaChapterSession.remote(
+                            manga, chapters, dirs, fi, fp, ff);
+                    ((VRBrowserActivity) getContext()).openMangaReaderSession(session);
+                    Log.i(TAG, "openRemoteManga " + manga.key()
+                            + " chapters=" + chapters.size() + " index=" + fi);
+                });
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                mMain.post(() -> Toast.makeText(getContext(),
+                        "在线读取失败：" + msg, Toast.LENGTH_LONG).show());
+                Log.w(TAG, "openRemoteManga failed: " + msg);
+            }
+        });
+    }
+
+    /** Adds a remote manga to the bookshelf as a tagged string (no download). */
+    private void addRemoteToShelf(String shelfKey) {
+        mSettings.addToBookshelf(shelfKey);
+        Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
+    }
+
+    /** Re-opens a remote bookshelf entry by reconnecting to SMB/115. */
+    private void openRemoteFromShelf(String shelfKey) {
+        if (shelfKey.startsWith(SHELF_SMB)) {
+            final String key = shelfKey.substring(SHELF_SMB.length());
+            // key = smb://host/share/path
+            String rest = key.substring("smb://".length());
+            int slash = rest.indexOf('/');
+            final String host = slash > 0 ? rest.substring(0, slash) : rest;
+            final String shareAndPath = slash > 0 ? rest.substring(slash + 1) : "";
+            int s2 = shareAndPath.indexOf('/');
+            final String share = s2 > 0 ? shareAndPath.substring(0, s2) : shareAndPath;
+            final String path = s2 > 0 ? shareAndPath.substring(s2 + 1) : "";
+            final MangaSmb.Auth auth = new MangaSmb.Auth(host, share,
+                    mSettings.text(MangaSettings.SMB_DOMAIN),
+                    mSettings.text(MangaSettings.SMB_USER),
+                    mSettings.text(MangaSettings.SMB_PASS));
+            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+            openRemoteManga(new SmbRemoteManga(auth, path, media));
+        } else if (shelfKey.startsWith(SHELF_115)) {
+            String rest = shelfKey.substring(SHELF_115.length());
+            int sep = rest.indexOf('|');
+            final String cid = sep > 0 ? rest.substring(0, sep) : rest;
+            final String title = sep > 0 ? rest.substring(sep + 1) : "115 网盘";
+            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+            String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+            if (cookie == null || cookie.isEmpty()) {
+                Toast.makeText(getContext(), "请先登录 115", Toast.LENGTH_SHORT).show();
+                switchPage(MangaPage.WEBDAV);
+                return;
+            }
+            openRemoteManga(new Netdisk115RemoteManga(cookie, cid, title, media));
+        }
+    }
+
+    /** Parses a remote shelf key into a display title. */
+    private String remoteShelfTitle(String shelfKey) {
+        if (shelfKey.startsWith(SHELF_SMB)) {
+            String key = shelfKey.substring(SHELF_SMB.length());
+            int i = key.lastIndexOf('/');
+            return i > 0 ? key.substring(i + 1) : key;
+        }
+        if (shelfKey.startsWith(SHELF_115)) {
+            String rest = shelfKey.substring(SHELF_115.length());
+            int sep = rest.indexOf('|');
+            return sep > 0 ? rest.substring(sep + 1) : "115 网盘";
+        }
+        return "在线漫画";
     }
 
     // ------------------------------------------- folder / bookshelf views
@@ -1334,7 +1484,7 @@ public class MangaLibraryWidget extends UIWidget {
         addInfo(content, "SMB 共享 · " + mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
                 mSmbStatus);
         addInfo(content, "当前目录", mSmbPath.isEmpty() ? "共享根目录" : "/" + mSmbPath);
-        addInfo(content, "看图提示", "进入任意文件夹后点「▷ 作为漫画阅读」，该文件夹的子文件夹会作为章节，自动下载到本地并可加书签、预载。");
+        addInfo(content, "看图提示", "进入任意文件夹后点「▷ 在线阅读」：首图秒开、边看边缓存、支持书签与预载，不会整本下载。点「＋ 加入书架」可长期收藏。");
 
         LinearLayout actions = addRow(content);
         if (!mSmbPath.isEmpty()) {
@@ -1345,7 +1495,13 @@ public class MangaLibraryWidget extends UIWidget {
             });
         }
         addButton(actions, "刷新", v -> connectSmb());
-        addButton(actions, "▷ 作为漫画阅读", v -> readSmbFolderAsManga(mSmbPath));
+        addButton(actions, "▷ 在线阅读", v -> readSmbFolderOnline(mSmbPath));
+        addButton(actions, "＋ 加入书架", v -> {
+            String key = SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
+                    + "/" + mSettings.text(MangaSettings.SMB_SHARE)
+                    + (mSmbPath.isEmpty() ? "" : "/" + mSmbPath);
+            addRemoteToShelf(key);
+        });
         addButton(actions, "切换共享", v -> {
             mSettings.put(MangaSettings.SMB_SHARE, "");
             mSmbShares.clear();
@@ -1471,6 +1627,18 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Mirrors an SMB folder tree to local cache, then opens it with the
      *  normal local reader (chapters = sub-folders, bookmarks + preload work). */
+    /** Opens the current SMB folder as an ONLINE manga (on-demand pages). */
+    private void readSmbFolderOnline(String remotePath) {
+        final MangaSmb.Auth auth = smbAuth();
+        if (auth.share.isEmpty()) {
+            mSmbStatus = "请先选择一个共享";
+            refreshPage(MangaPage.SMB);
+            return;
+        }
+        String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+        openRemoteManga(new SmbRemoteManga(auth, remotePath, media));
+    }
+
     private void readSmbFolderAsManga(String remotePath) {
         final MangaSmb.Auth auth = smbAuth();
         if (auth.share.isEmpty()) {
@@ -1591,7 +1759,7 @@ public class MangaLibraryWidget extends UIWidget {
         boolean loggedIn = !cookie.isEmpty();
         addInfo(content, "115 网盘（扫码登录）",
                 loggedIn
-                        ? "已保存登录态。列目录/看图功能在后续版本接入；如需重新登录可点下方按钮。"
+                        ? "已登录。浏览文件夹，点「在线阅读」首图秒开、边看边缓存；点「＋ 加入书架」收藏。"
                         : "用 115 手机 App 扫码登录，登录态保存在本机。");
         addInfo(content, "115 状态", mP115Status);
 
@@ -1610,27 +1778,96 @@ public class MangaLibraryWidget extends UIWidget {
             addButton(row, "扫码登录", v -> start115Login());
         }
 
+        // Online directory browser (only when logged in).
+        if (loggedIn) {
+            addInfo(content, "115 目录", "0".equals(mP115Cid) ? "（根目录）" : mP115Cid);
+            addInfo(content, "目录状态", mP115DirStatus);
+            LinearLayout dirActions = addRow(content);
+            addButton(dirActions, "列出当前目录", v -> listP115Dir(mP115Cid));
+            addButton(dirActions, "← 上级", v -> {
+                // 115 has no parent id in the entry; keep a simple stack via title.
+                mP115Cid = "0";
+                listP115Dir(mP115Cid);
+            });
+            addButton(dirActions, "▷ 在线阅读本目录", v -> readP115Online(mP115Cid, mP115Title));
+            addButton(dirActions, "＋ 加入书架", v -> {
+                addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title);
+            });
+            for (final Manga115Api.DirEntry e : mP115Entries) {
+                Button row = newButton((e.isDir ? "▣ " : "▤ ") + e.name
+                        + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
+                row.setOnClickListener(v -> {
+                    if (e.isDir) {
+                        mP115Cid = e.cid;
+                        mP115Title = e.name;
+                        listP115Dir(mP115Cid);
+                    } else {
+                        Toast.makeText(getContext(), "图片请通过「在线阅读」打开所在文件夹",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+                content.addView(row, wrapParams());
+            }
+        }
+
         if (mP115Qr != null) {
             // Generate once and cache: refreshing the page must not re-create
             // a large bitmap on every poll (that path caused a native crash).
             if (mP115QrBitmap == null && mP115Qr.qrContent != null) {
-                mP115QrBitmap = qrBitmap(mP115Qr.qrContent, 320);
+                mP115QrBitmap = qrBitmap(mP115Qr.qrContent, 720);
             }
             if (mP115QrBitmap != null) {
                 android.widget.ImageView qrImage = new android.widget.ImageView(getContext());
                 qrImage.setImageBitmap(mP115QrBitmap);
                 qrImage.setAdjustViewBounds(true);
-                LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                // Large on the VR panel so a phone camera can scan it at range.
+                int qrDp = dp(440);
+                LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(qrDp, qrDp);
                 ip.gravity = Gravity.CENTER_HORIZONTAL;
+                ip.setMargins(0, dp(12), 0, dp(12));
+                qrImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
                 content.addView(qrImage, ip);
-                addInfo(content, "请用 115 App 扫码", "扫码后在手机上确认，本页面会自动登录。");
+                addInfo(content, "请用 115 App 扫码", "二维码已放大。扫码后在手机上确认，本页面会自动登录。");
             } else {
                 // Fallback: show the raw link if bitmap generation failed.
                 addInfo(content, "二维码生成失败", "请用手机打开：\n" + mP115Qr.qrContent);
             }
         }
+    }
+
+    private void listP115Dir(final String cid) {
+        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        if (cookie == null || cookie.isEmpty()) return;
+        mP115DirStatus = "正在读取 115 目录…";
+        refreshPage(MangaPage.WEBDAV);
+        mIoExecutor.execute(() -> {
+            try {
+                final List<Manga115Api.DirEntry> result = Manga115Api.listDir(cookie, cid);
+                mMain.post(() -> {
+                    mP115Entries.clear();
+                    mP115Entries.addAll(result);
+                    mP115DirStatus = "已列出 " + result.size() + " 项";
+                    refreshPage(MangaPage.WEBDAV);
+                });
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                mMain.post(() -> {
+                    mP115DirStatus = "读取失败：" + msg;
+                    mP115Entries.clear();
+                    refreshPage(MangaPage.WEBDAV);
+                });
+            }
+        });
+    }
+
+    private void readP115Online(String cid, String title) {
+        String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        if (cookie == null || cookie.isEmpty()) {
+            Toast.makeText(getContext(), "请先登录 115", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+        openRemoteManga(new Netdisk115RemoteManga(cookie, cid, title, media));
     }
 
     private void clearP115QrBitmap() {

@@ -7,6 +7,7 @@ package com.igalia.wolvic.manga;
 
 import android.util.Log;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -17,6 +18,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Cookie-based 115 netdisk client. Only the LOGIN (QR code) part lives here;
@@ -153,6 +156,123 @@ public final class Manga115Api {
         } catch (Exception e) {
             Log.w(TAG, "validate failed: " + e.getMessage());
             return false;
+        }
+    }
+
+    // --------------------------------------------------------- ONLINE READ
+
+    /** A file/folder entry in a 115 directory listing. */
+    public static final class DirEntry {
+        public final String name;
+        public final String fileId;     // file_id / fid (empty for folders in short schema)
+        public final String cid;        // folder id (for drilling down)
+        public final String pickCode;   // pc / pick_code (for image direct link)
+        public final boolean isDir;
+        public final long size;
+        DirEntry(String name, String fileId, String cid, String pickCode,
+                 boolean isDir, long size) {
+            this.name = name; this.fileId = fileId; this.cid = cid;
+            this.pickCode = pickCode; this.isDir = isDir; this.size = size;
+        }
+    }
+
+    /** Lists children of a 115 folder. cid "0" = root. Cookie required.
+     *  Compatible with both the long (name/file_id/is_dir) and short
+     *  (n/fid/ico) field schemas returned by different 115 endpoints. */
+    public static List<DirEntry> listDir(String cookie, String cid) throws Exception {
+        if (cid == null || cid.isEmpty()) cid = "0";
+        String url = "https://webapi.115.com/files?"
+                + "aid=1&cid=" + enc(cid)
+                + "&o=user_ptime&asc=0&offset=0&show_dir=1&limit=100"
+                + "&snap=0&natsort=1&record_open_time=1&count_folders=1&format=json";
+        String json = httpGet(url, cookie);
+        JSONObject root = new JSONObject(json);
+        int errno = root.optInt("errno", -1);
+        JSONArray data = root.optJSONArray("data");
+        if (errno != 0 && data == null) {
+            throw new IllegalStateException("115 列目录失败 errno=" + errno
+                    + " " + root.optString("error"));
+        }
+        List<DirEntry> out = new ArrayList<>();
+        for (int i = 0; data != null && i < data.length(); i++) {
+            JSONObject it = data.getJSONObject(i);
+            String name = first(it, "name", "n", "fn");
+            if (name.isEmpty()) continue;
+            String fid = first(it, "file_id", "fid");
+            String childCid = first(it, "cid");
+            String pc = first(it, "pick_code", "pc");
+            boolean dir;
+            if (it.has("is_dir")) {
+                dir = it.optInt("is_dir", 0) == 1;
+            } else {
+                // Short schema: ico == "0" means a directory.
+                String ico = first(it, "ico", "fc");
+                dir = "0".equals(ico);
+                if (fid.isEmpty() && !childCid.isEmpty()) dir = true;
+            }
+            long size = it.has("size") ? it.optLong("size") : it.optLong("s");
+            out.add(new DirEntry(name, fid, childCid, pc, dir, size));
+        }
+        Log.i(TAG, "listDir " + cid + " -> " + out.size() + " entries");
+        return out;
+    }
+
+    private static String first(JSONObject o, String... keys) {
+        for (String k : keys) {
+            String v = o.optString(k, "");
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return "";
+    }
+
+    /** Resolves an image direct link for a single (small) file via the web
+     *  endpoint and downloads its bytes. Cookie + matching UA required.
+     *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
+    public static byte[] imageBytes(String cookie, String pickCode) throws Exception {
+        if (pickCode == null || pickCode.isEmpty()) {
+            throw new IllegalStateException("115 图片缺少 pickcode");
+        }
+        String meta = httpGet("https://webapi.115.com/files/download?pickcode="
+                + enc(pickCode), cookie);
+        JSONObject root = new JSONObject(meta);
+        String durl = root.optString("file_url", "");
+        if (durl.isEmpty() && root.has("data")) {
+            JSONObject d = root.optJSONObject("data");
+            if (d != null) durl = d.optString("file_url", "");
+        }
+        if (durl.isEmpty()) {
+            int errno = root.optInt("errno", -1);
+            throw new IllegalStateException("115 取直链失败 errno=" + errno
+                    + " " + root.optString("error"));
+        }
+        return httpGetBytes(durl, cookie);
+    }
+
+    /** Downloads raw bytes from a direct link with the login Cookie attached
+     *  (115 CDN returns 403 without it). */
+    private static byte[] httpGetBytes(String url, String cookie) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        if (cookie != null && !cookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", cookie);
+        }
+        try {
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("HTTP " + code + " 下载图片失败");
+            }
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+            }
+            return bos.toByteArray();
+        } finally {
+            conn.disconnect();
         }
     }
 
