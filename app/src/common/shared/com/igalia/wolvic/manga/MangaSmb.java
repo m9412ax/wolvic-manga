@@ -165,8 +165,8 @@ public final class MangaSmb {
             if (!tmp.renameTo(destination)) {
                 throw new IllegalStateException("SMB 重命名失败: " + path);
             }
-            Log.i(TAG, "download " + path + " -> " + written + " bytes");
-            return written;
+            Log.i(TAG, "download " + path + " -> " + written[0] + " bytes");
+            return written[0];
         } finally {
             closeQuietly(connection);
             closeQuietly(client);
