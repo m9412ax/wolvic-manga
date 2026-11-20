@@ -1794,9 +1794,9 @@ public class MangaLibraryWidget extends UIWidget {
                 addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title);
             });
             for (final Manga115Api.DirEntry e : mP115Entries) {
-                Button row = newButton((e.isDir ? "▣ " : "▤ ") + e.name
+                Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
                         + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
-                row.setOnClickListener(v -> {
+                entryRow.setOnClickListener(v -> {
                     if (e.isDir) {
                         mP115Cid = e.cid;
                         mP115Title = e.name;
@@ -1806,7 +1806,7 @@ public class MangaLibraryWidget extends UIWidget {
                                 Toast.LENGTH_SHORT).show();
                     }
                 });
-                content.addView(row, wrapParams());
+                content.addView(entryRow, wrapParams());
             }
         }
 
