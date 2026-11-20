@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-20 Round N 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-21 Round O 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -117,6 +117,14 @@
 - **编译踩坑（3轮CI）**：①新类未 import → package does not exist；②`return written` 应为 `written[0]`；③`URLEncoder.encode(str,"UTF-8")` 受检异常 → `encode(str, StandardCharsets.UTF_8)`。`gh run view --log-failed` 常超时，改用 `gh api .../jobs/$JOBID/logs > file` 再 grep error。
 - **api_push.py 致命坑**：git trees API 的 content 必须传**原始 UTF-8 文本**，不能 base64（曾双重编码把4个源码文件写成 base64 文本致全 CI 失败）。用前确认。
 - CI：主机 `44756396547` success（含全部）。本地 `e502f29b6a`，远端 main `e502f29b6a`。扩展无改动（沿用上轮已装）。**待头显实测**：进度分母/切章、多线程加载速度、视频快进、SMB 列目录+下载、115 扫码登录。
+
+## Round O（2026-11-21 凌晨）：SMB 自动连接 + 115 二维码闪退
+
+用户反馈：SMB 填完 IP/账号密码无法点连接，要求保存后下次自动连接直接显示共享目录；115 获取到二维码但未扫码就闪退。
+
+- **SMB 交互重构**：新增 `smbConfigured()`/`mSmbAutoConnected`/`mSmbConfigOpen`。`switchPage` 切到 SMB 且已配置且本次会话未自动连接过时自动 `connectSmb()`；`fillSmbPage` 分两态——已配置=纯文件夹浏览器（▣目录/▤文件、上级/刷新/设置/打开本地目录），未配置或点「设置」=表单+「保存并连接」。不再重复出现连接设置。
+- **115 二维码闪退**：根因推断=poll 每 1.5s 触发 `refreshPage(WEBDAV)` 重建，旧代码每次重新生成 320×density px 的 QR Bitmap 且不 recycle → 内存暴涨 native SIGSEGV（logcat 的 `signal 11` 多为 Pico crashhelper 噪音，主进程日志未崩，但用户实测闪退）。修复：QR Bitmap 缓存字段 `mP115QrBitmap` 只生成一次；固定 320px（不乘 density）+ ErrorCorrectionLevel.L + int[]/setPixels 一次性写；`catch(Throwable)`（WriterException/OOM 都不闪退）；会话结束（退出登录/失效/登录成功失败/重扫）recycle 并清空。生成失败时降级显示二维码原始链接文本。
+- CI：主机 `44781732617` success。远端 main `e172e8b1`。构建前推送曾遇 WinError 10060 超时（commit 未创建、main 未变），重试即成。**待头显实测**：SMB 自动连接/文件夹浏览、115 扫码不再闪退。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
