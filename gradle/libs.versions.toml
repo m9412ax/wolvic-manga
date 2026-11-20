@@ -26,6 +26,8 @@ geckoviewNightly = "153.0.20260615093007"
 geckoviewRelease = "153.0.20260810162159"
 googleMaterial = "1.9.0"
 gson = "2.10.1"
+smbj = "0.13.0"
+zxing = "3.5.3"
 huaweiAGConnectCore = "1.9.1.301"
 huaweiAGConnectCoreHarmony = "1.1.0.300"
 huaweiHmsHiAnalytics = "6.3.2.300"
@@ -105,6 +107,9 @@ geckoview-release-arm64 = { module = "org.mozilla.geckoview:geckoview-omni-arm64
 geckoview-release-x64 = { module = "org.mozilla.geckoview:geckoview-omni-x86_64", version.ref = "geckoviewRelease" }
 # GSON
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+# SMB2/3 (smbj) and QR code (zxing) for network manga sources
+smbj = { module = "com.hierynomus:smbj", version.ref = "smbj" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 # Huawei
 huawei-agconnect-core = { module = "com.huawei.agconnect:agconnect-core", version.ref = "huaweiAGConnectCore" }
 huawei-agconnect-agcp = { module = "com.huawei.agconnect:agcp", version.ref = "huaweiAGConnectCore" }

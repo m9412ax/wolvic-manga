@@ -716,6 +716,13 @@ dependencies {
     implementation libs.zip4j
     implementation libs.apache.commonsmath3
 
+    // Network manga sources: SMB2/3 client + QR code for netdisk login
+    implementation(libs.smbj) {
+        // Transitive logging binding is not needed; keep the API jar only.
+        exclude group: 'org.slf4j', module: 'slf4j-simple'
+    }
+    implementation libs.zxing.core
+
     // AOSP
     aospImplementation libs.games.activity
 
