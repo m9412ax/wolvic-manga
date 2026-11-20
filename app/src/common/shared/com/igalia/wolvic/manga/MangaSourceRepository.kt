@@ -1,1 +1,401 @@
-cGFja2FnZSBjb20uaWdhbGlhLndvbHZpYy5tYW5nYQoKaW1wb3J0IGFuZHJvaWQuY29udGVudC5Db250ZXh0CmltcG9ydCBhbmRyb2lkLmdyYXBoaWNzLkJpdG1hcAppbXBvcnQgYW5kcm9pZC5ncmFwaGljcy5CaXRtYXBGYWN0b3J5CmltcG9ydCBhbmRyb2lkLm9zLkhhbmRsZXIKaW1wb3J0IGFuZHJvaWQub3MuTG9vcGVyCmltcG9ydCBhbmRyb2lkLnV0aWwuTG9nCmltcG9ydCBldS5rYW5hZGUudGFjaGl5b21pLm5ldHdvcmsuR0VUCmltcG9ydCBldS5rYW5hZGUudGFjaGl5b21pLm5ldHdvcmsuYXdhaXRTdWNjZXNzCmltcG9ydCBldS5rYW5hZGUudGFjaGl5b21pLnNvdXJjZS5DYXRhbG9ndWVTb3VyY2UKaW1wb3J0IGV1LmthbmFkZS50YWNoaXlvbWkuc291cmNlLlNvdXJjZQppbXBvcnQgZXUua2FuYWRlLnRhY2hpeW9taS5zb3VyY2UubW9kZWwuRmlsdGVyTGlzdAppbXBvcnQgZXUua2FuYWRlLnRhY2hpeW9taS5zb3VyY2UubW9kZWwuTWFuZ2FzUGFnZQppbXBvcnQgZXUua2FuYWRlLnRhY2hpeW9taS5zb3VyY2UubW9kZWwuU0NoYXB0ZXIKaW1wb3J0IGV1LmthbmFkZS50YWNoaXlvbWkuc291cmNlLm1vZGVsLlNNYW5nYQppbXBvcnQgZXUua2FuYWRlLnRhY2hpeW9taS5zb3VyY2UubW9kZWwuU01hbmdhVXBkYXRlCmltcG9ydCBldS5rYW5hZGUudGFjaGl5b21pLnNvdXJjZS5vbmxpbmUuSHR0cFNvdXJjZQppbXBvcnQgZXUua2FuYWRlLnRhY2hpeW9taS51dGlsLmxhbmcuSGFzaAppbXBvcnQga290bGlueC5jb3JvdXRpbmVzLkRpc3BhdGNoZXJzCmltcG9ydCBrb3RsaW54LmNvcm91dGluZXMuRGVsaWNhdGVDb3JvdXRpbmVzQXBpCmltcG9ydCBrb3RsaW54LmNvcm91dGluZXMuR2xvYmFsU2NvcGUKaW1wb3J0IGtvdGxpbnguY29yb3V0aW5lcy5hc3luYwppbXBvcnQga290bGlueC5jb3JvdXRpbmVzLmF3YWl0QWxsCmltcG9ydCBrb3RsaW54LmNvcm91dGluZXMuY29yb3V0aW5lU2NvcGUKaW1wb3J0IGtvdGxpbnguY29yb3V0aW5lcy5sYXVuY2gKaW1wb3J0IGtvdGxpbnguY29yb3V0aW5lcy5zeW5jLlNlbWFwaG9yZQppbXBvcnQga290bGlueC5jb3JvdXRpbmVzLnN5bmMud2l0aFBlcm1pdAppbXBvcnQgb2todHRwMy5Pa0h0dHBDbGllbnQKaW1wb3J0IGphdmEuaW8uRmlsZQppbXBvcnQgamF2YS51dGlsLmNvbmN1cnJlbnQuVGltZVVuaXQKaW1wb3J0IGphdmEudXRpbC5jb25jdXJyZW50LmF0b21pYy5BdG9taWNJbnRlZ2VyCgovKioKICogQnJvd3NlIC8gZGV0YWlscyAvIGNoYXB0ZXItZG93bmxvYWQgcGlwZWxpbmUgZm9yIGxvYWRlZCBleHRlbnNpb24gc291cmNlcy4KICogUmVzdWx0cyBhcmUgZGVsaXZlcmVkIG9uIHRoZSBtYWluIHRocmVhZDsgYWxsIG5ldHdvcmsgd29yayBydW5zIG9uIElPLgogKi8KQE9wdEluKERlbGljYXRlQ29yb3V0aW5lc0FwaTo6Y2xhc3MpCm9iamVjdCBNYW5nYVNvdXJjZVJlcG9zaXRvcnkgewoKICAgIHByaXZhdGUgY29uc3QgdmFsIFRBRyA9ICJNYW5nYVNvdXJjZSIKICAgIHByaXZhdGUgdmFsIG1haW4gPSBIYW5kbGVyKExvb3Blci5nZXRNYWluTG9vcGVyKCkpCgogICAgLyoqIEEgc291cmNlJ3MgcGFnZSBsaXN0IGlzIHRoZSBTQU1FIG5ldHdvcmsgcmVxdWVzdCAodXN1YWxseSB0aGUgd2hvbGUKICAgICAqICBkZXRhaWwgSFRNTCkgZm9yIGRldGFpbHMsIHByZWZldGNoIGFuZCBkb3dubG9hZC4gQ2FjaGUgaXQgYnJpZWZseSBzbwogICAgICogIHN3aXRjaGluZyBpbnRvIGEgY2hhcHRlciBkb2VzIG5vdCByZS1mZXRjaCB0aGUgcGFnZSB0aHJlZSB0aW1lcy4gVmFsdWUKICAgICAqICBpcyAodGltZXN0YW1wLCBwYWdlcyk7IGVudHJpZXMgb2xkZXIgdGhhbiBUVEwgYXJlIHJlLWZldGNoZWQuICovCiAgICBwcml2YXRlIGRhdGEgY2xhc3MgUGFnZUxpc3RFbnRyeSh2YWwgYXQ6IExvbmcsIHZhbCBwYWdlczogTGlzdDxldS5rYW5hZGUudGFjaGl5b21pLnNvdXJjZS5tb2RlbC5QYWdlPikKICAgIHByaXZhdGUgdmFsIHBhZ2VMaXN0Q2FjaGUgPSBqYXZhLnV0aWwuY29uY3VycmVudC5Db25jdXJyZW50SGFzaE1hcDxTdHJpbmcsIFBhZ2VMaXN0RW50cnk+KCkKICAgIHByaXZhdGUgY29uc3QgdmFsIFBBR0VfTElTVF9UVExfTVMgPSA1ICogNjAgKiAxMDAwTAoKICAgIHByaXZhdGUgZnVuIHBhZ2VMaXN0S2V5KHNvdXJjZTogU291cmNlLCBjaGFwdGVyOiBTQ2hhcHRlcik6IFN0cmluZyA9CiAgICAgICAgc291cmNlLmlkLnRvU3RyaW5nKCkgKyAiOiIgKyBjaGFwdGVyLnVybAoKICAgIC8qKiBSZXR1cm5zIHRoZSBwYWdlIGxpc3QgZnJvbSBhIHNob3J0LWxpdmVkIGNhY2hlLCBmZXRjaGluZyBvbmNlIG9uIG1pc3MuCiAgICAgKiAgQ29uY3VycmVudCBjYWxsZXJzIG1heSBzdGlsbCByYWNlLCBidXQgc3Vic2VxdWVudCBzd2l0Y2hlcyBhcmUgaW5zdGFudC4gKi8KICAgIHByaXZhdGUgc3VzcGVuZCBmdW4gY2FjaGVkUGFnZUxpc3Qoc291cmNlOiBTb3VyY2UsIGNoYXB0ZXI6IFNDaGFwdGVyKTogTGlzdDxldS5rYW5hZGUudGFjaGl5b21pLnNvdXJjZS5tb2RlbC5QYWdlPiB7CiAgICAgICAgdmFsIGtleSA9IHBhZ2VMaXN0S2V5KHNvdXJjZSwgY2hhcHRlcikKICAgICAgICB2YWwgY2FjaGVkID0gcGFnZUxpc3RDYWNoZVtrZXldCiAgICAgICAgaWYgKGNhY2hlZCAhPSBudWxsICYmIFN5c3RlbS5jdXJyZW50VGltZU1pbGxpcygpIC0gY2FjaGVkLmF0IDwgUEFHRV9MSVNUX1RUTF9NUykgewogICAgICAgICAgICByZXR1cm4gY2FjaGVkLnBhZ2VzCiAgICAgICAgfQogICAgICAgIHZhbCBwYWdlcyA9IHNvdXJjZS5nZXRQYWdlTGlzdChjaGFwdGVyKQogICAgICAgIHBhZ2VMaXN0Q2FjaGVba2V5XSA9IFBhZ2VMaXN0RW50cnkoU3lzdGVtLmN1cnJlbnRUaW1lTWlsbGlzKCksIHBhZ2VzKQogICAgICAgIHJldHVybiBwYWdlcwogICAgfQoKICAgIGZ1biBpbnRlcmZhY2UgQ2FsbGJhY2s8VD4gewogICAgICAgIGZ1biBvblJlc3VsdCh2YWx1ZTogVD8sIGVycm9yOiBTdHJpbmc/KQogICAgfQoKICAgIGZ1biBpbnRlcmZhY2UgUHJvZ3Jlc3MgewogICAgICAgIGZ1biBvblByb2dyZXNzKGRvbmU6IEludCwgdG90YWw6IEludCkKICAgIH0KCiAgICBmdW4gYnJvd3NlKHNvdXJjZTogU291cmNlLCBwYWdlOiBJbnQsIHF1ZXJ5OiBTdHJpbmcsIGZpbHRlcnM6IEZpbHRlckxpc3Q/LCBjYjogQ2FsbGJhY2s8TWFuZ2FzUGFnZT4pIHsKICAgICAgICBpZiAoc291cmNlICFpcyBDYXRhbG9ndWVTb3VyY2UpIHsKICAgICAgICAgICAgY2Iub25SZXN1bHQobnVsbCwgIuivpea6kOS4jeaUr+aMgea1j+iniCIpCiAgICAgICAgICAgIHJldHVybgogICAgICAgIH0KICAgICAgICBHbG9iYWxTY29wZS5sYXVuY2goRGlzcGF0Y2hlcnMuSU8pIHsKICAgICAgICAgICAgdHJ5IHsKICAgICAgICAgICAgICAgIHZhbCByZXN1bHQgPSBpZiAocXVlcnkuaXNCbGFuaygpICYmIGZpbHRlcnMgPT0gbnVsbCkgewogICAgICAgICAgICAgICAgICAgIHNvdXJjZS5nZXRQb3B1bGFyTWFuZ2EocGFnZSkKICAgICAgICAgICAgICAgIH0gZWxzZSB7CiAgICAgICAgICAgICAgICAgICAgc291cmNlLmdldFNlYXJjaE1hbmdhKHBhZ2UsIHF1ZXJ5LCBmaWx0ZXJzID86IHNvdXJjZS5nZXRGaWx0ZXJMaXN0KCkpCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBMb2cuaShUQUcsICJicm93c2UgJHtzb3VyY2UubmFtZX0gcGFnZT0kcGFnZSBxPSckcXVlcnknIGZpbHRlcnM9JHtmaWx0ZXJzICE9IG51bGx9IC0+ICR7cmVzdWx0Lm1hbmdhcy5zaXplfSBoYXNOZXh0PSR7cmVzdWx0Lmhhc05leHRQYWdlfSIpCiAgICAgICAgICAgICAgICBtYWluLnBvc3QgeyBjYi5vblJlc3VsdChyZXN1bHQsIG51bGwpIH0KICAgICAgICAgICAgfSBjYXRjaCAoZTogVGhyb3dhYmxlKSB7CiAgICAgICAgICAgICAgICBMb2cuZShUQUcsICJicm93c2UgZmFpbGVkOiAke3NvdXJjZS5uYW1lfSIsIGUpCiAgICAgICAgICAgICAgICBtYWluLnBvc3QgeyBjYi5vblJlc3VsdChudWxsLCBlLm1lc3NhZ2UgPzogZS5qYXZhQ2xhc3Muc2ltcGxlTmFtZSkgfQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgfQoKICAgIGZ1biBmZXRjaEZpbHRlcnMoc291cmNlOiBTb3VyY2UsIGNiOiBDYWxsYmFjazxGaWx0ZXJMaXN0PikgewogICAgICAgIEdsb2JhbFNjb3BlLmxhdW5jaChEaXNwYXRjaGVycy5JTykgewogICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgdmFsIGZpbHRlcnMgPSBzb3VyY2UuZ2V0RmlsdGVyTGlzdCgpCiAgICAgICAgICAgICAgICBtYWluLnBvc3QgeyBjYi5vblJlc3VsdChmaWx0ZXJzLCBudWxsKSB9CiAgICAgICAgICAgIH0gY2F0Y2ggKGU6IFRocm93YWJsZSkgewogICAgICAgICAgICAgICAgTG9nLmUoVEFHLCAiZ2V0RmlsdGVyTGlzdCBmYWlsZWQ6ICR7c291cmNlLm5hbWV9IiwgZSkKICAgICAgICAgICAgICAgIG1haW4ucG9zdCB7IGNiLm9uUmVzdWx0KG51bGwsIGUubWVzc2FnZSA/OiBlLmphdmFDbGFzcy5zaW1wbGVOYW1lKSB9CiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9CgogICAgLyoqIEZldGNoZXMgYSBjb3ZlciB0aHVtYm5haWwgd2l0aCB0aGUgc291cmNlJ3Mgb3duIGNsaWVudC9oZWFkZXJzIGFuZAogICAgICogIGRlY29kZXMgaXQgZG93bnNhbXBsZWQ7IG51bGwgb24gYW55IGZhaWx1cmUgKGNhbGxlciBzaG93cyBwbGFjZWhvbGRlcikuICovCiAgICBmdW4gbG9hZENvdmVyKHNvdXJjZTogU291cmNlLCB1cmw6IFN0cmluZz8sIGNiOiBDYWxsYmFjazxCaXRtYXA+KSB7CiAgICAgICAgaWYgKHVybC5pc051bGxPckJsYW5rKCkpIHsKICAgICAgICAgICAgY2Iub25SZXN1bHQobnVsbCwgbnVsbCkKICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgfQogICAgICAgIEdsb2JhbFNjb3BlLmxhdW5jaChEaXNwYXRjaGVycy5JTykgewogICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgdmFsIHJlcXVlc3QgPSBpZiAoc291cmNlIGlzIEh0dHBTb3VyY2UpIEdFVCh1cmwsIHNvdXJjZS5oZWFkZXJzKSBlbHNlIEdFVCh1cmwpCiAgICAgICAgICAgICAgICB2YWwgY2xpZW50ID0gaWYgKHNvdXJjZSBpcyBIdHRwU291cmNlKSBzb3VyY2UuY2xpZW50IGVsc2UgcGxhaW5DbGllbnQKICAgICAgICAgICAgICAgIHZhbCBieXRlcyA9IGNsaWVudC5uZXdDYWxsKHJlcXVlc3QpLmF3YWl0U3VjY2VzcygpLnVzZSB7IGl0LmJvZHkuYnl0ZXMoKSB9CiAgICAgICAgICAgICAgICB2YWwgYm91bmRzID0gQml0bWFwRmFjdG9yeS5PcHRpb25zKCkuYXBwbHkgeyBpbkp1c3REZWNvZGVCb3VuZHMgPSB0cnVlIH0KICAgICAgICAgICAgICAgIEJpdG1hcEZhY3RvcnkuZGVjb2RlQnl0ZUFycmF5KGJ5dGVzLCAwLCBieXRlcy5zaXplLCBib3VuZHMpCiAgICAgICAgICAgICAgICB2YXIgc2FtcGxlID0gMQogICAgICAgICAgICAgICAgaWYgKGJvdW5kcy5vdXRXaWR0aCA+IDAgJiYgYm91bmRzLm91dEhlaWdodCA+IDApIHsKICAgICAgICAgICAgICAgICAgICB3aGlsZSAoYm91bmRzLm91dFdpZHRoIC8gKHNhbXBsZSAqIDIpID49IENPVkVSX1BYICYmIGJvdW5kcy5vdXRIZWlnaHQgLyAoc2FtcGxlICogMikgPj0gQ09WRVJfUFgpIHsKICAgICAgICAgICAgICAgICAgICAgICAgc2FtcGxlICo9IDIKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB2YWwgb3B0cyA9IEJpdG1hcEZhY3RvcnkuT3B0aW9ucygpLmFwcGx5IHsKICAgICAgICAgICAgICAgICAgICBpblNhbXBsZVNpemUgPSBzYW1wbGUKICAgICAgICAgICAgICAgICAgICBpblByZWZlcnJlZENvbmZpZyA9IEJpdG1hcC5Db25maWcuUkdCXzU2NQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgdmFsIGJpdG1hcCA9IEJpdG1hcEZhY3RvcnkuZGVjb2RlQnl0ZUFycmF5KGJ5dGVzLCAwLCBieXRlcy5zaXplLCBvcHRzKQogICAgICAgICAgICAgICAgbWFpbi5wb3N0IHsgY2Iub25SZXN1bHQoYml0bWFwLCBudWxsKSB9CiAgICAgICAgICAgIH0gY2F0Y2ggKGU6IFRocm93YWJsZSkgewogICAgICAgICAgICAgICAgTG9nLncoVEFHLCAiY292ZXIgbG9hZCBmYWlsZWQ6ICR1cmwgKCR7ZS5tZXNzYWdlfSkiKQogICAgICAgICAgICAgICAgbWFpbi5wb3N0IHsgY2Iub25SZXN1bHQobnVsbCwgZS5tZXNzYWdlKSB9CiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9CgogICAgcHJpdmF0ZSBjb25zdCB2YWwgQ09WRVJfUFggPSAzMjAKCiAgICBwcml2YXRlIHZhbCBwbGFpbkNsaWVudCBieSBsYXp5IHsKICAgICAgICBPa0h0dHBDbGllbnQuQnVpbGRlcigpCiAgICAgICAgICAgIC5jb25uZWN0VGltZW91dCgzMCwgVGltZVVuaXQuU0VDT05EUykKICAgICAgICAgICAgLnJlYWRUaW1lb3V0KDYwLCBUaW1lVW5pdC5TRUNPTkRTKQogICAgICAgICAgICAuYnVpbGQoKQogICAgfQoKICAgIGZ1biBsYXRlc3Qoc291cmNlOiBTb3VyY2UsIHBhZ2U6IEludCwgY2I6IENhbGxiYWNrPE1hbmdhc1BhZ2U+KSB7CiAgICAgICAgaWYgKHNvdXJjZSAhaXMgQ2F0YWxvZ3VlU291cmNlKSB7CiAgICAgICAgICAgIGNiLm9uUmVzdWx0KG51bGwsICLor6XmupDkuI3mlK/mjIHmtY/op4giKQogICAgICAgICAgICByZXR1cm4KICAgICAgICB9CiAgICAgICAgR2xvYmFsU2NvcGUubGF1bmNoKERpc3BhdGNoZXJzLklPKSB7CiAgICAgICAgICAgIHRyeSB7CiAgICAgICAgICAgICAgICB2YWwgcmVzdWx0ID0gc291cmNlLmdldExhdGVzdFVwZGF0ZXMocGFnZSkKICAgICAgICAgICAgICAgIG1haW4ucG9zdCB7IGNiLm9uUmVzdWx0KHJlc3VsdCwgbnVsbCkgfQogICAgICAgICAgICB9IGNhdGNoIChlOiBUaHJvd2FibGUpIHsKICAgICAgICAgICAgICAgIExvZy5lKFRBRywgImxhdGVzdCBmYWlsZWQ6ICR7c291cmNlLm5hbWV9IiwgZSkKICAgICAgICAgICAgICAgIG1haW4ucG9zdCB7IGNiLm9uUmVzdWx0KG51bGwsIGUubWVzc2FnZSA/OiBlLmphdmFDbGFzcy5zaW1wbGVOYW1lKSB9CiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9CgogICAgZnVuIGRldGFpbHMoc291cmNlOiBTb3VyY2UsIG1hbmdhOiBTTWFuZ2EsIGNiOiBDYWxsYmFjazxTTWFuZ2FVcGRhdGU+KSB7CiAgICAgICAgR2xvYmFsU2NvcGUubGF1bmNoKERpc3BhdGNoZXJzLklPKSB7CiAgICAgICAgICAgIHRyeSB7CiAgICAgICAgICAgICAgICB2YWwgdXBkYXRlID0gc291cmNlLmdldE1hbmdhVXBkYXRlKG1hbmdhLCBlbXB0eUxpc3QoKSwgdHJ1ZSwgdHJ1ZSkKICAgICAgICAgICAgICAgIExvZy5pKFRBRywgImRldGFpbHMgJHtzb3VyY2UubmFtZX06ICR7dXBkYXRlLm1hbmdhLnRpdGxlfSBjaGFwdGVycz0ke3VwZGF0ZS5jaGFwdGVycy5zaXplfSIpCiAgICAgICAgICAgICAgICBtYWluLnBvc3QgeyBjYi5vblJlc3VsdCh1cGRhdGUsIG51bGwpIH0KICAgICAgICAgICAgfSBjYXRjaCAoZTogVGhyb3dhYmxlKSB7CiAgICAgICAgICAgICAgICBMb2cuZShUQUcsICJkZXRhaWxzIGZhaWxlZDogJHtzb3VyY2UubmFtZX0iLCBlKQogICAgICAgICAgICAgICAgbWFpbi5wb3N0IHsgY2Iub25SZXN1bHQobnVsbCwgZS5tZXNzYWdlID86IGUuamF2YUNsYXNzLnNpbXBsZU5hbWUpIH0KICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0KCiAgICAvKiogTWF4IHNpbXVsdGFuZW91cyBwYWdlIGRvd25sb2Fkcy4gb2todHRwIHBlci1ob3N0IGxpbWl0IGlzIHJhaXNlZCB0byA4CiAgICAgKiAgaW4gTmV0d29ya0hlbHBlciBzbyBjb25jdXJyZW5jeSBoZXJlIGlzIGFjdHVhbGx5IHJlYWxpc2VkIG9uIHRoZSB3aXJlLiAqLwogICAgcHJpdmF0ZSBjb25zdCB2YWwgRE9XTkxPQURfQ09OQ1VSUkVOQ1kgPSA2CiAgICBwcml2YXRlIGNvbnN0IHZhbCBQUklPUklUWV9IRUFEID0gNAoKICAgIC8qKiBEb3dubG9hZHMgYSBjaGFwdGVyIGludG8gYSBzdGFibGUgY2FjaGUgZm9sZGVyIGFuZCByZXR1cm5zIHRoYXQgZm9sZGVyLgogICAgICogIExheWVyZWQgcHJpb3JpdHksIGFsbCBjb25jdXJyZW50IC0gbm8gcGFnZSB3YWl0cyBmb3IgYSB3aG9sZSBiYXRjaDoKICAgICAqICAgMS4gcGFnZSAwIGZpcnN0IC0+IGZvbGRlciBoYW5kZWQgYmFjayBpbW1lZGlhdGVseSAoZmFzdCBmaXJzdCBwaWN0dXJlKTsKICAgICAqICAgMi4gdGhlIGxlYWRpbmcgW1BSSU9SSVRZX0hFQURdIHBhZ2VzOwogICAgICogICAzLiB0aGUgNCBwYWdlcyBBRlRFUiBbc3RhcnRQYWdlXSAocmVhZGVyJ3MgY3VycmVudCBwb3NpdGlvbikganVtcCB0aGUKICAgICAqICAgICAgcXVldWUgc28gY29udGludW91cyByZWFkaW5nIG5ldmVyIHN0YWxsczsKICAgICAqICAgNC4gZXZlcnkgcmVtYWluaW5nIHBhZ2UgZG93bmxvYWRzIGNvbmN1cnJlbnRseSwgc2VtYXBob3JlLWNhcHBlZC4KICAgICAqICBFYWNoIHBhZ2UgaXMgaGFuZGxlZCBvbmNlOyBwcm9ncmVzcyBhbHdheXMgcmVwb3J0cyB0aGUgUkVBTCB0b3RhbC4gKi8KICAgIGZ1biBkb3dubG9hZENoYXB0ZXIoCiAgICAgICAgY29udGV4dDogQ29udGV4dCwKICAgICAgICBzb3VyY2U6IFNvdXJjZSwKICAgICAgICBtYW5nYTogU01hbmdhLAogICAgICAgIGNoYXB0ZXI6IFNDaGFwdGVyLAogICAgICAgIHByb2dyZXNzOiBQcm9ncmVzcywKICAgICAgICBjYjogQ2FsbGJhY2s8RmlsZT4sCiAgICAgICAgc3RhcnRQYWdlOiBJbnQgPSAwLAogICAgKSB7CiAgICAgICAgR2xvYmFsU2NvcGUubGF1bmNoKERpc3BhdGNoZXJzLklPKSB7CiAgICAgICAgICAgIHZhciBvcGVuZWQgPSBmYWxzZQogICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgdmFsIHBhZ2VzID0gY2FjaGVkUGFnZUxpc3Qoc291cmNlLCBjaGFwdGVyKQogICAgICAgICAgICAgICAgaWYgKHBhZ2VzLmlzRW1wdHkoKSkgdGhyb3cgSWxsZWdhbFN0YXRlRXhjZXB0aW9uKCLnq6DoioLpobXpnaLliJfooajkuLrnqboiKQogICAgICAgICAgICAgICAgdmFsIGRpciA9IGNoYXB0ZXJEaXIoY29udGV4dCwgc291cmNlLCBtYW5nYSwgY2hhcHRlcikKICAgICAgICAgICAgICAgIGRpci5ta2RpcnMoKQogICAgICAgICAgICAgICAgdmFsIHRvdGFsID0gcGFnZXMuc2l6ZQogICAgICAgICAgICAgICAgdmFsIHN0YXJ0ID0gc3RhcnRQYWdlLmNvZXJjZUluKDAsIHRvdGFsIC0gMSkKICAgICAgICAgICAgICAgIExvZy5pKFRBRywgImRvd25sb2FkICR7c291cmNlLm5hbWV9ICcke2NoYXB0ZXIubmFtZX0nIHBhZ2VzPSR0b3RhbCBzdGFydD0kc3RhcnQgLT4gJGRpciIpCgogICAgICAgICAgICAgICAgdmFsIHJlcG9ydGVkID0gamF2YS51dGlsLmNvbmN1cnJlbnQuQ29uY3VycmVudEhhc2hNYXAubmV3S2V5U2V0PEludD4oKQogICAgICAgICAgICAgICAgdmFsIGRvbmUgPSBBdG9taWNJbnRlZ2VyKDApCiAgICAgICAgICAgICAgICB2YWwgc2VtID0gU2VtYXBob3JlKERPV05MT0FEX0NPTkNVUlJFTkNZKQoKICAgICAgICAgICAgICAgIHN1c3BlbmQgZnVuIG9uZShpOiBJbnQpIHsKICAgICAgICAgICAgICAgICAgICBpZiAoaSA8IDAgfHwgaSA+PSB0b3RhbCB8fCAhcmVwb3J0ZWQuYWRkKGkpKSByZXR1cm4KICAgICAgICAgICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgICAgICAgICBpZiAoZXhpc3RpbmdQYWdlKGRpciwgcGFnZXNbaV0uaW5kZXgpID09IG51bGwpIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGZldGNoUGFnZShzb3VyY2UsIHBhZ2VzW2ldLCBkaXIpCiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICB9IGNhdGNoIChlOiBUaHJvd2FibGUpIHsKICAgICAgICAgICAgICAgICAgICAgICAgTG9nLncoVEFHLCAicGFnZSAkaSBmYWlsZWQ6ICR7ZS5tZXNzYWdlfSIpCiAgICAgICAgICAgICAgICAgICAgfSBmaW5hbGx5IHsKICAgICAgICAgICAgICAgICAgICAgICAgdmFsIGQgPSBkb25lLmluY3JlbWVudEFuZEdldCgpCiAgICAgICAgICAgICAgICAgICAgICAgIG1haW4ucG9zdCB7IHByb2dyZXNzLm9uUHJvZ3Jlc3MoZCwgdG90YWwpIH0KICAgICAgICAgICAgICAgICAgICAgICAgaWYgKGQgJSA4ID09IDApIGVuZm9yY2VDYWNoZUNhcChjb250ZXh0KQogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICAvLyBTdGFnZSAxOiBmaXJzdCBwYWdlIGFsb25lLCBoYW5kIHRoZSBmb2xkZXIgc3RyYWlnaHQgYmFjay4KICAgICAgICAgICAgICAgIG9uZSgwKQogICAgICAgICAgICAgICAgaWYgKCFvcGVuZWQpIHsKICAgICAgICAgICAgICAgICAgICBvcGVuZWQgPSB0cnVlCiAgICAgICAgICAgICAgICAgICAgbWFpbi5wb3N0IHsgY2Iub25SZXN1bHQoZGlyLCBudWxsKSB9CiAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgLy8gU3RhZ2UgMjogbGVhZGluZyB3aW5kb3cuCiAgICAgICAgICAgICAgICBjb3JvdXRpbmVTY29wZSB7CiAgICAgICAgICAgICAgICAgICAgKDEgdW50aWwgbWluT2YoUFJJT1JJVFlfSEVBRCwgdG90YWwpKQogICAgICAgICAgICAgICAgICAgICAgICAubWFwIHsgaSAtPiBhc3luYyhEaXNwYXRjaGVycy5JTykgeyBvbmUoaSkgfSB9CiAgICAgICAgICAgICAgICAgICAgICAgIC5hd2FpdEFsbCgpCiAgICAgICAgICAgICAgICB9CgogICAgICAgICAgICAgICAgLy8gU3RhZ2UgMzogcGFnZXMganVzdCBhZnRlciB0aGUgcmVhZGVyJ3MgY3VycmVudCBwb3NpdGlvbi4KICAgICAgICAgICAgICAgIGNvcm91dGluZVNjb3BlIHsKICAgICAgICAgICAgICAgICAgICAoKHN0YXJ0ICsgMSkgdW50aWwgbWluT2Yoc3RhcnQgKyA1LCB0b3RhbCkpCiAgICAgICAgICAgICAgICAgICAgICAgIC5tYXAgeyBpIC0+IGFzeW5jKERpc3BhdGNoZXJzLklPKSB7IG9uZShpKSB9IH0KICAgICAgICAgICAgICAgICAgICAgICAgLmF3YWl0QWxsKCkKICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICAvLyBTdGFnZSA0OiBldmVyeXRoaW5nIGxlZnQsIGdsb2JhbGx5IGNvbmN1cnJlbnQgYnV0IGNhcHBlZC4KICAgICAgICAgICAgICAgIGNvcm91dGluZVNjb3BlIHsKICAgICAgICAgICAgICAgICAgICAoMCB1bnRpbCB0b3RhbCkKICAgICAgICAgICAgICAgICAgICAgICAgLm1hcCB7IGkgLT4gYXN5bmMoRGlzcGF0Y2hlcnMuSU8pIHsgc2VtLndpdGhQZXJtaXQgeyBvbmUoaSkgfSB9IH0KICAgICAgICAgICAgICAgICAgICAgICAgLmF3YWl0QWxsKCkKICAgICAgICAgICAgICAgIH0KCiAgICAgICAgICAgICAgICBMb2cuaShUQUcsICJkb3dubG9hZCBkb25lOiAkZGlyIHBhZ2VzPSR0b3RhbCAob3BlbmVkPSRvcGVuZWQpIikKICAgICAgICAgICAgICAgIGVuZm9yY2VDYWNoZUNhcChjb250ZXh0KQogICAgICAgICAgICB9IGNhdGNoIChlOiBUaHJvd2FibGUpIHsKICAgICAgICAgICAgICAgIExvZy5lKFRBRywgImRvd25sb2FkIGZhaWxlZDogJHtzb3VyY2UubmFtZX0gJyR7Y2hhcHRlci5uYW1lfSciLCBlKQogICAgICAgICAgICAgICAgaWYgKCFvcGVuZWQpIG1haW4ucG9zdCB7IGNiLm9uUmVzdWx0KG51bGwsIGUubWVzc2FnZSA/OiBlLmphdmFDbGFzcy5zaW1wbGVOYW1lKSB9CiAgICAgICAgICAgICAgICBlbmZvcmNlQ2FjaGVDYXAoY29udGV4dCkKICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0KCiAgICBwcml2YXRlIHZhbCBwcmVmZXRjaGluZyA9IGphdmEudXRpbC5jb25jdXJyZW50LkNvbmN1cnJlbnRIYXNoTWFwLm5ld0tleVNldDxTdHJpbmc+KCkKCiAgICAvKiogRGlzay1vbmx5IHByZS1jYWNoZSBvZiB0aGUgZmlyc3QgW21heFBhZ2VzXSBwYWdlcyBvZiBhIGNoYXB0ZXIgc28gdGhlCiAgICAgKiAgcmVhZGVyIGNhbiBzd2l0Y2ggY2hhcHRlcnMgaW5zdGFudGx5LiBTaWxlbnQ6IGZhaWx1cmVzIGFyZSBsb2dnZWQuICovCiAgICBmdW4gcHJlZmV0Y2hDaGFwdGVyKGNvbnRleHQ6IENvbnRleHQsIHNvdXJjZTogU291cmNlLCBtYW5nYTogU01hbmdhLCBjaGFwdGVyOiBTQ2hhcHRlciwgbWF4UGFnZXM6IEludCkgewogICAgICAgIHZhbCBrZXkgPSBzb3VyY2UuaWQudG9TdHJpbmcoKSArICI6IiArIGNoYXB0ZXIudXJsCiAgICAgICAgaWYgKCFwcmVmZXRjaGluZy5hZGQoa2V5KSkgcmV0dXJuCiAgICAgICAgR2xvYmFsU2NvcGUubGF1bmNoKERpc3BhdGNoZXJzLklPKSB7CiAgICAgICAgICAgIHRyeSB7CiAgICAgICAgICAgICAgICB2YWwgZGlyID0gY2hhcHRlckRpcihjb250ZXh0LCBzb3VyY2UsIG1hbmdhLCBjaGFwdGVyKQogICAgICAgICAgICAgICAgdmFsIGV4aXN0aW5nID0gZGlyLmxpc3RGaWxlcygpPy5jb3VudCB7ICFpdC5uYW1lLmVuZHNXaXRoKCIudG1wIikgJiYgaXQubGVuZ3RoKCkgPiAwIH0gPzogMAogICAgICAgICAgICAgICAgaWYgKGV4aXN0aW5nID49IG1heFBhZ2VzKSByZXR1cm5AbGF1bmNoCiAgICAgICAgICAgICAgICAvLyBSZXVzZSB0aGUgY2FjaGVkIHBhZ2UgbGlzdDogdGhlIGRldGFpbCBIVE1MIGlzIGV4cGVuc2l2ZSB0bwogICAgICAgICAgICAgICAgLy8gZmV0Y2guIFRoaXMgd2FybS11cCBhbHNvIHByaW1lcyB0aGUgY2FjaGUgZm9yIHRoZSBtb21lbnQgdGhlCiAgICAgICAgICAgICAgICAvLyByZWFkZXIgYWN0dWFsbHkgb3BlbnMgdGhpcyBjaGFwdGVyLgogICAgICAgICAgICAgICAgdmFsIHBhZ2VzID0gY2FjaGVkUGFnZUxpc3Qoc291cmNlLCBjaGFwdGVyKQogICAgICAgICAgICAgICAgZGlyLm1rZGlycygpCiAgICAgICAgICAgICAgICB2YXIgZG9uZSA9IDAKICAgICAgICAgICAgICAgIGZvciAocGFnZSBpbiBwYWdlcykgewogICAgICAgICAgICAgICAgICAgIGlmIChkb25lID49IG1heFBhZ2VzKSBicmVhawogICAgICAgICAgICAgICAgICAgIGlmIChleGlzdGluZ1BhZ2UoZGlyLCBwYWdlLmluZGV4KSA9PSBudWxsKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIGZldGNoUGFnZShzb3VyY2UsIHBhZ2UsIGRpcikKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgZG9uZSsrCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBMb2cuaShUQUcsICJwcmVmZXRjaCAke3NvdXJjZS5uYW1lfSAnJHtjaGFwdGVyLm5hbWV9JyAkZG9uZSBwYWdlcyAtPiAkZGlyIikKICAgICAgICAgICAgICAgIGVuZm9yY2VDYWNoZUNhcChjb250ZXh0KQogICAgICAgICAgICB9IGNhdGNoIChlOiBUaHJvd2FibGUpIHsKICAgICAgICAgICAgICAgIExvZy53KFRBRywgInByZWZldGNoIGZhaWxlZDogJHtzb3VyY2UubmFtZX0gJyR7Y2hhcHRlci5uYW1lfScgKCR7ZS5tZXNzYWdlfSkiKQogICAgICAgICAgICB9IGZpbmFsbHkgewogICAgICAgICAgICAgICAgcHJlZmV0Y2hpbmcucmVtb3ZlKGtleSkKICAgICAgICAgICAgfQogICAgICAgIH0KICAgIH0KCiAgICBwcml2YXRlIHN1c3BlbmQgZnVuIGZldGNoUGFnZShzb3VyY2U6IFNvdXJjZSwgcGFnZTogZXUua2FuYWRlLnRhY2hpeW9taS5zb3VyY2UubW9kZWwuUGFnZSwgZGlyOiBGaWxlKSB7CiAgICAgICAgaWYgKHBhZ2UuaW1hZ2VVcmwgPT0gbnVsbCAmJiBzb3VyY2UgaXMgSHR0cFNvdXJjZSkgewogICAgICAgICAgICBwYWdlLmltYWdlVXJsID0gc291cmNlLmdldEltYWdlVXJsKHBhZ2UpCiAgICAgICAgfQogICAgICAgIHZhbCByZXNwb25zZSA9IHdoZW4gewogICAgICAgICAgICBzb3VyY2UgaXMgSHR0cFNvdXJjZSAmJiBwYWdlLmltYWdlVXJsICE9IG51bGwgLT4gc291cmNlLmdldEltYWdlKHBhZ2UpCiAgICAgICAgICAgIHBhZ2UuaW1hZ2VVcmwgIT0gbnVsbCAtPiBwbGFpbkNsaWVudC5uZXdDYWxsKEdFVChwYWdlLmltYWdlVXJsISEpKS5hd2FpdFN1Y2Nlc3MoKQogICAgICAgICAgICBlbHNlIC0+IHRocm93IElsbGVnYWxTdGF0ZUV4Y2VwdGlvbigi56ysICR7cGFnZS5pbmRleCArIDF9IOmhteayoeacieWbvueJh+WcsOWdgCIpCiAgICAgICAgfQogICAgICAgIHJlc3BvbnNlLnVzZSB7IHJlc3AgLT4KICAgICAgICAgICAgdmFsIGJvZHkgPSByZXNwLmJvZHkKICAgICAgICAgICAgdmFsIGV4dCA9IGV4dGVuc2lvbkZvcihib2R5LmNvbnRlbnRUeXBlKCk/LnRvU3RyaW5nKCksIHBhZ2UuaW1hZ2VVcmwgPzogcGFnZS51cmwpCiAgICAgICAgICAgIHZhbCBvdXQgPSBGaWxlKGRpciwgIiUwNGQuJXMiLmZvcm1hdChwYWdlLmluZGV4LCBleHQpKQogICAgICAgICAgICB2YWwgdG1wID0gRmlsZShkaXIsIG91dC5uYW1lICsgIi50bXAiKQogICAgICAgICAgICBib2R5LmJ5dGVTdHJlYW0oKS51c2UgeyBpbnB1dCAtPgogICAgICAgICAgICAgICAgdG1wLm91dHB1dFN0cmVhbSgpLnVzZSB7IG91dHB1dCAtPiBpbnB1dC5jb3B5VG8ob3V0cHV0KSB9CiAgICAgICAgICAgIH0KICAgICAgICAgICAgaWYgKHRtcC5sZW5ndGgoKSA9PSAwTCkgdGhyb3cgSWxsZWdhbFN0YXRlRXhjZXB0aW9uKCLnrKwgJHtwYWdlLmluZGV4ICsgMX0g6aG15LiL6L295Li656m6IikKICAgICAgICAgICAgdG1wLnJlbmFtZVRvKG91dCkKICAgICAgICB9CiAgICB9CgogICAgLyoqIEV2aWN0cyBvbGRlc3QgY2hhcHRlciBjYWNoZSBmb2xkZXJzIG9uY2UgdGhlIGNvbmZpZ3VyZWQgY2FwIGlzIGV4Y2VlZGVkLiAqLwogICAgcHJpdmF0ZSBmdW4gZW5mb3JjZUNhY2hlQ2FwKGNvbnRleHQ6IENvbnRleHQpIHsKICAgICAgICB0cnkgewogICAgICAgICAgICB2YWwgYmFzZSA9IEZpbGUoY29udGV4dC5leHRlcm5hbENhY2hlRGlyID86IGNvbnRleHQuY2FjaGVEaXIsICJtYW5nYS1zb3VyY2VzIikKICAgICAgICAgICAgdmFsIGNhcE1iID0gTWFuZ2FTZXR0aW5ncy5nZXQoY29udGV4dCkuaW50ZWdlcihNYW5nYVNldHRpbmdzLlNPVVJDRV9DQUNIRV9NQikKICAgICAgICAgICAgdmFsIGNhcCA9IGNhcE1iLnRvTG9uZygpICogMTAyNCAqIDEwMjQKICAgICAgICAgICAgdmFsIGNoYXB0ZXJzID0gbXV0YWJsZUxpc3RPZjxGaWxlPigpCiAgICAgICAgICAgIGJhc2UubGlzdEZpbGVzKCk/LmZvckVhY2ggeyBzcmMgLT4KICAgICAgICAgICAgICAgIHNyYy5saXN0RmlsZXMoKT8uZm9yRWFjaCB7IG1hbmdhIC0+CiAgICAgICAgICAgICAgICAgICAgbWFuZ2EubGlzdEZpbGVzKCk/LmZvckVhY2ggeyBjaCAtPiBpZiAoY2guaXNEaXJlY3RvcnkpIGNoYXB0ZXJzLmFkZChjaCkgfQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgICAgIC8vIENsZWFyIGludGVycnVwdGVkLWRvd25sb2FkIGxlZnRvdmVycyBmaXJzdDsgdGhleSBjb3VudCBhZ2FpbnN0CiAgICAgICAgICAgIC8vIHRoZSBjYXAgYnV0IGFyZSBuZXZlciByZWFkYWJsZSBhbmQgd291bGQgbGluZ2VyIGZvcmV2ZXIuCiAgICAgICAgICAgIGZvciAoY2ggaW4gY2hhcHRlcnMpIHsKICAgICAgICAgICAgICAgIGNoLmxpc3RGaWxlcygpPy5mb3JFYWNoIHsgZiAtPiBpZiAoZi5pc0ZpbGUgJiYgZi5uYW1lLmVuZHNXaXRoKCIudG1wIikpIGYuZGVsZXRlKCkgfQogICAgICAgICAgICB9CiAgICAgICAgICAgIHZhciB0b3RhbCA9IGNoYXB0ZXJzLnN1bU9mIHsgZGlyU2l6ZShpdCkgfQogICAgICAgICAgICBpZiAodG90YWwgPD0gY2FwKSByZXR1cm4KICAgICAgICAgICAgY2hhcHRlcnMuc29ydEJ5IHsgaXQubGFzdE1vZGlmaWVkKCkgfQogICAgICAgICAgICBmb3IgKGNoIGluIGNoYXB0ZXJzKSB7CiAgICAgICAgICAgICAgICBpZiAodG90YWwgPD0gY2FwKSBicmVhawogICAgICAgICAgICAgICAgdmFsIHNpemUgPSBkaXJTaXplKGNoKQogICAgICAgICAgICAgICAgaWYgKGNoLmRlbGV0ZVJlY3Vyc2l2ZWx5KCkpIHsKICAgICAgICAgICAgICAgICAgICB0b3RhbCAtPSBzaXplCiAgICAgICAgICAgICAgICAgICAgTG9nLmkoVEFHLCAiY2FjaGUgZXZpY3QgJGNoICgkc2l6ZSBieXRlcykiKQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgfSBjYXRjaCAoZTogVGhyb3dhYmxlKSB7CiAgICAgICAgICAgIExvZy53KFRBRywgImNhY2hlIGNhcCBlbmZvcmNlbWVudCBmYWlsZWQgKCR7ZS5tZXNzYWdlfSkiKQogICAgICAgIH0KICAgIH0KCiAgICBwcml2YXRlIGZ1biBkaXJTaXplKGRpcjogRmlsZSk6IExvbmcgPQogICAgICAgIGRpci5saXN0RmlsZXMoKT8uc3VtT2YgeyBpZiAoaXQuaXNEaXJlY3RvcnkpIGRpclNpemUoaXQpIGVsc2UgaXQubGVuZ3RoKCkgfSA/OiAwTAoKICAgIGZ1biBjaGFwdGVyRGlyKGNvbnRleHQ6IENvbnRleHQsIHNvdXJjZTogU291cmNlLCBtYW5nYTogU01hbmdhLCBjaGFwdGVyOiBTQ2hhcHRlcik6IEZpbGUgewogICAgICAgIHZhbCBiYXNlID0gY29udGV4dC5leHRlcm5hbENhY2hlRGlyID86IGNvbnRleHQuY2FjaGVEaXIKICAgICAgICByZXR1cm4gRmlsZSgKICAgICAgICAgICAgYmFzZSwKICAgICAgICAgICAgIm1hbmdhLXNvdXJjZXMvIiArIHNvdXJjZS5pZCArICIvIiArIEhhc2gubWQ1KG1hbmdhLnVybCkgKyAiLyIgKyBIYXNoLm1kNShjaGFwdGVyLnVybCksCiAgICAgICAgKQogICAgfQoKICAgIHByaXZhdGUgZnVuIGV4aXN0aW5nUGFnZShkaXI6IEZpbGUsIGluZGV4OiBJbnQpOiBGaWxlPyB7CiAgICAgICAgdmFsIHByZWZpeCA9ICIlMDRkLiIuZm9ybWF0KGluZGV4KQogICAgICAgIHJldHVybiBkaXIubGlzdEZpbGVzKCk/LmZpcnN0T3JOdWxsIHsKICAgICAgICAgICAgaXQubmFtZS5zdGFydHNXaXRoKHByZWZpeCkgJiYgIWl0Lm5hbWUuZW5kc1dpdGgoIi50bXAiKSAmJiBpdC5sZW5ndGgoKSA+IDAKICAgICAgICB9CiAgICB9CgogICAgcHJpdmF0ZSBmdW4gZXh0ZW5zaW9uRm9yKGNvbnRlbnRUeXBlOiBTdHJpbmc/LCB1cmw6IFN0cmluZyk6IFN0cmluZyB7CiAgICAgICAgdmFsIGN0ID0gY29udGVudFR5cGU/Lmxvd2VyY2FzZSgpLm9yRW1wdHkoKQogICAgICAgIHJldHVybiB3aGVuIHsKICAgICAgICAgICAgY3QuY29udGFpbnMoImpwZWciKSB8fCBjdC5jb250YWlucygianBnIikgLT4gImpwZyIKICAgICAgICAgICAgY3QuY29udGFpbnMoInBuZyIpIC0+ICJwbmciCiAgICAgICAgICAgIGN0LmNvbnRhaW5zKCJ3ZWJwIikgLT4gIndlYnAiCiAgICAgICAgICAgIGN0LmNvbnRhaW5zKCJhdmlmIikgLT4gImF2aWYiCiAgICAgICAgICAgIGN0LmNvbnRhaW5zKCJnaWYiKSAtPiAiZ2lmIgogICAgICAgICAgICBjdC5jb250YWlucygiYm1wIikgLT4gImJtcCIKICAgICAgICAgICAgY3QuY29udGFpbnMoIm1wNCIpIC0+ICJtcDQiCiAgICAgICAgICAgIGN0LmNvbnRhaW5zKCJ3ZWJtIikgLT4gIndlYm0iCiAgICAgICAgICAgIGN0LmNvbnRhaW5zKCJta3YiKSAtPiAibWt2IgogICAgICAgICAgICBlbHNlIC0+IHsKICAgICAgICAgICAgICAgIHZhbCBwYXRoID0gdXJsLnN1YnN0cmluZ0JlZm9yZSgnPycpLnN1YnN0cmluZ0FmdGVyTGFzdCgnLycsICIiKQogICAgICAgICAgICAgICAgdmFsIGRvdCA9IHBhdGgubGFzdEluZGV4T2YoJy4nKQogICAgICAgICAgICAgICAgaWYgKGRvdCBpbiAxLi5wYXRoLmxlbmd0aCAtIDIpIHsKICAgICAgICAgICAgICAgICAgICBwYXRoLnN1YnN0cmluZyhkb3QgKyAxKS5sb3dlcmNhc2UoKS50YWtlSWYgeyBpdC5sZW5ndGggPD0gNSB9ID86ICJqcGciCiAgICAgICAgICAgICAgICB9IGVsc2UgewogICAgICAgICAgICAgICAgICAgICJqcGciCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICB9CiAgICB9Cn0=
+package com.igalia.wolvic.manga
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.awaitSuccess
+import eu.kanade.tachiyomi.source.CatalogueSource
+import eu.kanade.tachiyomi.source.Source
+import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
+import eu.kanade.tachiyomi.source.model.SChapter
+import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.util.lang.Hash
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.DelicateCoroutinesApi
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import okhttp3.OkHttpClient
+import java.io.File
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Browse / details / chapter-download pipeline for loaded extension sources.
+ * Results are delivered on the main thread; all network work runs on IO.
+ */
+@OptIn(DelicateCoroutinesApi::class)
+object MangaSourceRepository {
+
+    private const val TAG = "MangaSource"
+    private val main = Handler(Looper.getMainLooper())
+
+    /** A source's page list is the SAME network request (usually the whole
+     *  detail HTML) for details, prefetch and download. Cache it briefly so
+     *  switching into a chapter does not re-fetch the page three times. Value
+     *  is (timestamp, pages); entries older than TTL are re-fetched. */
+    private data class PageListEntry(val at: Long, val pages: List<eu.kanade.tachiyomi.source.model.Page>)
+    private val pageListCache = java.util.concurrent.ConcurrentHashMap<String, PageListEntry>()
+    private const val PAGE_LIST_TTL_MS = 5 * 60 * 1000L
+
+    private fun pageListKey(source: Source, chapter: SChapter): String =
+        source.id.toString() + ":" + chapter.url
+
+    /** Returns the page list from a short-lived cache, fetching once on miss.
+     *  Concurrent callers may still race, but subsequent switches are instant. */
+    private suspend fun cachedPageList(source: Source, chapter: SChapter): List<eu.kanade.tachiyomi.source.model.Page> {
+        val key = pageListKey(source, chapter)
+        val cached = pageListCache[key]
+        if (cached != null && System.currentTimeMillis() - cached.at < PAGE_LIST_TTL_MS) {
+            return cached.pages
+        }
+        val pages = source.getPageList(chapter)
+        pageListCache[key] = PageListEntry(System.currentTimeMillis(), pages)
+        return pages
+    }
+
+    fun interface Callback<T> {
+        fun onResult(value: T?, error: String?)
+    }
+
+    fun interface Progress {
+        fun onProgress(done: Int, total: Int)
+    }
+
+    fun browse(source: Source, page: Int, query: String, filters: FilterList?, cb: Callback<MangasPage>) {
+        if (source !is CatalogueSource) {
+            cb.onResult(null, "该源不支持浏览")
+            return
+        }
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val result = if (query.isBlank() && filters == null) {
+                    source.getPopularManga(page)
+                } else {
+                    source.getSearchManga(page, query, filters ?: source.getFilterList())
+                }
+                Log.i(TAG, "browse ${source.name} page=$page q='$query' filters=${filters != null} -> ${result.mangas.size} hasNext=${result.hasNextPage}")
+                main.post { cb.onResult(result, null) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "browse failed: ${source.name}", e)
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    fun fetchFilters(source: Source, cb: Callback<FilterList>) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val filters = source.getFilterList()
+                main.post { cb.onResult(filters, null) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "getFilterList failed: ${source.name}", e)
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    /** Fetches a cover thumbnail with the source's own client/headers and
+     *  decodes it downsampled; null on any failure (caller shows placeholder). */
+    fun loadCover(source: Source, url: String?, cb: Callback<Bitmap>) {
+        if (url.isNullOrBlank()) {
+            cb.onResult(null, null)
+            return
+        }
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val request = if (source is HttpSource) GET(url, source.headers) else GET(url)
+                val client = if (source is HttpSource) source.client else plainClient
+                val bytes = client.newCall(request).awaitSuccess().use { it.body.bytes() }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    while (bounds.outWidth / (sample * 2) >= COVER_PX && bounds.outHeight / (sample * 2) >= COVER_PX) {
+                        sample *= 2
+                    }
+                }
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                main.post { cb.onResult(bitmap, null) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "cover load failed: $url (${e.message})")
+                main.post { cb.onResult(null, e.message) }
+            }
+        }
+    }
+
+    private const val COVER_PX = 320
+
+    private val plainClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
+    fun latest(source: Source, page: Int, cb: Callback<MangasPage>) {
+        if (source !is CatalogueSource) {
+            cb.onResult(null, "该源不支持浏览")
+            return
+        }
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val result = source.getLatestUpdates(page)
+                main.post { cb.onResult(result, null) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "latest failed: ${source.name}", e)
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    fun details(source: Source, manga: SManga, cb: Callback<SMangaUpdate>) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val update = source.getMangaUpdate(manga, emptyList(), true, true)
+                Log.i(TAG, "details ${source.name}: ${update.manga.title} chapters=${update.chapters.size}")
+                main.post { cb.onResult(update, null) }
+            } catch (e: Throwable) {
+                Log.e(TAG, "details failed: ${source.name}", e)
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    /** Max simultaneous page downloads. okhttp per-host limit is raised to 8
+     *  in NetworkHelper so concurrency here is actually realised on the wire. */
+    private const val DOWNLOAD_CONCURRENCY = 6
+    private const val PRIORITY_HEAD = 4
+
+    /** Downloads a chapter into a stable cache folder and returns that folder.
+     *  Layered priority, all concurrent - no page waits for a whole batch:
+     *   1. page 0 first -> folder handed back immediately (fast first picture);
+     *   2. the leading [PRIORITY_HEAD] pages;
+     *   3. the 4 pages AFTER [startPage] (reader's current position) jump the
+     *      queue so continuous reading never stalls;
+     *   4. every remaining page downloads concurrently, semaphore-capped.
+     *  Each page is handled once; progress always reports the REAL total. */
+    fun downloadChapter(
+        context: Context,
+        source: Source,
+        manga: SManga,
+        chapter: SChapter,
+        progress: Progress,
+        cb: Callback<File>,
+        startPage: Int = 0,
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            var opened = false
+            try {
+                val pages = cachedPageList(source, chapter)
+                if (pages.isEmpty()) throw IllegalStateException("章节页面列表为空")
+                val dir = chapterDir(context, source, manga, chapter)
+                dir.mkdirs()
+                val total = pages.size
+                val start = startPage.coerceIn(0, total - 1)
+                Log.i(TAG, "download ${source.name} '${chapter.name}' pages=$total start=$start -> $dir")
+
+                val reported = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+                val done = AtomicInteger(0)
+                val sem = Semaphore(DOWNLOAD_CONCURRENCY)
+
+                suspend fun one(i: Int) {
+                    if (i < 0 || i >= total || !reported.add(i)) return
+                    try {
+                        if (existingPage(dir, pages[i].index) == null) {
+                            fetchPage(source, pages[i], dir)
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "page $i failed: ${e.message}")
+                    } finally {
+                        val d = done.incrementAndGet()
+                        main.post { progress.onProgress(d, total) }
+                        if (d % 8 == 0) enforceCacheCap(context)
+                    }
+                }
+
+                // Stage 1: first page alone, hand the folder straight back.
+                one(0)
+                if (!opened) {
+                    opened = true
+                    main.post { cb.onResult(dir, null) }
+                }
+
+                // Stage 2: leading window.
+                coroutineScope {
+                    (1 until minOf(PRIORITY_HEAD, total))
+                        .map { i -> async(Dispatchers.IO) { one(i) } }
+                        .awaitAll()
+                }
+
+                // Stage 3: pages just after the reader's current position.
+                coroutineScope {
+                    ((start + 1) until minOf(start + 5, total))
+                        .map { i -> async(Dispatchers.IO) { one(i) } }
+                        .awaitAll()
+                }
+
+                // Stage 4: everything left, globally concurrent but capped.
+                coroutineScope {
+                    (0 until total)
+                        .map { i -> async(Dispatchers.IO) { sem.withPermit { one(i) } } }
+                        .awaitAll()
+                }
+
+                Log.i(TAG, "download done: $dir pages=$total (opened=$opened)")
+                enforceCacheCap(context)
+            } catch (e: Throwable) {
+                Log.e(TAG, "download failed: ${source.name} '${chapter.name}'", e)
+                if (!opened) main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+                enforceCacheCap(context)
+            }
+        }
+    }
+
+    private val prefetching = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Disk-only pre-cache of the first [maxPages] pages of a chapter so the
+     *  reader can switch chapters instantly. Silent: failures are logged. */
+    fun prefetchChapter(context: Context, source: Source, manga: SManga, chapter: SChapter, maxPages: Int) {
+        val key = source.id.toString() + ":" + chapter.url
+        if (!prefetching.add(key)) return
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val dir = chapterDir(context, source, manga, chapter)
+                val existing = dir.listFiles()?.count { !it.name.endsWith(".tmp") && it.length() > 0 } ?: 0
+                if (existing >= maxPages) return@launch
+                // Reuse the cached page list: the detail HTML is expensive to
+                // fetch. This warm-up also primes the cache for the moment the
+                // reader actually opens this chapter.
+                val pages = cachedPageList(source, chapter)
+                dir.mkdirs()
+                var done = 0
+                for (page in pages) {
+                    if (done >= maxPages) break
+                    if (existingPage(dir, page.index) == null) {
+                        fetchPage(source, page, dir)
+                    }
+                    done++
+                }
+                Log.i(TAG, "prefetch ${source.name} '${chapter.name}' $done pages -> $dir")
+                enforceCacheCap(context)
+            } catch (e: Throwable) {
+                Log.w(TAG, "prefetch failed: ${source.name} '${chapter.name}' (${e.message})")
+            } finally {
+                prefetching.remove(key)
+            }
+        }
+    }
+
+    private suspend fun fetchPage(source: Source, page: eu.kanade.tachiyomi.source.model.Page, dir: File) {
+        if (page.imageUrl == null && source is HttpSource) {
+            page.imageUrl = source.getImageUrl(page)
+        }
+        val response = when {
+            source is HttpSource && page.imageUrl != null -> source.getImage(page)
+            page.imageUrl != null -> plainClient.newCall(GET(page.imageUrl!!)).awaitSuccess()
+            else -> throw IllegalStateException("第 ${page.index + 1} 页没有图片地址")
+        }
+        response.use { resp ->
+            val body = resp.body
+            val ext = extensionFor(body.contentType()?.toString(), page.imageUrl ?: page.url)
+            val out = File(dir, "%04d.%s".format(page.index, ext))
+            val tmp = File(dir, out.name + ".tmp")
+            body.byteStream().use { input ->
+                tmp.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (tmp.length() == 0L) throw IllegalStateException("第 ${page.index + 1} 页下载为空")
+            tmp.renameTo(out)
+        }
+    }
+
+    /** Evicts oldest chapter cache folders once the configured cap is exceeded. */
+    private fun enforceCacheCap(context: Context) {
+        try {
+            val base = File(context.externalCacheDir ?: context.cacheDir, "manga-sources")
+            val capMb = MangaSettings.get(context).integer(MangaSettings.SOURCE_CACHE_MB)
+            val cap = capMb.toLong() * 1024 * 1024
+            val chapters = mutableListOf<File>()
+            base.listFiles()?.forEach { src ->
+                src.listFiles()?.forEach { manga ->
+                    manga.listFiles()?.forEach { ch -> if (ch.isDirectory) chapters.add(ch) }
+                }
+            }
+            // Clear interrupted-download leftovers first; they count against
+            // the cap but are never readable and would linger forever.
+            for (ch in chapters) {
+                ch.listFiles()?.forEach { f -> if (f.isFile && f.name.endsWith(".tmp")) f.delete() }
+            }
+            var total = chapters.sumOf { dirSize(it) }
+            if (total <= cap) return
+            chapters.sortBy { it.lastModified() }
+            for (ch in chapters) {
+                if (total <= cap) break
+                val size = dirSize(ch)
+                if (ch.deleteRecursively()) {
+                    total -= size
+                    Log.i(TAG, "cache evict $ch ($size bytes)")
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "cache cap enforcement failed (${e.message})")
+        }
+    }
+
+    private fun dirSize(dir: File): Long =
+        dir.listFiles()?.sumOf { if (it.isDirectory) dirSize(it) else it.length() } ?: 0L
+
+    fun chapterDir(context: Context, source: Source, manga: SManga, chapter: SChapter): File {
+        val base = context.externalCacheDir ?: context.cacheDir
+        return File(
+            base,
+            "manga-sources/" + source.id + "/" + Hash.md5(manga.url) + "/" + Hash.md5(chapter.url),
+        )
+    }
+
+    private fun existingPage(dir: File, index: Int): File? {
+        val prefix = "%04d.".format(index)
+        return dir.listFiles()?.firstOrNull {
+            it.name.startsWith(prefix) && !it.name.endsWith(".tmp") && it.length() > 0
+        }
+    }
+
+    private fun extensionFor(contentType: String?, url: String): String {
+        val ct = contentType?.lowercase().orEmpty()
+        return when {
+            ct.contains("jpeg") || ct.contains("jpg") -> "jpg"
+            ct.contains("png") -> "png"
+            ct.contains("webp") -> "webp"
+            ct.contains("avif") -> "avif"
+            ct.contains("gif") -> "gif"
+            ct.contains("bmp") -> "bmp"
+            ct.contains("mp4") -> "mp4"
+            ct.contains("webm") -> "webm"
+            ct.contains("mkv") -> "mkv"
+            else -> {
+                val path = url.substringBefore('?').substringAfterLast('/', "")
+                val dot = path.lastIndexOf('.')
+                if (dot in 1..path.length - 2) {
+                    path.substring(dot + 1).lowercase().takeIf { it.length <= 5 } ?: "jpg"
+                } else {
+                    "jpg"
+                }
+            }
+        }
+    }
+}
