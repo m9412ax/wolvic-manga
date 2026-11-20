@@ -178,6 +178,199 @@ public final class MangaSmb {
         list(auth, "");
     }
 
+    /** Enumerates ALL shares on a host via jcifs-ng (smbj has no NetShareEnum).
+     *  Returns share names; the caller fills SMB_SHARE with the chosen one.
+     *  Uses SMB2 by default so it works on hosts that disabled SMB1. */
+    public static List<String> listShares(Auth auth) throws Exception {
+        java.util.Properties props = new java.util.Properties();
+        // Let jcifs negotiate the best dialect the host supports (SMB1 for old
+        // NAS shares enumeration, SMB2/3 for modern hosts).
+        jcifs.config.PropertyConfiguration config =
+                new jcifs.config.PropertyConfiguration(props);
+        jcifs.context.BaseContext base = new jcifs.context.BaseContext(config);
+        jcifs.CIFSContext ctx = base.withCredentials(
+                new jcifs.smb.NtlmPasswordAuthenticator(
+                        auth.domain == null ? "" : auth.domain,
+                        auth.user == null ? "" : auth.user,
+                        auth.pass == null ? "" : auth.pass));
+        String url = "smb://" + auth.host + "/";
+        jcifs.smb.SmbFile root = new jcifs.smb.SmbFile(url, ctx);
+        jcifs.smb.SmbFile[] shares = root.listFiles();
+        List<String> result = new ArrayList<>();
+        if (shares != null) {
+            for (jcifs.smb.SmbFile s : shares) {
+                String name = s.getName();
+                // Hide administrative/system shares and the IPC$ pipe.
+                if (name == null || name.endsWith("$")) {
+                    continue;
+                }
+                try {
+                    if (s.isDirectory()) {
+                        result.add(name);
+                    }
+                } catch (Exception ignored) {
+                    result.add(name);
+                }
+            }
+        }
+        result.sort(String.CASE_INSENSITIVE_ORDER);
+        Log.i(TAG, "listShares " + auth.host + " -> " + result.size() + " shares");
+        return result;
+    }
+
+    /**
+     * Mirrors an SMB directory tree into a local folder so the existing local
+     * reader can open it as a manga: the root folder is the manga, each direct
+     * child folder that contains media becomes a chapter, image/video files
+     * become pages. Incremental: a local file whose size matches the remote one
+     * is skipped, so re-opening a manga only fetches new pages.
+     *
+     * @param auth             credentials + host + share
+     * @param remoteRoot       path of the manga folder, relative to share root
+     * @param localRoot        destination local directory (the "manga" folder)
+     * @param mediaExtensions  accepted file extensions (without dot, lower-case)
+     * @param listener         optional aggregate progress (done pages / total pages)
+     * @return number of chapter folders that actually contain media
+     */
+    public static int mirrorManga(Auth auth, String remoteRoot, java.io.File localRoot,
+                                  String[] mediaExtensions, ProgressListener listener) throws Exception {
+        SMBClient client = new SMBClient();
+        Connection connection = null;
+        try {
+            connection = client.connect(auth.host);
+            Session session = connection.authenticate(new AuthenticationContext(
+                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
+                    auth.domain == null ? "" : auth.domain));
+            DiskShare share = (DiskShare) session.connectShare(auth.share);
+            String root = normalizePath(remoteRoot);
+            if (!localRoot.exists() && !localRoot.mkdirs()) {
+                throw new IllegalStateException("无法创建目录: " + localRoot.getAbsolutePath());
+            }
+
+            // Collect direct child folders of the manga root = candidate chapters.
+            // Also support a "flat" manga whose root itself holds the images.
+            List<Entry> children = listIn(share, root);
+            List<String> chapterPaths = new ArrayList<>();
+            for (Entry e : children) {
+                if (e.directory) {
+                    chapterPaths.add(e.path);
+                }
+            }
+
+            // Count total downloadable pages first (for aggregate progress).
+            final int[] total = {0};
+            final int[] done = {0};
+            int chaptersWithMedia = 0;
+
+            if (chapterPaths.isEmpty()) {
+                // Flat manga: put pages directly under localRoot.
+                chaptersWithMedia = mirrorFolder(share, root, localRoot,
+                        mediaExtensions, listener, total, done) > 0 ? 1 : 0;
+            } else {
+                for (String chapterPath : chapterPaths) {
+                    String chapterName = chapterPath.substring(chapterPath.lastIndexOf('/') + 1);
+                    java.io.File chapterDir = new java.io.File(localRoot, safeName(chapterName));
+                    int pages = mirrorFolder(share, chapterPath, chapterDir,
+                            mediaExtensions, listener, total, done);
+                    if (pages > 0) {
+                        chaptersWithMedia++;
+                    }
+                }
+            }
+            Log.i(TAG, "mirrorManga " + root + " -> " + localRoot
+                    + " chapters=" + chaptersWithMedia + " pages=" + done[0]);
+            return chaptersWithMedia;
+        } finally {
+            closeQuietly(connection);
+            closeQuietly(client);
+        }
+    }
+
+    /** Mirrors one folder's media files into localDir. Returns pages present. */
+    private static int mirrorFolder(DiskShare share, String remotePath, java.io.File localDir,
+                                    String[] mediaExtensions, ProgressListener listener,
+                                    int[] total, int[] done) throws Exception {
+        if (!localDir.exists() && !localDir.mkdirs()) {
+            throw new IllegalStateException("无法创建目录: " + localDir.getAbsolutePath());
+        }
+        List<Entry> entries = listIn(share, remotePath);
+        int pages = 0;
+        for (Entry e : entries) {
+            if (e.directory || !isMedia(e.name, mediaExtensions)) {
+                continue;
+            }
+            total[0]++;
+            java.io.File dest = new java.io.File(localDir, safeName(e.name));
+            if (dest.exists() && dest.length() == e.size && e.size > 0) {
+                // Already cached and size matches: skip the network round-trip.
+                done[0]++;
+                if (listener != null) listener.onProgress(done[0], total[0]);
+                pages++;
+                continue;
+            }
+            downloadFrom(share, e.path, dest);
+            done[0]++;
+            if (listener != null) listener.onProgress(done[0], total[0]);
+            pages++;
+        }
+        return pages;
+    }
+
+    /** Lists direct children of an already-open share (no new connection). */
+    private static List<Entry> listIn(DiskShare share, String path) {
+        String p = normalizePath(path);
+        List<Entry> result = new ArrayList<>();
+        for (FileIdBothDirectoryInformation info : share.list(p)) {
+            String name = info.getFileName();
+            if (name == null || name.equals(".") || name.equals("..")) continue;
+            boolean dir = (info.getFileAttributes()
+                    & FileAttributes.FILE_ATTRIBUTE_DIRECTORY.getValue()) != 0;
+            result.add(new Entry(join(p, name), name, dir, info.getEndOfFile()));
+        }
+        result.sort((a, b) -> a.name.compareToIgnoreCase(b.name));
+        return result;
+    }
+
+    /** Streams a file from an already-open share to a local destination. */
+    private static void downloadFrom(DiskShare share, String path, java.io.File destination)
+            throws Exception {
+        java.io.File parent = destination.getParentFile();
+        if (parent != null) parent.mkdirs();
+        java.io.File tmp = new java.io.File(destination.getAbsolutePath() + ".tmp");
+        try (File remote = share.openFile(normalizePath(path), READ_MASK, FILE_ATTRS,
+                     SHARE_ACCESS, SMB2CreateDisposition.FILE_OPEN, null);
+             OutputStream out = new BufferedOutputStream(new FileOutputStream(tmp), 16384)) {
+            remote.read(out);
+        }
+        if (tmp.length() == 0L) throw new IllegalStateException("SMB 下载为空: " + path);
+        if (destination.exists() && !destination.delete()) {
+            Log.w(TAG, "could not delete old " + destination);
+        }
+        if (!tmp.renameTo(destination)) throw new IllegalStateException("重命名失败: " + path);
+    }
+
+    private static boolean isMedia(String name, String[] exts) {
+        if (name == null) return false;
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return false;
+        String ext = name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+        for (String e : exts) {
+            if (e.equalsIgnoreCase(ext)) return true;
+        }
+        return false;
+    }
+
+    /** Removes characters that are illegal in Android/file-system names. */
+    private static String safeName(String name) {
+        if (name == null) return "unnamed";
+        return name.replaceAll("[\\\\/:*?\"<>|\u0000-\u001F]", "_").trim();
+    }
+
+    /** Public wrapper used by the UI to build a stable local manga folder name. */
+    public static String safePublicName(String name) {
+        return safeName(name);
+    }
+
     private static String normalizePath(String path) {
         if (path == null) {
             return "";

@@ -721,6 +721,16 @@ dependencies {
         // Transitive logging binding is not needed; keep the API jar only.
         exclude group: 'org.slf4j', module: 'slf4j-simple'
     }
+    // jcifs-ng is used only to ENUMERATE shares on a host (smb://host/).
+    // smbj has no NetShareEnum API. Exclude its heavy/conflicting transitives:
+    // bcprov-jdk15on collides with smbj's bcprov-jdk18on (same org.bouncycastle
+    // classes); servlet/annotation are provided-only; slf4j-log4j12 is test-only.
+    implementation(libs.jcifs.ng) {
+        exclude group: 'org.bouncycastle', module: 'bcprov-jdk15on'
+        exclude group: 'javax.servlet', module: 'javax.servlet-api'
+        exclude group: 'javax.annotation', module: 'javax.annotation-api'
+        exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+    }
     implementation libs.zxing.core
 
     // AOSP

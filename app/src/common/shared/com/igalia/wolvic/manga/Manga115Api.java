@@ -218,8 +218,17 @@ public final class Manga115Api {
     }
 
     private static String enc(String value) {
-        // encode(String, Charset) does not throw a checked exception (Java 10+).
-        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
+        // Android's runtime (core-oj) only has encode(String, String). The
+        // encode(String, Charset) overload is Java 10+ and throws NoSuchMethodError
+        // at runtime even though compileSdk lets it compile. Always use the
+        // String overload and catch the checked exception here.
+        String v = value == null ? "" : value;
+        try {
+            return URLEncoder.encode(v, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            // "UTF-8" is guaranteed on Android; this can never actually happen.
+            return v;
+        }
     }
 
     private static String hostOf(String url) {

@@ -185,6 +185,10 @@ public class MangaLibraryWidget extends UIWidget {
      *  "设置". Reset on each fresh app session, not on every refresh. */
     private boolean mSmbAutoConnected = false;
     private boolean mSmbConfigOpen = false;
+    /** Shares discovered on the host when SMB_SHARE is left empty. */
+    private final List<String> mSmbShares = new ArrayList<>();
+    /** Relative path of the folder currently selected as a "manga to read". */
+    private String mSmbMangaRoot = "";
     // 115 QR login state
     private Manga115Api.QrSession mP115Qr;
     private android.graphics.Bitmap mP115QrBitmap;
@@ -1253,9 +1257,9 @@ public class MangaLibraryWidget extends UIWidget {
     // -------------------------------------------------------------- SMB
 
     private boolean smbConfigured() {
+        // Share name is optional: when empty we enumerate all shares on the host.
         String host = mSettings.text(MangaSettings.SMB_HOST);
-        String share = mSettings.text(MangaSettings.SMB_SHARE);
-        return !host.trim().isEmpty() && !share.trim().isEmpty();
+        return !host.trim().isEmpty();
     }
 
     private MangaSmb.Auth smbAuth() {
@@ -1268,13 +1272,15 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void fillSmbPage(LinearLayout content) {
+        String share = mSettings.text(MangaSettings.SMB_SHARE);
+        boolean shareEmpty = share == null || share.trim().isEmpty();
+
         if (!smbConfigured() || mSmbConfigOpen) {
-            // No credentials yet, or user opened settings: show the form.
             addInfo(content, "SMB2/3 共享设置",
-                    "填写主机 IP、共享名与账号密码并保存，之后进入本页会自动连接并直接显示共享目录。");
+                    "填写主机 IP、账号密码并保存。共享名可留空——留空时会自动列出主机上的所有共享供你选择。");
             String[] fields = {
                     MangaSettings.SMB_HOST, "主机 / IP",
-                    MangaSettings.SMB_SHARE, "共享名",
+                    MangaSettings.SMB_SHARE, "共享名（留空=列出全部）",
                     MangaSettings.SMB_DOMAIN, "域（可留空）",
                     MangaSettings.SMB_USER, "用户名",
                     MangaSettings.SMB_PASS, "密码",
@@ -1286,6 +1292,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mSmbPath = mSettings.text(MangaSettings.SMB_PATH);
                 mSmbConfigOpen = false;
                 mSmbAutoConnected = true;
+                mSmbShares.clear();
                 connectSmb();
             });
             if (smbConfigured()) {
@@ -1297,11 +1304,37 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
 
-        // Configured: folder-style browser, no setup form.
-        addInfo(content, "SMB 共享 · " + mSettings.text(MangaSettings.SMB_HOST)
-                        + " / " + mSettings.text(MangaSettings.SMB_SHARE),
+        // If no share chosen yet: show discovered shares (or a "list shares" button).
+        if (shareEmpty) {
+            addInfo(content, "SMB 主机 · " + mSettings.text(MangaSettings.SMB_HOST), mSmbStatus);
+            LinearLayout actions0 = addRow(content);
+            addButton(actions0, "列出共享", v -> listSmbShares());
+            addButton(actions0, "设置", v -> {
+                mSmbConfigOpen = true;
+                refreshPage(MangaPage.SMB);
+            });
+            if (mSmbShares.isEmpty()) {
+                addInfo(content, "共享列表", "点「列出共享」查看该主机上可访问的共享；也可在设置里直接填共享名。");
+            } else {
+                addInfo(content, "可访问的共享（点选进入）", "共 " + mSmbShares.size() + " 个");
+                for (final String name : mSmbShares) {
+                    Button row = newButton("▣ " + name);
+                    row.setOnClickListener(v -> {
+                        mSettings.put(MangaSettings.SMB_SHARE, name);
+                        mSmbPath = "";
+                        connectSmb();
+                    });
+                    content.addView(row, wrapParams());
+                }
+            }
+            return;
+        }
+
+        // Configured with a share: folder-style browser.
+        addInfo(content, "SMB 共享 · " + mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
                 mSmbStatus);
         addInfo(content, "当前目录", mSmbPath.isEmpty() ? "共享根目录" : "/" + mSmbPath);
+        addInfo(content, "看图提示", "进入任意文件夹后点「▷ 作为漫画阅读」，该文件夹的子文件夹会作为章节，自动下载到本地并可加书签、预载。");
 
         LinearLayout actions = addRow(content);
         if (!mSmbPath.isEmpty()) {
@@ -1312,41 +1345,57 @@ public class MangaLibraryWidget extends UIWidget {
             });
         }
         addButton(actions, "刷新", v -> connectSmb());
+        addButton(actions, "▷ 作为漫画阅读", v -> readSmbFolderAsManga(mSmbPath));
+        addButton(actions, "切换共享", v -> {
+            mSettings.put(MangaSettings.SMB_SHARE, "");
+            mSmbShares.clear();
+            mSmbStatus = "";
+            refreshPage(MangaPage.SMB);
+        });
         addButton(actions, "设置", v -> {
             mSmbConfigOpen = true;
             refreshPage(MangaPage.SMB);
         });
-        addButton(actions, "打开本地目录", v ->
-                openReader(new File(mSettings.text(MangaSettings.DOWNLOAD_DIR))));
 
         if (mSmbEntries.isEmpty()) {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
         }
         for (MangaSmb.Entry entry : mSmbEntries) {
-            Button row = new Button(getContext());
-            row.setText((entry.directory ? "▣ " : "▤ ") + entry.name
+            Button row = newButton((entry.directory ? "▣ " : "▤ ") + entry.name
                     + (entry.directory ? "" : "  " + (entry.size / 1024) + " KB"));
-            row.setAllCaps(false);
-            row.setTextSize(17f);
             row.setTextColor(entry.directory ? 0xFF8EC5FF : 0xFFFFFFFF);
-            row.setBackgroundColor(0xFF23232C);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setMinHeight(dp(50));
+            final String entryPath = entry.path;
             row.setOnClickListener(v -> {
                 if (entry.directory) {
-                    mSmbPath = entry.path;
+                    mSmbPath = entryPath;
                     connectSmb();
                 } else {
                     downloadSingleSmb(entry);
                 }
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, dp(3), 0, dp(3));
-            content.addView(row, lp);
+            content.addView(row, wrapParams());
         }
+    }
+
+    private Button newButton(String text) {
+        Button b = new Button(getContext());
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(17f);
+        b.setTextColor(0xFFFFFFFF);
+        b.setBackgroundColor(0xFF23232C);
+        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        b.setMinHeight(dp(50));
+        return b;
+    }
+
+    private LinearLayout.LayoutParams wrapParams() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, dp(3), 0, dp(3));
+        return lp;
     }
 
     private String statusOrHint(String fallback) {
@@ -1357,12 +1406,43 @@ public class MangaLibraryWidget extends UIWidget {
         return mSmbStatus;
     }
 
+    private void listSmbShares() {
+        final MangaSmb.Auth auth = smbAuth();
+        if (auth.host.isEmpty()) {
+            mSmbStatus = "请先填写主机 IP";
+            refreshPage(MangaPage.SMB);
+            return;
+        }
+        mSmbStatus = "正在列出 " + auth.host + " 的共享…";
+        refreshPage(MangaPage.SMB);
+        mIoExecutor.execute(() -> {
+            try {
+                final List<String> shares = MangaSmb.listShares(auth);
+                mMain.post(() -> {
+                    mSmbShares.clear();
+                    mSmbShares.addAll(shares);
+                    mSmbStatus = "发现 " + shares.size() + " 个共享";
+                    Log.i(TAG, "smb shares=" + shares.size());
+                    refreshPage(MangaPage.SMB);
+                });
+            } catch (Exception e) {
+                final String message = e.getMessage();
+                mMain.post(() -> {
+                    mSmbStatus = "列出共享失败：" + message
+                            + "（可在设置里手动填共享名）";
+                    Log.w(TAG, "smb listShares failed: " + message);
+                    refreshPage(MangaPage.SMB);
+                });
+            }
+        });
+    }
+
     private void connectSmb() {
         final MangaSmb.Auth auth = smbAuth();
         final String path = mSmbPath;
         if (auth.host.isEmpty() || auth.share.isEmpty()) {
-            mSmbStatus = "请先填写主机和共享名";
-            refreshPage(MangaPage.SMB);
+            // No share chosen: fall back to share enumeration.
+            listSmbShares();
             return;
         }
         mSmbStatus = "正在连接 " + auth.host + "/" + auth.share;
@@ -1387,6 +1467,92 @@ public class MangaLibraryWidget extends UIWidget {
                 });
             }
         });
+    }
+
+    /** Mirrors an SMB folder tree to local cache, then opens it with the
+     *  normal local reader (chapters = sub-folders, bookmarks + preload work). */
+    private void readSmbFolderAsManga(String remotePath) {
+        final MangaSmb.Auth auth = smbAuth();
+        if (auth.share.isEmpty()) {
+            mSmbStatus = "请先选择一个共享";
+            refreshPage(MangaPage.SMB);
+            return;
+        }
+        final String mangaRoot = remotePath == null ? "" : remotePath;
+        String leaf = mangaRoot.isEmpty() ? auth.share
+                : mangaRoot.substring(mangaRoot.lastIndexOf('/') + 1);
+        final String mangaName = MangaSmb.safePublicName(leaf);
+        // Stable local path -> stable bookmark keys.
+        final java.io.File localRoot = new java.io.File(
+                new java.io.File(mSettings.text(MangaSettings.DOWNLOAD_DIR), "SMB"), mangaName);
+        mSmbStatus = "正在下载《" + mangaName + "》到本地…";
+        refreshPage(MangaPage.SMB);
+        mIoExecutor.execute(() -> {
+            try {
+                String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+                final int chapters = MangaSmb.mirrorManga(auth, mangaRoot, localRoot, media,
+                        (done, total) -> {
+                            if (done % 5 == 0 || done == total) {
+                                mMain.post(() -> {
+                                    mSmbStatus = "下载 " + done + "/" + total + " 页";
+                                    refreshPage(MangaPage.SMB);
+                                });
+                            }
+                        });
+                mMain.post(() -> {
+                    mSmbStatus = "《" + mangaName + "》已缓存 " + chapters + " 章";
+                    if (chapters > 0) {
+                        openMangaRoot(localRoot);
+                    } else {
+                        Toast.makeText(getContext(), "该文件夹内没有可阅读的图片/视频",
+                                Toast.LENGTH_SHORT).show();
+                        refreshPage(MangaPage.SMB);
+                    }
+                });
+            } catch (Exception e) {
+                final String message = e.getMessage();
+                mMain.post(() -> {
+                    mSmbStatus = "下载失败：" + message;
+                    Log.w(TAG, "smb mirror failed: " + message);
+                    refreshPage(MangaPage.SMB);
+                });
+            }
+        });
+    }
+
+    private static String[] concat(String[] a, String[] b) {
+        String[] out = new String[a.length + b.length];
+        System.arraycopy(a, 0, out, 0, a.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
+    }
+
+    /** Opens a local folder as a manga root without the "single chapter -> parent"
+     *  fallback in openLocalSession (our mirrored root must stay the root). */
+    private void openMangaRoot(File folder) {
+        if (folder == null) return;
+        Context context = getContext();
+        if (!(context instanceof VRBrowserActivity)) return;
+        List<File> chapters = mediaSubDirs(folder);
+        if (chapters.isEmpty()) {
+            chapters = new ArrayList<>();
+            chapters.add(folder);
+        }
+        int page = 0;
+        float frac = 0f;
+        int index = 0;
+        float[] saved = MangaReaderWidget.readChapterProgress(
+                progressPrefs(), "local:" + folder.getAbsolutePath());
+        if (saved != null) {
+            index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
+            page = (int) saved[1];
+            frac = saved[2];
+        }
+        MangaChapterSession session = MangaChapterSession.local(
+                folder, chapters, index, page, frac, null);
+        ((VRBrowserActivity) context).openMangaReaderSession(session);
+        Log.i(TAG, "openMangaRoot " + folder.getAbsolutePath()
+                + " chapters=" + chapters.size());
     }
 
     private void downloadSingleSmb(MangaSmb.Entry entry) {
