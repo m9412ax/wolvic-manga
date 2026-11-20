@@ -180,8 +180,14 @@ public class MangaLibraryWidget extends UIWidget {
     private final List<MangaSmb.Entry> mSmbEntries = new ArrayList<>();
     private String mSmbPath = "";
     private String mSmbStatus = "未连接";
+    /** Once credentials are saved, entering the SMB tab auto-connects and
+     *  shows the share as a folder list; the config form is hidden behind
+     *  "设置". Reset on each fresh app session, not on every refresh. */
+    private boolean mSmbAutoConnected = false;
+    private boolean mSmbConfigOpen = false;
     // 115 QR login state
     private Manga115Api.QrSession mP115Qr;
+    private android.graphics.Bitmap mP115QrBitmap;
     private String mP115Status = "未登录";
     private final Handler mP115PollHandler = new Handler(Looper.getMainLooper());
     private final Runnable mP115Poll = new Runnable() {
@@ -565,6 +571,14 @@ public class MangaLibraryWidget extends UIWidget {
         mTitle.setText("漫画 · " + page.label);
         refreshCurrentPage();
         scrollPageToTop(page);
+        // SMB: once configured, auto-connect on entry and show the share as a
+        // plain folder list (no repeated setup screen).
+        if (page == MangaPage.SMB && smbConfigured() && !mSmbAutoConnected) {
+            mSmbAutoConnected = true;
+            mSmbConfigOpen = false;
+            mSmbPath = mSettings.text(MangaSettings.SMB_PATH);
+            connectSmb();
+        }
         Log.i(TAG, "switchPage " + page.name());
     }
 
@@ -1238,6 +1252,12 @@ public class MangaLibraryWidget extends UIWidget {
 
     // -------------------------------------------------------------- SMB
 
+    private boolean smbConfigured() {
+        String host = mSettings.text(MangaSettings.SMB_HOST);
+        String share = mSettings.text(MangaSettings.SMB_SHARE);
+        return !host.trim().isEmpty() && !share.trim().isEmpty();
+    }
+
     private MangaSmb.Auth smbAuth() {
         return new MangaSmb.Auth(
                 mSettings.text(MangaSettings.SMB_HOST),
@@ -1248,51 +1268,68 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void fillSmbPage(LinearLayout content) {
-        addDefaultDirControls(content, "SMB",
-                new File(mSettings.text(MangaSettings.DOWNLOAD_DIR)));
-        addInfo(content, "SMB2/3 共享",
-                "内置 SMB2/3 协议栈：连接后可浏览共享目录，点文件下载到漫画目录后直接阅读。端口 445。");
-        addInfo(content, "当前目录", mSmbPath.isEmpty() ? "（共享根目录）" : "/" + mSmbPath);
-        addInfo(content, "状态", mSmbStatus);
+        if (!smbConfigured() || mSmbConfigOpen) {
+            // No credentials yet, or user opened settings: show the form.
+            addInfo(content, "SMB2/3 共享设置",
+                    "填写主机 IP、共享名与账号密码并保存，之后进入本页会自动连接并直接显示共享目录。");
+            String[] fields = {
+                    MangaSettings.SMB_HOST, "主机 / IP",
+                    MangaSettings.SMB_SHARE, "共享名",
+                    MangaSettings.SMB_DOMAIN, "域（可留空）",
+                    MangaSettings.SMB_USER, "用户名",
+                    MangaSettings.SMB_PASS, "密码",
+                    MangaSettings.SMB_PATH, "起始远程路径（可留空=共享根）"};
+            final List<EditText> inputs = bindConfigFields(content, fields);
+            LinearLayout actions = addRow(content);
+            addButton(actions, "保存并连接", v -> {
+                saveConfigFields(fields, inputs);
+                mSmbPath = mSettings.text(MangaSettings.SMB_PATH);
+                mSmbConfigOpen = false;
+                mSmbAutoConnected = true;
+                connectSmb();
+            });
+            if (smbConfigured()) {
+                addButton(actions, "取消", v -> {
+                    mSmbConfigOpen = false;
+                    refreshPage(MangaPage.SMB);
+                });
+            }
+            return;
+        }
 
-        String[] fields = {
-                MangaSettings.SMB_HOST, "主机 / IP",
-                MangaSettings.SMB_SHARE, "共享名",
-                MangaSettings.SMB_DOMAIN, "域（可留空）",
-                MangaSettings.SMB_USER, "用户名",
-                MangaSettings.SMB_PASS, "密码",
-                MangaSettings.SMB_PATH, "起始远程路径（可留空=共享根）"};
-        final List<EditText> inputs = bindConfigFields(content, fields);
+        // Configured: folder-style browser, no setup form.
+        addInfo(content, "SMB 共享 · " + mSettings.text(MangaSettings.SMB_HOST)
+                        + " / " + mSettings.text(MangaSettings.SMB_SHARE),
+                mSmbStatus);
+        addInfo(content, "当前目录", mSmbPath.isEmpty() ? "共享根目录" : "/" + mSmbPath);
 
         LinearLayout actions = addRow(content);
-        addButton(actions, "保存配置", v -> {
-            saveConfigFields(fields, inputs);
-            Toast.makeText(getContext(), "SMB 配置已保存", Toast.LENGTH_SHORT).show();
-        });
-        addButton(actions, "连接 / 列出", v -> {
-            saveConfigFields(fields, inputs);
-            mSmbPath = mSettings.text(MangaSettings.SMB_PATH);
-            connectSmb();
-        });
-        addButton(actions, "返回上级", v -> {
-            int slash = mSmbPath.lastIndexOf('/');
-            mSmbPath = slash > 0 ? mSmbPath.substring(0, slash) : "";
-            connectSmb();
+        if (!mSmbPath.isEmpty()) {
+            addButton(actions, "← 上级", v -> {
+                int slash = mSmbPath.lastIndexOf('/');
+                mSmbPath = slash > 0 ? mSmbPath.substring(0, slash) : "";
+                connectSmb();
+            });
+        }
+        addButton(actions, "刷新", v -> connectSmb());
+        addButton(actions, "设置", v -> {
+            mSmbConfigOpen = true;
+            refreshPage(MangaPage.SMB);
         });
         addButton(actions, "打开本地目录", v ->
                 openReader(new File(mSettings.text(MangaSettings.DOWNLOAD_DIR))));
 
         if (mSmbEntries.isEmpty()) {
-            addInfo(content, "目录内容", "点击「连接 / 列出」浏览 SMB 共享。");
+            addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
         }
         for (MangaSmb.Entry entry : mSmbEntries) {
             Button row = new Button(getContext());
-            row.setText((entry.directory ? "[目录] " : "[文件] ") + entry.name
-                    + (entry.size > 0 ? "  " + (entry.size / 1024) + " KB" : ""));
+            row.setText((entry.directory ? "▣ " : "▤ ") + entry.name
+                    + (entry.directory ? "" : "  " + (entry.size / 1024) + " KB"));
             row.setAllCaps(false);
             row.setTextSize(17f);
-            row.setTextColor(0xFFFFFFFF);
+            row.setTextColor(entry.directory ? 0xFF8EC5FF : 0xFFFFFFFF);
             row.setBackgroundColor(0xFF23232C);
             row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             row.setMinHeight(dp(50));
@@ -1310,6 +1347,14 @@ public class MangaLibraryWidget extends UIWidget {
             lp.setMargins(0, dp(3), 0, dp(3));
             content.addView(row, lp);
         }
+    }
+
+    private String statusOrHint(String fallback) {
+        if (mSmbStatus == null || mSmbStatus.isEmpty()
+                || mSmbStatus.startsWith("正在连接")) {
+            return fallback;
+        }
+        return mSmbStatus;
     }
 
     private void connectSmb() {
@@ -1400,20 +1445,39 @@ public class MangaLibraryWidget extends UIWidget {
         }
 
         if (mP115Qr != null) {
-            android.widget.ImageView qrImage = new android.widget.ImageView(getContext());
-            qrImage.setImageBitmap(qrBitmap(mP115Qr.qrContent, dp(320)));
-            qrImage.setAdjustViewBounds(true);
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            ip.gravity = Gravity.CENTER_HORIZONTAL;
-            content.addView(qrImage, ip);
-            addInfo(content, "请用 115 App 扫码", "扫码后在手机上确认，本页面会自动登录。");
+            // Generate once and cache: refreshing the page must not re-create
+            // a large bitmap on every poll (that path caused a native crash).
+            if (mP115QrBitmap == null && mP115Qr.qrContent != null) {
+                mP115QrBitmap = qrBitmap(mP115Qr.qrContent, 320);
+            }
+            if (mP115QrBitmap != null) {
+                android.widget.ImageView qrImage = new android.widget.ImageView(getContext());
+                qrImage.setImageBitmap(mP115QrBitmap);
+                qrImage.setAdjustViewBounds(true);
+                LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                ip.gravity = Gravity.CENTER_HORIZONTAL;
+                content.addView(qrImage, ip);
+                addInfo(content, "请用 115 App 扫码", "扫码后在手机上确认，本页面会自动登录。");
+            } else {
+                // Fallback: show the raw link if bitmap generation failed.
+                addInfo(content, "二维码生成失败", "请用手机打开：\n" + mP115Qr.qrContent);
+            }
         }
+    }
+
+    private void clearP115QrBitmap() {
+        if (mP115QrBitmap != null && !mP115QrBitmap.isRecycled()) {
+            mP115QrBitmap.recycle();
+        }
+        mP115QrBitmap = null;
     }
 
     private void start115Login() {
         mP115Status = "正在获取二维码…";
+        clearP115QrBitmap();
+        mP115Qr = null;
         refreshPage(MangaPage.WEBDAV);
         mIoExecutor.execute(() -> {
             try {
@@ -1450,6 +1514,7 @@ public class MangaLibraryWidget extends UIWidget {
                     } else if (status == Manga115Api.STATUS_FAILED) {
                         mP115Status = "二维码已失效，请重新扫码";
                         mP115Qr = null;
+                        clearP115QrBitmap();
                         mP115PollHandler.removeCallbacks(mP115Poll);
                         refreshPage(MangaPage.WEBDAV);
                     } else {
@@ -1475,6 +1540,7 @@ public class MangaLibraryWidget extends UIWidget {
                     mSettings.put(MangaSettings.P115_COOKIE, cookie);
                     mP115Status = "登录成功，已保存登录态";
                     mP115Qr = null;
+                    clearP115QrBitmap();
                     mP115PollHandler.removeCallbacks(mP115Poll);
                     Toast.makeText(getContext(), "115 登录成功", Toast.LENGTH_SHORT).show();
                     refreshPage(MangaPage.WEBDAV);
@@ -1484,6 +1550,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mMain.post(() -> {
                     mP115Status = "登录失败：" + msg;
                     mP115Qr = null;
+                    clearP115QrBitmap();
                     mP115PollHandler.removeCallbacks(mP115Poll);
                     refreshPage(MangaPage.WEBDAV);
                 });
@@ -1508,19 +1575,36 @@ public class MangaLibraryWidget extends UIWidget {
     /** Renders QR text to a bitmap with zxing. */
     private android.graphics.Bitmap qrBitmap(String text, int size) {
         try {
-            com.google.zxing.BarcodeFormat format = com.google.zxing.BarcodeFormat.QR_CODE;
-            com.google.zxing.Writer writer = new com.google.zxing.qrcode.QRCodeWriter();
-            com.google.zxing.common.BitMatrix matrix = writer.encode(text, format, size, size);
-            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
-                    size, size, android.graphics.Bitmap.Config.RGB_565);
-            for (int y = 0; y < size; y++) {
-                for (int x = 0; x < size; x++) {
-                    bmp.setPixel(x, y, matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF);
+            if (text == null || text.isEmpty()) {
+                return null;
+            }
+            // Keep the module count modest: 115's qrcode payload can be a long
+            // URL; a fixed 320px canvas with L correction stays small and safe.
+            java.util.Map<com.google.zxing.EncodeHintType, Object> hints = new java.util.EnumMap<>(
+                    com.google.zxing.EncodeHintType.class);
+            hints.put(com.google.zxing.EncodeHintType.CHARACTER_SET, "UTF-8");
+            hints.put(com.google.zxing.EncodeHintType.ERROR_CORRECTION,
+                    com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.L);
+            hints.put(com.google.zxing.EncodeHintType.MARGIN, 1);
+            com.google.zxing.common.BitMatrix matrix = new com.google.zxing.qrcode.QRCodeWriter()
+                    .encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size, hints);
+            int w = matrix.getWidth();
+            int h = matrix.getHeight();
+            int[] pixels = new int[w * h];
+            for (int y = 0; y < h; y++) {
+                int offset = y * w;
+                for (int x = 0; x < w; x++) {
+                    pixels[offset + x] = matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF;
                 }
             }
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                    w, h, android.graphics.Bitmap.Config.ARGB_8888);
+            bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+            Log.i(TAG, "QR bitmap ok " + w + "x" + h);
             return bmp;
-        } catch (Exception e) {
-            Log.w(TAG, "QR bitmap failed: " + e.getMessage());
+        } catch (Throwable t) {
+            // WriterException / OOM / any native issue must never kill the app.
+            Log.w(TAG, "QR bitmap failed: " + t);
             return null;
         }
     }
