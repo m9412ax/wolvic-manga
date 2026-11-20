@@ -51,6 +51,8 @@ import com.igalia.wolvic.browser.api.WSession;
 import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaDownloader;
 import com.igalia.wolvic.manga.MangaKeyCapture;
+import com.igalia.wolvic.manga.MangaSmb;
+import com.igalia.wolvic.manga.Manga115Api;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.manga.MangaSourceManager;
