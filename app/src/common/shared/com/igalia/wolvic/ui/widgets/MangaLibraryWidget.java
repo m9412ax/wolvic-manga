@@ -178,6 +178,13 @@ public class MangaLibraryWidget extends UIWidget {
     private final List<MangaSmb.Entry> mSmbEntries = new ArrayList<>();
     private String mSmbPath = "";
     private String mSmbStatus = "未连接";
+    // 115 QR login state
+    private Manga115Api.QrSession mP115Qr;
+    private String mP115Status = "未登录";
+    private final Handler mP115PollHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mP115Poll = new Runnable() {
+        @Override public void run() { poll115Qr(); }
+    };
     private final ExecutorService mIoExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-io");
         thread.setDaemon(true);
@@ -1361,9 +1368,165 @@ public class MangaLibraryWidget extends UIWidget {
 
     // ----------------------------------------------------------- WebDAV
 
+    // ----------------------------------------------------------- 115 netdisk
+
+    /** In-Netdisk WebDAV page: 115 QR login. Scanning is done inside the app
+     *  (QR bitmap shown on the VR panel); the resulting cookie is saved in
+     *  settings. Browsing 115 files is added after login is verified. */
+    private void fill115LoginSection(LinearLayout content) {
+        String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        boolean loggedIn = !cookie.isEmpty();
+        addInfo(content, "115 网盘（扫码登录）",
+                loggedIn
+                        ? "已保存登录态。列目录/看图功能在后续版本接入；如需重新登录可点下方按钮。"
+                        : "用 115 手机 App 扫码登录，登录态保存在本机。");
+        addInfo(content, "115 状态", mP115Status);
+
+        LinearLayout row = addRow(content);
+        if (loggedIn) {
+            addButton(row, "校验登录", v -> verify115Cookie());
+            addButton(row, "重新扫码", v -> start115Login());
+            addButton(row, "退出登录", v -> {
+                mSettings.put(MangaSettings.P115_COOKIE, "");
+                mP115Status = "已退出登录";
+                mP115Qr = null;
+                mP115PollHandler.removeCallbacks(mP115Poll);
+                refreshPage(MangaPage.WEBDAV);
+            });
+        } else {
+            addButton(row, "扫码登录", v -> start115Login());
+        }
+
+        if (mP115Qr != null) {
+            android.widget.ImageView qrImage = new android.widget.ImageView(getContext());
+            qrImage.setImageBitmap(qrBitmap(mP115Qr.qrContent, dp(320)));
+            qrImage.setAdjustViewBounds(true);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            ip.gravity = Gravity.CENTER_HORIZONTAL;
+            content.addView(qrImage, ip);
+            addInfo(content, "请用 115 App 扫码", "扫码后在手机上确认，本页面会自动登录。");
+        }
+    }
+
+    private void start115Login() {
+        mP115Status = "正在获取二维码…";
+        refreshPage(MangaPage.WEBDAV);
+        mIoExecutor.execute(() -> {
+            try {
+                final Manga115Api.QrSession session = Manga115Api.startQr();
+                mMain.post(() -> {
+                    mP115Qr = session;
+                    mP115Status = "等待扫码…";
+                    refreshPage(MangaPage.WEBDAV);
+                    mP115PollHandler.removeCallbacks(mP115Poll);
+                    mP115PollHandler.postDelayed(mP115Poll, 1200L);
+                });
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                mMain.post(() -> {
+                    mP115Status = "获取二维码失败：" + msg;
+                    refreshPage(MangaPage.WEBDAV);
+                });
+            }
+        });
+    }
+
+    private void poll115Qr() {
+        final Manga115Api.QrSession session = mP115Qr;
+        if (session == null) return;
+        mIoExecutor.execute(() -> {
+            try {
+                final int status = Manga115Api.pollQr(session);
+                mMain.post(() -> {
+                    if (mP115Qr != session) return;
+                    if (status == Manga115Api.STATUS_CONFIRMED) {
+                        mP115Status = "已扫码，正在登录…";
+                        refreshPage(MangaPage.WEBDAV);
+                        exchange115Cookie(session);
+                    } else if (status == Manga115Api.STATUS_FAILED) {
+                        mP115Status = "二维码已失效，请重新扫码";
+                        mP115Qr = null;
+                        mP115PollHandler.removeCallbacks(mP115Poll);
+                        refreshPage(MangaPage.WEBDAV);
+                    } else {
+                        if (status == Manga115Api.STATUS_SCANNED) {
+                            mP115Status = "已扫描，请在手机上确认…";
+                        }
+                        mP115PollHandler.postDelayed(mP115Poll, 1500L);
+                    }
+                });
+            } catch (Exception e) {
+                // Transient poll errors: keep retrying.
+                mMain.post(() -> mP115PollHandler.postDelayed(mP115Poll, 2000L));
+            }
+        });
+    }
+
+    private void exchange115Cookie(final Manga115Api.QrSession session) {
+        final String device = mSettings.text(MangaSettings.P115_DEVICE);
+        mIoExecutor.execute(() -> {
+            try {
+                final String cookie = Manga115Api.exchangeCookie(session, device);
+                mMain.post(() -> {
+                    mSettings.put(MangaSettings.P115_COOKIE, cookie);
+                    mP115Status = "登录成功，已保存登录态";
+                    mP115Qr = null;
+                    mP115PollHandler.removeCallbacks(mP115Poll);
+                    Toast.makeText(getContext(), "115 登录成功", Toast.LENGTH_SHORT).show();
+                    refreshPage(MangaPage.WEBDAV);
+                });
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                mMain.post(() -> {
+                    mP115Status = "登录失败：" + msg;
+                    mP115Qr = null;
+                    mP115PollHandler.removeCallbacks(mP115Poll);
+                    refreshPage(MangaPage.WEBDAV);
+                });
+            }
+        });
+    }
+
+    private void verify115Cookie() {
+        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        mP115Status = "正在校验…";
+        refreshPage(MangaPage.WEBDAV);
+        mIoExecutor.execute(() -> {
+            final boolean valid = Manga115Api.validate(cookie);
+            mMain.post(() -> {
+                mP115Status = valid ? "登录态有效" : "登录已过期，请重新扫码";
+                if (!valid) mSettings.put(MangaSettings.P115_COOKIE, "");
+                refreshPage(MangaPage.WEBDAV);
+            });
+        });
+    }
+
+    /** Renders QR text to a bitmap with zxing. */
+    private android.graphics.Bitmap qrBitmap(String text, int size) {
+        try {
+            com.google.zxing.BarcodeFormat format = com.google.zxing.BarcodeFormat.QR_CODE;
+            com.google.zxing.Writer writer = new com.google.zxing.qrcode.QRCodeWriter();
+            com.google.zxing.common.BitMatrix matrix = writer.encode(text, format, size, size);
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                    size, size, android.graphics.Bitmap.Config.RGB_565);
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    bmp.setPixel(x, y, matrix.get(x, y) ? 0xFF000000 : 0xFFFFFFFF);
+                }
+            }
+            return bmp;
+        } catch (Exception e) {
+            Log.w(TAG, "QR bitmap failed: " + e.getMessage());
+            return null;
+        }
+    }
+
     private void fillWebDavPage(LinearLayout content) {
         addDefaultDirControls(content, "WEBDAV",
                 new File(mSettings.text(MangaSettings.DOWNLOAD_DIR)));
+        fill115LoginSection(content);
         addInfo(content, "网盘 WebDAV",
                 "真实 PROPFIND 列目录 + HTTP GET 下载；配置、格式过滤、并发与仅 WiFi 均取自漫画设置。");
         addInfo(content, "当前目录", mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);

@@ -117,6 +117,10 @@ public final class MangaSettings {
     public static final String SMB_PATH = "smb_path";
     public static final String SMB_MOUNT = "smb_mount";
 
+    // 115 netdisk (cookie-based login, obtained via in-app QR code)
+    public static final String P115_COOKIE = "p115_cookie";
+    public static final String P115_DEVICE = "p115_device";
+
     // Downloads
     public static final String DOWNLOAD_DIR = "download_dir";
     public static final String DOWNLOAD_ONLY_WIFI = "download_only_wifi";
@@ -286,6 +290,10 @@ public final class MangaSettings {
                 return "/";
             case SMB_MOUNT:
                 return new File(Environment.getExternalStorageDirectory(), "Manga/SMB").getAbsolutePath();
+            case P115_DEVICE:
+                // Use a TV device id so QR login does not kick the user's
+                // phone/web session offline.
+                return "tv";
             default:
                 return "";
         }
