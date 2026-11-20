@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-19 Round M 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-20 Round N 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -105,6 +105,19 @@
 - **教训**：COS君 chapter.url == manga.url == 详情页 URL；page list 抓取=大 HTML 请求，必须缓存复用，别在 prefetch/download 里重复抓。首图快的关键是缓存前置 HTML + 首图落地即显示，不是多预下载。
 - CI：主机 `44530431447`、扩展 `44530447102` 均 success。本地 `d6bc022`，远端 `75667d3e`。扩展已装（先 uninstall），logcat 确认 `loaded source: name=COS君 ... failures=0`。**待头显实测**：点详情/章节速度、切章后图片速度。
 
+## Round N（2026-11-20）：进度分母/提前切章、多线程下载、视频seek锁、SMB2/3、115扫码
+
+用户反馈：进度显示已加载数(1/8而非1/15)；翻到已加载末尾再翻页直接切下一章；要求多线程分层加载；视频摇杆快进回弹；并要求做 SMB 真协议栈 + 115 扫码登录（用户已确认方向：真做SMB、115原生+App内扫码、自己登录）。
+
+- **进度分母/提前切章（同根因）**：分母/章节末尾都用 `mPages.size()`(已落盘数)，真实 total 被 onProgress 丢弃。修：MangaReaderWidget 加 `mPageTotal`(真实总数)+`pageTotal()`=max(mPageTotal,mPages.size())，onProgress 捕获 total；所有分母(counterText/notifyTrayProgress/goto)与4处章节边界(pageDelta/showPage/连续跨页/onAutoTick/预取)改用 pageTotal()；新增 `requestPage()`+`mPendingTargetPage`：未落盘但属本章的页等待下载落地后自动跳(refreshChapterPageList 里 jumped 逻辑)，不再误切章。
+- **多线程分层下载**：`MangaSourceRepository.downloadChapter` 串行 forEach → coroutineScope+async 四阶段：①page0落地即打开 ②前4页 ③startPage后4页 ④剩余全部并发(Semaphore 6)。每页只处理一次(reported set)、progress 报真实 total。`ChapterProvider.ensureChapter` 加 startPage 参数(传 reader 当前 page)。`NetworkHelper` okhttp dispatcher perHost 5→8/maxRequests 32（否则协程并发被卡）。enforceCacheCap 中途每8页触发+清 .tmp。图片落 `externalCacheDir/manga-sources/...`，LRU 按 SOURCE_CACHE_MB 按最旧整章删（已满足用户"按大小存超了删最早"）。
+- **视频摇杆快进回弹**：seekTo 异步 + 400ms tick 用 getCurrentPosition()(旧位置)回写 UI；进度条拖动有 mVideoSeekDragging 抑制但摇杆没有。修：加 `mVideoSeeking/mVideoSeekTargetMs` 锁，seekVideo 以目标为基准累加(连续摇杆不丢步)+立即 paintVideoPosition，tick 跳过回写，onSeekCompleteListener 解锁，1500ms 超时兜底；拖动/按钮也纳入锁。
+- **SMB2/3（新增）**：用 **smbj 0.13.0**（纯 SMB2/3 Apache-2.0；jcifs-ng 2.1.10 根本不存在、最新2.1.9 还带 servlet/log4j12 不适合 Android）。`MangaSmb.java` 每次操作新建 SMBClient/Connection/Session/DiskShare 并 finally close；list() + download() 到 `.tmp`→rename。SMB 页重写：连接/列出、目录浏览、点文件下载到 DOWNLOAD_DIR/SMB 后 openReader。API 从 smbj sources jar 核对：openFile 6参(FILE_OPEN,null)；大小=getFileInformation(path).getStandardInformation().getEndOfFile()；ProgressListener.onProgressChanged(num,total)。
+- **115 扫码登录（新增，仅登录）**：参照仓库无 115 App 内扫码代码（只有停摆的 Bearer token）。`Manga115Api.java` 三步：qrcodeapi token → get/status 轮询 → passportapi/qrcodeapi 换 cookie（双域名回退，app=tv 避免踢号，cookie=UID/CID/SEID/KID），user/info 校验。WebDAV 页内嵌 115 登录区（不改 tray.xml）：zxing 渲染 QR、1.5s 轮询、登录态存 MangaSettings(P115_COOKIE/P115_DEVICE)。**列目录/直链/m115加密暂缓，等用户头显验证扫码链路**。
+- **编译踩坑（3轮CI）**：①新类未 import → package does not exist；②`return written` 应为 `written[0]`；③`URLEncoder.encode(str,"UTF-8")` 受检异常 → `encode(str, StandardCharsets.UTF_8)`。`gh run view --log-failed` 常超时，改用 `gh api .../jobs/$JOBID/logs > file` 再 grep error。
+- **api_push.py 致命坑**：git trees API 的 content 必须传**原始 UTF-8 文本**，不能 base64（曾双重编码把4个源码文件写成 base64 文本致全 CI 失败）。用前确认。
+- CI：主机 `44756396547` success（含全部）。本地 `e502f29b6a`，远端 main `e502f29b6a`。扩展无改动（沿用上轮已装）。**待头显实测**：进度分母/切章、多线程加载速度、视频快进、SMB 列目录+下载、115 扫码登录。
+
 ## 已确认解决（用户头显实测认可，别回归）
 
 1. **视频**：Preparing 期间 getDuration/seek/start 全部加 `mVideoPrepared` 守卫+代次校验；控制栏/进度条锚定实际视频矩形。
@@ -119,8 +132,8 @@
 ## 当前阶段任务（按优先级）
 
 1. **扩展 APK / 自定义漫画源兼容（最高优先，用户最担心）**：协议管线已打通（见下"扩展阶段进展"），剩设备逐项实测。
-2. **SMB2/3 真读取**（现仅探测/配置/本地挂载；参照仓库没有 SMB，需新写 jcifs-ng/smbj）。
-3. **115 网盘读取 + 阿里云盘（主要用于数据同步）**。
+2. **SMB2/3 真读取**：Round N 已用 smbj 0.13.0 实现列目录+下载（MangaSmb.java），待头显实测；若实测有问题优先查认证(domain 空/guest)、中文路径编码、445 连通。
+3. **115 网盘**：Round N 已做扫码登录（Manga115Api.java+WebDAV 页内嵌 QR UI），待头显验证扫码链路；**未做**：列目录(webapi.115.com/files)、直链(proapi downurl+m115 加密~150行)、下载。阿里云盘未做。
 4. WebDAV 浏览/下载已真，"下一章"与免下载阅读不完整。
 5. 下载队列持久化/断点续传；备份明文导出可能含凭据，需加密或脱敏。
 
