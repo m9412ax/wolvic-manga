@@ -1,4 +1,4 @@
-# AGENTS.md — wolvic-manga 接手必读（2026-11-21 Round O 更新）
+# AGENTS.md — wolvic-manga 接手必读（2026-11-21 Round P 更新）
 
 ## 一句话接手（直接复制给下一个 AI）
 
@@ -125,6 +125,15 @@
 - **SMB 交互重构**：新增 `smbConfigured()`/`mSmbAutoConnected`/`mSmbConfigOpen`。`switchPage` 切到 SMB 且已配置且本次会话未自动连接过时自动 `connectSmb()`；`fillSmbPage` 分两态——已配置=纯文件夹浏览器（▣目录/▤文件、上级/刷新/设置/打开本地目录），未配置或点「设置」=表单+「保存并连接」。不再重复出现连接设置。
 - **115 二维码闪退**：根因推断=poll 每 1.5s 触发 `refreshPage(WEBDAV)` 重建，旧代码每次重新生成 320×density px 的 QR Bitmap 且不 recycle → 内存暴涨 native SIGSEGV（logcat 的 `signal 11` 多为 Pico crashhelper 噪音，主进程日志未崩，但用户实测闪退）。修复：QR Bitmap 缓存字段 `mP115QrBitmap` 只生成一次；固定 320px（不乘 density）+ ErrorCorrectionLevel.L + int[]/setPixels 一次性写；`catch(Throwable)`（WriterException/OOM 都不闪退）；会话结束（退出登录/失效/登录成功失败/重扫）recycle 并清空。生成失败时降级显示二维码原始链接文本。
 - CI：主机 `44781732617` success。远端 main `e172e8b1`。构建前推送曾遇 WinError 10060 超时（commit 未创建、main 未变），重试即成。**待头显实测**：SMB 自动连接/文件夹浏览、115 扫码不再闪退。
+
+## Round P（2026-11-21）：115闪退真因实锤、SMB列全部共享、SMB目录漫画化读取
+
+用户反馈：115 获取二维码后仍闪退；SMB 能连但必须输共享名、多共享读不了；SMB 只能看目录不能读图（"只是看个目录不能读取是图什么"）。
+
+- **115 闪退真因（logcat 实锤，非推断）**：`NoSuchMethodError: URLEncoder.encode(String, Charset)` at `Manga115Api.enc:222` ← `pollQr:75`。Round O 把 `encode(str,"UTF-8")` 改成 `encode(str, StandardCharsets.UTF_8)` 想消除受检异常，但那是 Java 10+ 重载，Android core-oj 只有 `encode(String,String)` → 编译过、运行崩（获取二维码后开始轮询就崩，完全吻合现象）。修：改回 `encode(str,"UTF-8")` + `try-catch(UnsupportedEncodingException)`。**教训：Android runtime API ≠ compileSdk，新重载会编译过但运行崩；闪退必须抓 logcat，别靠猜 bitmap/OOM。**
+- **SMB 列全部共享**：smbj 0.13.0 无 NetShareEnum API（全 jar 搜 listShares 0 命中）；dcerpc 库依赖老 smbj 0.8.0+PipeShare 兼容链太长弃用；自写 NDR 太易错。最终引入 **jcifs-ng 2.1.9**（`new SmbFile("smb://host/", ctx).listFiles()` 列共享），排除 bcprov-jdk15on（与 smbj 的 bcprov-jdk18on 冲突）/servlet/annotation/slf4j-log4j12。`smbConfigured()` 改为 host 非空即可；共享名为空→`listSmbShares()` 列全部共享供点选，回填 SMB_SHARE 后连接；UI 加「切换共享/列出共享」。
+- **SMB 目录漫画化（核心）**：探查确认本地漫画化链路 = `MangaLibraryWidget.openLocalSession:728`+`mediaSubDirs:772`（文件夹=漫画、含媒体的子文件夹=章节）。方案=镜像 SMB 目录树到本地 `DOWNLOAD_DIR/SMB/<漫画名>/<章节>/<页>` 后走现有 `openReader` → **阅读/书签/预载全自动复用，MangaReaderWidget/Session/VRBrowserActivity 零改动**。新增 `MangaSmb.mirrorManga()`（递归、增量:同名同大小跳过、进度回调、safeName 保留中文）；UI 加「▷作为漫画阅读」+`openMangaRoot()`(避开 openLocalSession 单章→父级反推 bug)；书签 key 基于本地绝对路径稳定。书签=SharedPreferences `manga_reader_progress` 的 `chap:<local:path>`/`page:<path>`。
+- CI：主机 `44796635206` success。本地 `a5be824`，远端 `24ba1b46`。**待头显实测**：115 扫码不闪退、SMB 共享名留空能列全部、SMB「作为漫画阅读」能下载并进入阅读器(带书签/预载)。
 
 ## 已确认解决（用户头显实测认可，别回归）
 
