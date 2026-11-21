@@ -708,7 +708,9 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         final int libSort = mSettings.integer(MangaSettings.SORT_MODE);
-        dirs.sort((a, b) -> SortUtil.comparator(libSort, File::getName, File::lastModified));
+        final java.util.Comparator<File> libCmp =
+                SortUtil.comparator(libSort, File::getName, File::lastModified);
+        dirs.sort(libCmp);
         // Hard ceiling: an accidental root with thousands of folders must not
         // turn into an unbounded I/O walk.
         if (dirs.size() > 200) {
@@ -1437,7 +1439,9 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         final int localSort = mSettings.integer(MangaSettings.SORT_MODE);
-        dirs.sort((a, b) -> SortUtil.comparator(localSort, File::getName, File::lastModified));
+        final java.util.Comparator<File> localCmp =
+                SortUtil.comparator(localSort, File::getName, File::lastModified);
+        dirs.sort(localCmp);
         addInfo(content, "媒体文件", "当前目录图片/视频数量：" + media);
         addInfo(content, "子目录", dirs.isEmpty() ? "无子目录" : "共 " + dirs.size() + " 个");
 
@@ -1583,9 +1587,12 @@ public class MangaLibraryWidget extends UIWidget {
 
         // Apply the shared sort mode (name/date, asc/desc). Folders always first.
         final int smbSort = mSettings.integer(MangaSettings.SORT_MODE);
+        final java.util.Comparator<MangaSmb.Entry> smbBase =
+                SortUtil.comparator(smbSort,
+                        (MangaSmb.Entry e) -> e.name, (MangaSmb.Entry e) -> e.modifiedMs);
         mSmbEntries.sort((a, b) -> {
             if (a.directory != b.directory) return a.directory ? -1 : 1;
-            return SortUtil.comparator(smbSort, e -> e.name, e -> e.modifiedMs).compare(a, b);
+            return smbBase.compare(a, b);
         });
         if (mSmbEntries.isEmpty()) {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
@@ -1895,9 +1902,13 @@ public class MangaLibraryWidget extends UIWidget {
                 addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title);
             });
             final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
+            final java.util.Comparator<Manga115Api.DirEntry> p115Base =
+                    SortUtil.comparator(p115Sort,
+                            (Manga115Api.DirEntry e) -> e.name,
+                            (Manga115Api.DirEntry e) -> e.modifiedMs);
             mP115Entries.sort((a, b) -> {
                 if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-                return SortUtil.comparator(p115Sort, e -> e.name, e -> e.modifiedMs).compare(a, b);
+                return p115Base.compare(a, b);
             });
             for (final Manga115Api.DirEntry e : mP115Entries) {
                 Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
@@ -1910,10 +1921,10 @@ public class MangaLibraryWidget extends UIWidget {
                         mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
                         listP115Dir(mP115Cid);
                     } else {
-                        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                        final String useCookie = mSettings.text(MangaSettings.P115_COOKIE);
                         final String pickCode = e.pickCode;
                         openSingleRemoteFile(e.name, dest -> {
-                            byte[] bytes = Manga115Api.imageBytes(cookie, pickCode);
+                            byte[] bytes = Manga115Api.imageBytes(useCookie, pickCode);
                             java.io.File parent = dest.getParentFile();
                             if (parent != null) parent.mkdirs();
                             try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
