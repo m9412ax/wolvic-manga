@@ -160,8 +160,37 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     // 400ms tick pulls the UI progress bar straight back and the fast-forward
     // appears to fail. Hold the target position until seek completion.
     private volatile boolean mVideoSeeking = false;
-    private int mVideoSeekTargetMs = 0;
-    private final Runnable mClearVideoSeekLock = () -> mVideoSeeking = false;
+    private volatile int mVideoSeekTargetMs = 0;
+    private volatile int mVideoSeekGeneration = 0;
+    private static final int SEEK_TOLERANCE_MS = 300;
+    private static final long SEEK_MAX_WAIT_MS = 5000L;
+    private volatile long mVideoSeekStartedAt = 0L;
+    /** Releases the lock ONLY once the decoder has actually reached the target
+     *  (or after a hard timeout). A plain 1500ms timer used to drop the lock
+     *  while a slow/remote seek was still in flight, so the 400ms tick read the
+     *  stale getCurrentPosition() and snapped the bar back = "fast-forward
+     *  failed". */
+    private final Runnable mClearVideoSeekLock = new Runnable() {
+        @Override
+        public void run() {
+            MediaPlayer p = mMediaPlayer;
+            if (!mVideoSeeking) return;
+            boolean reached = false;
+            if (p != null) {
+                try {
+                    reached = Math.abs(p.getCurrentPosition() - mVideoSeekTargetMs)
+                            <= SEEK_TOLERANCE_MS;
+                } catch (Exception ignored) {
+                }
+            }
+            long waited = android.os.SystemClock.uptimeMillis() - mVideoSeekStartedAt;
+            if (reached || waited > SEEK_MAX_WAIT_MS) {
+                mVideoSeeking = false;
+            } else {
+                mMainHandler.postDelayed(this, 150L);
+            }
+        }
+    };
     // The video bar hides on a delay so the pointer can travel into it (and
     // actually reach the seek bar) instead of vanishing on a brief glance.
     private static final long VIDEO_BAR_HIDE_DELAY_MS = 1000L;
@@ -2699,7 +2728,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // Keep the same sign convention as image paging
                 // (pageDelta(mScrollAccumX > 0 ? -1 : 1)): pushing right must
                 // advance the video, not rewind it.
-                seekVideo(mScrollAccumX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
+                seekVideo(mScrollAccumX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
                 mScrollAccumX = 0f;
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
@@ -2838,7 +2867,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (isVideoPage() && !mResizeModifier) {
             if (Math.abs(mAxisX) > dead && !mJoyPageCooldown) {
-                seekVideo(mAxisX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
+                seekVideo(mAxisX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
             }
@@ -3075,8 +3104,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     try {
                         mVideoCompleted = false;
                         int target = (int) (player.getDuration() * (long) progress / 1000L);
+                        mVideoSeekGeneration++;
                         mVideoSeekTargetMs = target;
                         mVideoSeeking = true;
+                        mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
                         player.seekTo(target);
                     } catch (Exception ignored) {
                     }
@@ -3094,7 +3125,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             public void onStopTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = false;
                 mMainHandler.removeCallbacks(mClearVideoSeekLock);
-                mMainHandler.postDelayed(mClearVideoSeekLock, 1500L);
+                mMainHandler.postDelayed(mClearVideoSeekLock, 150L);
                 scheduleVideoBarHide();
             }
         });
@@ -3266,10 +3297,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         updateVideoProgressTrackFill();
         MediaPlayer player = mMediaPlayer;
         boolean barVisible = mVideoBar != null && mVideoBar.getVisibility() == VISIBLE;
-        if (barVisible && mVideoPrepared && player != null && !mVideoSeekDragging && !mVideoSeeking) {
+        if (barVisible && mVideoPrepared && player != null && !mVideoSeekDragging) {
             try {
                 int duration = player.getDuration();
-                int position = player.getCurrentPosition();
+                int position = displayVideoPosition(player);
                 if (duration > 0 && mVideoSeek != null) {
                     mVideoSeek.setProgress((int) (position * 1000L / duration));
                 }
@@ -3351,14 +3382,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // position, so repeated stick nudges (350ms cooldown) add up.
             int base = mVideoSeeking ? mVideoSeekTargetMs : player.getCurrentPosition();
             int position = Math.max(0, Math.min(duration, base + deltaMs));
+            mVideoSeekGeneration++;
             mVideoSeekTargetMs = position;
             mVideoSeeking = true;
+            mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
             mMainHandler.removeCallbacks(mClearVideoSeekLock);
-            // Safety net in case the player never fires onSeekComplete.
-            mMainHandler.postDelayed(mClearVideoSeekLock, 1500L);
             player.seekTo(position);
             mVideoCompleted = false;
-            // Paint the target immediately; the tick will honour the lock.
+            // Paint the target immediately; the tick honours the lock.
             paintVideoPosition(position, duration);
         } catch (Exception ignored) {
         }
@@ -3367,6 +3398,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     /** Paints the seek bar, time label and thin fill from an explicit position
      *  instead of player.getCurrentPosition() (which lags during a seek). */
+    /** Position the UI should show: while a seek is in flight, the decoder's
+     *  getCurrentPosition() still lags behind, so use the locked target. */
+    private int displayVideoPosition(MediaPlayer p) {
+        if (mVideoSeeking) {
+            return mVideoSeekTargetMs;
+        }
+        return p != null ? p.getCurrentPosition() : 0;
+    }
+
     private void paintVideoPosition(int position, int duration) {
         if (mVideoSeek != null && duration > 0) {
             mVideoSeek.setProgress((int) (position * 1000L / duration));
@@ -3479,11 +3519,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // Without this the 400ms tick would keep showing the pre-seek position
         // until the decoder caught up, which reads as "fast-forward failed".
         player.setOnSeekCompleteListener(mp -> {
-            if (player == mMediaPlayer && !mDestroyed) {
+            mMainHandler.post(() -> {
+                if (player != mMediaPlayer || mDestroyed) return;
+                final int gen = mVideoSeekGeneration;
+                // Paint our target, NOT getCurrentPosition(): at this instant
+                // the decoder may still report the pre-seek position.
+                paintVideoPosition(mVideoSeekTargetMs, mp.getDuration());
+                // Drop stale completions from an earlier seek so they cannot
+                // release a newer seek's lock prematurely.
+                if (gen != mVideoSeekGeneration) return;
                 mMainHandler.removeCallbacks(mClearVideoSeekLock);
-                mVideoSeeking = false;
-                updateVideoProgress();
-            }
+                mClearVideoSeekLock.run();
+            });
         });
         player.setOnPreparedListener(mp -> {
             if (player != mMediaPlayer || generation != mLoadGeneration || mDestroyed) {
@@ -3503,6 +3550,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     && mSettings.bool(MangaSettings.READER_VIDEO_RESUME)) {
                 int saved = progressPrefs().getInt(videoProgressKey(page), 0);
                 if (saved > 0 && saved < mp.getDuration()) {
+                    mVideoSeekGeneration++;
+                    mVideoSeekTargetMs = saved;
+                    mVideoSeeking = true;
+                    mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
+                    mMainHandler.removeCallbacks(mClearVideoSeekLock);
+                    mMainHandler.postDelayed(mClearVideoSeekLock, 150L);
                     mp.seekTo(saved);
                 }
             }

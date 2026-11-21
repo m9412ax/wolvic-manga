@@ -90,6 +90,10 @@ public final class MangaSettings {
     public static final String SOURCE_IMAGE_FORMATS = "source_image_formats";
     public static final String SOURCE_VIDEO_FORMATS = "source_video_formats";
     public static final String SOURCE_THUMB_PX = "source_thumb_px";
+    /** Unified sort mode for local/SMB/115 listings (shared across sources):
+     *  0 = name ascending (default), 1 = name descending,
+     *  2 = date newest first, 3 = date oldest first. */
+    public static final String SORT_MODE = "sort_mode";
     /** Bookshelf view: 0 = icon grid, 1 = compact list. */
     public static final String LIBRARY_VIEW_MODE = "library_view_mode";
     /** Bookshelf window size: 0 = small (legacy), 1 = medium (default), 2 = large. */
@@ -120,6 +124,8 @@ public final class MangaSettings {
     // 115 netdisk (cookie-based login, obtained via in-app QR code)
     public static final String P115_COOKIE = "p115_cookie";
     public static final String P115_DEVICE = "p115_device";
+    public static final String P115_LAST_CID = "p115_last_cid";
+    public static final String P115_LAST_TITLE = "p115_last_title";
 
     // Downloads
     public static final String DOWNLOAD_DIR = "download_dir";

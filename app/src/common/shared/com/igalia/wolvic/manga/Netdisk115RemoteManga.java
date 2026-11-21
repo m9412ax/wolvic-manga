@@ -43,12 +43,19 @@ public final class Netdisk115RemoteManga implements RemoteManga {
         List<ChapterInfo> out = new ArrayList<>();
         for (Manga115Api.DirEntry e : entries) {
             if (e.isDir) {
-                out.add(new ChapterInfo(e.cid, e.name));
+                // A folder's own id is fileId in the long schema and cid in the
+                // short schema. e.cid is the PARENT id in the long schema.
+                String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
+                Log.i(TAG, "chapter: " + e.name + " id=" + childId
+                        + " (fileId=" + e.fileId + " cid=" + e.cid + ")");
+                out.add(new ChapterInfo(childId, e.name));
             }
         }
+        // No sub-folders: this folder itself holds the loose images -> one chapter.
         if (out.isEmpty()) {
             out.add(new ChapterInfo(cid, title));
         }
+        out.sort((a, b) -> NaturalOrder.compare(a.name, b.name));
         return out;
     }
 
@@ -58,11 +65,19 @@ public final class Netdisk115RemoteManga implements RemoteManga {
         List<PageInfo> out = new ArrayList<>();
         int i = 0;
         for (Manga115Api.DirEntry e : entries) {
+            Log.i(TAG, "entry name=" + e.name + " isDir=" + e.isDir
+                    + " pickCode=" + e.pickCode + " size=" + e.size);
             if (!e.isDir && isMedia(e.name) && !e.pickCode.isEmpty()) {
                 out.add(new PageInfo(i++, e.pickCode, e.name));
             }
         }
-        Log.i(TAG, "listPages " + chapter.name + " -> " + out.size());
+        out.sort((a, b) -> NaturalOrder.compare(a.nameHint, b.nameHint));
+        for (int j = 0; j < out.size(); j++) {
+            // Re-index after sorting so pages stay in the natural order.
+            RemoteManga.PageInfo p = out.get(j);
+            out.set(j, new PageInfo(j, p.id, p.nameHint));
+        }
+        Log.i(TAG, "listPages " + chapter.name + " (cid=" + chapter.id + ") -> " + out.size());
         return out;
     }
 

@@ -44,12 +44,23 @@ public final class MangaSmb {
         public final String name;
         public final boolean directory;
         public final long size;
+        public final long modifiedMs;  // last write time for date sorting
 
-        Entry(String path, String name, boolean directory, long size) {
+        Entry(String path, String name, boolean directory, long size, long modifiedMs) {
             this.path = path;
             this.name = name;
             this.directory = directory;
             this.size = size;
+            this.modifiedMs = modifiedMs;
+        }
+    }
+
+    private static long writeTimeMs(FileIdBothDirectoryInformation info) {
+        try {
+            com.hierynomus.msdtyp.FileTime t = info.getLastWriteTime();
+            return t == null ? 0L : t.toEpochMillis();
+        } catch (Throwable e) {
+            return 0L;
         }
     }
 
@@ -110,11 +121,11 @@ public final class MangaSmb {
                 }
                 boolean dir = (info.getFileAttributes() & FileAttributes.FILE_ATTRIBUTE_DIRECTORY.getValue()) != 0;
                 String child = join(path, name);
-                result.add(new Entry(child, name, dir, info.getEndOfFile()));
+                result.add(new Entry(child, name, dir, info.getEndOfFile(), writeTimeMs(info)));
             }
             result.sort((a, b) -> {
                 if (a.directory != b.directory) return a.directory ? -1 : 1;
-                return a.name.compareToIgnoreCase(b.name);
+                return NaturalOrder.compare(a.name, b.name);
             });
             Log.i(TAG, "list " + auth.host + "/" + auth.share + "/" + path
                     + " -> " + result.size() + " entries");
@@ -213,7 +224,7 @@ public final class MangaSmb {
                 }
             }
         }
-        result.sort(String.CASE_INSENSITIVE_ORDER);
+        result.sort(NaturalOrder.INSTANCE);
         Log.i(TAG, "listShares " + auth.host + " -> " + result.size() + " shares");
         return result;
     }
@@ -325,9 +336,9 @@ public final class MangaSmb {
             if (name == null || name.equals(".") || name.equals("..")) continue;
             boolean dir = (info.getFileAttributes()
                     & FileAttributes.FILE_ATTRIBUTE_DIRECTORY.getValue()) != 0;
-            result.add(new Entry(join(p, name), name, dir, info.getEndOfFile()));
+            result.add(new Entry(join(p, name), name, dir, info.getEndOfFile(), writeTimeMs(info)));
         }
-        result.sort((a, b) -> a.name.compareToIgnoreCase(b.name));
+        result.sort((a, b) -> NaturalOrder.compare(a.name, b.name));
         return result;
     }
 

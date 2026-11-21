@@ -61,6 +61,7 @@ import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.manga.SmbRemoteManga;
 import com.igalia.wolvic.manga.Netdisk115RemoteManga;
+import com.igalia.wolvic.manga.SortUtil;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.adapters.SourceCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
@@ -188,6 +189,8 @@ public class MangaLibraryWidget extends UIWidget {
      *  "设置". Reset on each fresh app session, not on every refresh. */
     private boolean mSmbAutoConnected = false;
     private boolean mSmbConfigOpen = false;
+    /** Local-browser settings fold (default folder set/clear, etc.). */
+    private boolean mLocalSettingsOpen = false;
     /** Shares discovered on the host when SMB_SHARE is left empty. */
     private final List<String> mSmbShares = new ArrayList<>();
     /** Relative path of the folder currently selected as a "manga to read". */
@@ -198,6 +201,7 @@ public class MangaLibraryWidget extends UIWidget {
     /** 115 online browser state (cid "0" = root). */
     private String mP115Cid = "0";
     private String mP115Title = "115 漫画";
+    private boolean mP115Restored = false;
     private final List<Manga115Api.DirEntry> mP115Entries = new ArrayList<>();
     private String mP115DirStatus = "";
     private String mP115Status = "未登录";
@@ -703,9 +707,8 @@ public class MangaLibraryWidget extends UIWidget {
                 dirs.add(extra);
             }
         }
-        dirs.sort((a, b) -> mSettings.bool(MangaSettings.SOURCE_NATURAL_SORT)
-                ? MangaCoverAdapter.naturalCompare(a.getName(), b.getName())
-                : a.getName().compareToIgnoreCase(b.getName()));
+        final int libSort = mSettings.integer(MangaSettings.SORT_MODE);
+        dirs.sort((a, b) -> SortUtil.comparator(libSort, File::getName, File::lastModified));
         // Hard ceiling: an accidental root with thousands of folders must not
         // turn into an unbounded I/O walk.
         if (dirs.size() > 200) {
@@ -878,6 +881,21 @@ public class MangaLibraryWidget extends UIWidget {
         });
         bar.addView(sizeToggle);
 
+        final Button sortToggle = new Button(getContext());
+        sortToggle.setAllCaps(false);
+        sortToggle.setTextSize(16f);
+        sortToggle.setTextColor(0xFFFFFFFF);
+        sortToggle.setBackgroundColor(0xFF5A4A2A);
+        sortToggle.setMinWidth(dp(180));
+        sortToggle.setText("↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)));
+        sortToggle.setOnClickListener(v -> {
+            int next = SortUtil.next(mSettings.integer(MangaSettings.SORT_MODE));
+            mSettings.put(MangaSettings.SORT_MODE, next);
+            sortToggle.setText("↕ " + SortUtil.label(next));
+            scanLibrary();
+        });
+        bar.addView(sortToggle);
+
         Button cont = new Button(getContext());
         cont.setText("▶ 继续阅读");
         cont.setAllCaps(false);
@@ -901,6 +919,18 @@ public class MangaLibraryWidget extends UIWidget {
 
     private static final String SHELF_SMB = "remote:smb:";
     private static final String SHELF_115 = "remote:115:";
+
+    /** Cycles the shared sort mode and refreshes the relevant listing page. */
+    private void cycleSortAndApply(MangaPage page) {
+        int next = SortUtil.next(mSettings.integer(MangaSettings.SORT_MODE));
+        mSettings.put(MangaSettings.SORT_MODE, next);
+        Toast.makeText(getContext(), "排序：" + SortUtil.label(next), Toast.LENGTH_SHORT).show();
+        if (page == MangaPage.LIBRARY) {
+            scanLibrary();
+        } else {
+            refreshPage(page);
+        }
+    }
 
     /** Stable cache dir for one remote chapter: <cache>/remote-manga/<hash(key)>/<chapterIdx>. */
     private File remoteChapterDir(RemoteManga manga, int chapterIndex) {
@@ -1055,15 +1085,19 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Generic per-source "default position" controls. The same helper can be
      *  used by SMB / WebDAV once those sources get a real browser. */
+    /** Compact default-location control: just one "★ 默认位置" button that
+     *  jumps to the saved default (or sets the current folder as default when
+     *  none is saved). Set/clear live in the settings section. */
     private void addDefaultDirControls(LinearLayout content, String source, File current) {
         String def = mSettings.defaultDir(source);
-        addInfo(content, "默认位置 · " + source,
-                def.isEmpty() ? "未设置（下次进入默认恢复到上次退出的位置）" : def);
         LinearLayout row = addRow(content);
-        addButton(row, "★ 跳到默认位置", v -> {
+        addButton(row, def.isEmpty() ? "★ 设为默认位置" : "★ 默认位置：" + fileNameOf(def), v -> {
             String target = mSettings.defaultDir(source);
             if (target.isEmpty()) {
-                Toast.makeText(getContext(), "尚未设置默认位置", Toast.LENGTH_SHORT).show();
+                if (current == null) return;
+                mSettings.setDefaultDir(source, current.getAbsolutePath());
+                Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
+                refreshPage(mCurrentPage);
                 return;
             }
             File dir = new File(target);
@@ -1071,23 +1105,28 @@ public class MangaLibraryWidget extends UIWidget {
                 Toast.makeText(getContext(), "默认位置已不存在", Toast.LENGTH_SHORT).show();
                 return;
             }
+            gotoDefaultDir(source, dir);
+        });
+    }
+
+    private static String fileNameOf(String path) {
+        if (path == null) return "";
+        int i = path.lastIndexOf(File.separator);
+        return i > 0 ? path.substring(i + 1) : path;
+    }
+
+    /** Applies a default directory for a given source, using the right nav state. */
+    private void gotoDefaultDir(String source, File dir) {
+        if ("LOCAL".equals(source)) {
             mLocalDir = dir;
             mSettings.setLastDir(dir.getAbsolutePath());
             openFolderView(dir, false);
-        });
-        addButton(row, "设为默认位置", v -> {
-            if (current == null) {
-                return;
-            }
-            mSettings.setDefaultDir(source, current.getAbsolutePath());
-            Toast.makeText(getContext(), "已设为默认位置：" + current.getName(),
-                    Toast.LENGTH_SHORT).show();
+        } else if ("SMB".equals(source)) {
+            mSmbPath = "";
+            connectSmb();
+        } else {
             refreshPage(mCurrentPage);
-        });
-        addButton(row, "清除默认", v -> {
-            mSettings.setDefaultDir(source, "");
-            refreshPage(mCurrentPage);
-        });
+        }
     }
 
     private void fillFolderPage(LinearLayout content) {
@@ -1330,9 +1369,29 @@ public class MangaLibraryWidget extends UIWidget {
     // ------------------------------------------------------------- local
 
     private void fillLocalPage(LinearLayout content) {
-        addInfo(content, "本地文件浏览", "进入含图片或视频的目录后可直接在阅读器中打开。");
         addInfo(content, "当前目录", mLocalDir == null ? "不可用" : mLocalDir.getAbsolutePath());
         addDefaultDirControls(content, "LOCAL", mLocalDir);
+        if (mLocalSettingsOpen) {
+            String def = mSettings.defaultDir("LOCAL");
+            addInfo(content, "设置", "默认位置：" + (def.isEmpty() ? "未设置（默认恢复到上次位置）" : def));
+            LinearLayout setRow = addRow(content);
+            addButton(setRow, "设为默认位置", v -> {
+                if (mLocalDir == null) return;
+                mSettings.setDefaultDir("LOCAL", mLocalDir.getAbsolutePath());
+                Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
+                mLocalSettingsOpen = false;
+                refreshPage(MangaPage.LOCAL);
+            });
+            addButton(setRow, "清除默认", v -> {
+                mSettings.setDefaultDir("LOCAL", "");
+                mLocalSettingsOpen = false;
+                refreshPage(MangaPage.LOCAL);
+            });
+            addButton(setRow, "收起设置", v -> {
+                mLocalSettingsOpen = false;
+                refreshPage(MangaPage.LOCAL);
+            });
+        }
 
         LinearLayout actions = addRow(content);
         addButton(actions, "返回上级", v -> {
@@ -1349,6 +1408,12 @@ public class MangaLibraryWidget extends UIWidget {
             refreshPage(MangaPage.LOCAL);
         });
         addButton(actions, "打开阅读器", v -> openReader(mLocalDir));
+        addButton(actions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                v -> cycleSortAndApply(MangaPage.LOCAL));
+        addButton(actions, mLocalSettingsOpen ? "收起设置" : "⚙ 设置", v -> {
+            mLocalSettingsOpen = !mLocalSettingsOpen;
+            refreshPage(MangaPage.LOCAL);
+        });
 
         if (!hasStoragePermission()) {
             addInfo(content, "权限", "存储权限未授予，请在「设置」中申请后重试。");
@@ -1371,7 +1436,8 @@ public class MangaLibraryWidget extends UIWidget {
                 media++;
             }
         }
-        dirs.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
+        final int localSort = mSettings.integer(MangaSettings.SORT_MODE);
+        dirs.sort((a, b) -> SortUtil.comparator(localSort, File::getName, File::lastModified));
         addInfo(content, "媒体文件", "当前目录图片/视频数量：" + media);
         addInfo(content, "子目录", dirs.isEmpty() ? "无子目录" : "共 " + dirs.size() + " 个");
 
@@ -1495,6 +1561,8 @@ public class MangaLibraryWidget extends UIWidget {
             });
         }
         addButton(actions, "刷新", v -> connectSmb());
+        addButton(actions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                v -> cycleSortAndApply(MangaPage.SMB));
         addButton(actions, "▷ 在线阅读", v -> readSmbFolderOnline(mSmbPath));
         addButton(actions, "＋ 加入书架", v -> {
             String key = SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
@@ -1513,6 +1581,12 @@ public class MangaLibraryWidget extends UIWidget {
             refreshPage(MangaPage.SMB);
         });
 
+        // Apply the shared sort mode (name/date, asc/desc). Folders always first.
+        final int smbSort = mSettings.integer(MangaSettings.SORT_MODE);
+        mSmbEntries.sort((a, b) -> {
+            if (a.directory != b.directory) return a.directory ? -1 : 1;
+            return SortUtil.comparator(smbSort, e -> e.name, e -> e.modifiedMs).compare(a, b);
+        });
         if (mSmbEntries.isEmpty()) {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
@@ -1695,6 +1769,40 @@ public class MangaLibraryWidget extends UIWidget {
         return out;
     }
 
+    /** Downloads one remote file into its own cache folder and opens it in the
+     *  reader as a single-page manga - like double-clicking a file on a PC. */
+    private interface SingleFileFetcher { void fetch(File dest) throws Exception; }
+
+    private void openSingleRemoteFile(final String displayName, final SingleFileFetcher fetcher) {
+        File base = getContext().getExternalCacheDir();
+        if (base == null) base = getContext().getCacheDir();
+        final File singleDir = new File(new File(base, "remote-single"),
+                stableHash(displayName + System.currentTimeMillis()));
+        Toast.makeText(getContext(), "正在打开 " + displayName, Toast.LENGTH_SHORT).show();
+        mIoExecutor.execute(() -> {
+            try {
+                if (!singleDir.exists() && !singleDir.mkdirs()) {
+                    throw new IllegalStateException("无法创建缓存目录");
+                }
+                String ext = "jpg";
+                int dot = displayName.lastIndexOf('.');
+                if (dot > 0 && dot < displayName.length() - 1) {
+                    ext = displayName.substring(dot + 1).toLowerCase(java.util.Locale.ROOT);
+                }
+                File dest = new File(singleDir, "0000." + ext);
+                fetcher.fetch(dest);
+                if (!dest.exists() || dest.length() == 0) {
+                    throw new IllegalStateException("文件下载为空");
+                }
+                mMain.post(() -> openMangaRoot(singleDir));
+            } catch (Exception e) {
+                final String msg = e.getMessage();
+                mMain.post(() -> Toast.makeText(getContext(),
+                        "打开文件失败：" + msg, Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
     /** Opens a local folder as a manga root without the "single chapter -> parent"
      *  fallback in openLocalSession (our mirrored root must stay the root). */
     private void openMangaRoot(File folder) {
@@ -1725,26 +1833,8 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void downloadSingleSmb(MangaSmb.Entry entry) {
         final MangaSmb.Auth auth = smbAuth();
-        File dir = new File(mSettings.text(MangaSettings.DOWNLOAD_DIR), "SMB");
-        File destination = new File(dir, entry.name);
-        mSmbStatus = "正在下载 " + entry.name;
-        refreshPage(MangaPage.SMB);
-        mIoExecutor.execute(() -> {
-            try {
-                MangaSmb.download(auth, entry.path, destination, null);
-                mMain.post(() -> {
-                    mSmbStatus = "已下载 " + entry.name;
-                    Toast.makeText(getContext(), "已下载 " + entry.name, Toast.LENGTH_SHORT).show();
-                    openReader(dir);
-                });
-            } catch (Exception e) {
-                final String message = e.getMessage();
-                mMain.post(() -> {
-                    mSmbStatus = "下载失败：" + message;
-                    refreshPage(MangaPage.SMB);
-                });
-            }
-        });
+        openSingleRemoteFile(entry.name, dest ->
+                MangaSmb.download(auth, entry.path, dest, null));
     }
 
     // ----------------------------------------------------------- WebDAV
@@ -1757,6 +1847,15 @@ public class MangaLibraryWidget extends UIWidget {
     private void fill115LoginSection(LinearLayout content) {
         String cookie = mSettings.text(MangaSettings.P115_COOKIE);
         boolean loggedIn = !cookie.isEmpty();
+        if (!mP115Restored) {
+            mP115Restored = true;
+            String lastCid = mSettings.text(MangaSettings.P115_LAST_CID);
+            if (!lastCid.isEmpty()) {
+                mP115Cid = lastCid;
+                mP115Title = mSettings.text(MangaSettings.P115_LAST_TITLE);
+                if (mP115Title.isEmpty()) mP115Title = "115 漫画";
+            }
+        }
         addInfo(content, "115 网盘（扫码登录）",
                 loggedIn
                         ? "已登录。浏览文件夹，点「在线阅读」首图秒开、边看边缓存；点「＋ 加入书架」收藏。"
@@ -1784,6 +1883,8 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "目录状态", mP115DirStatus);
             LinearLayout dirActions = addRow(content);
             addButton(dirActions, "列出当前目录", v -> listP115Dir(mP115Cid));
+            addButton(dirActions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                    v -> cycleSortAndApply(MangaPage.WEBDAV));
             addButton(dirActions, "← 上级", v -> {
                 // 115 has no parent id in the entry; keep a simple stack via title.
                 mP115Cid = "0";
@@ -1793,6 +1894,11 @@ public class MangaLibraryWidget extends UIWidget {
             addButton(dirActions, "＋ 加入书架", v -> {
                 addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title);
             });
+            final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
+            mP115Entries.sort((a, b) -> {
+                if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+                return SortUtil.comparator(p115Sort, e -> e.name, e -> e.modifiedMs).compare(a, b);
+            });
             for (final Manga115Api.DirEntry e : mP115Entries) {
                 Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
                         + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
@@ -1800,10 +1906,20 @@ public class MangaLibraryWidget extends UIWidget {
                     if (e.isDir) {
                         mP115Cid = e.cid;
                         mP115Title = e.name;
+                        mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
+                        mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
                         listP115Dir(mP115Cid);
                     } else {
-                        Toast.makeText(getContext(), "图片请通过「在线阅读」打开所在文件夹",
-                                Toast.LENGTH_SHORT).show();
+                        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                        final String pickCode = e.pickCode;
+                        openSingleRemoteFile(e.name, dest -> {
+                            byte[] bytes = Manga115Api.imageBytes(cookie, pickCode);
+                            java.io.File parent = dest.getParentFile();
+                            if (parent != null) parent.mkdirs();
+                            try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
+                                out.write(bytes);
+                            }
+                        });
                     }
                 });
                 content.addView(entryRow, wrapParams());

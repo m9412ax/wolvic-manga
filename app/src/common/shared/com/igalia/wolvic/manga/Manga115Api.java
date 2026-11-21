@@ -169,10 +169,12 @@ public final class Manga115Api {
         public final String pickCode;   // pc / pick_code (for image direct link)
         public final boolean isDir;
         public final long size;
+        public final long modifiedMs;
         DirEntry(String name, String fileId, String cid, String pickCode,
-                 boolean isDir, long size) {
+                 boolean isDir, long size, long modifiedMs) {
             this.name = name; this.fileId = fileId; this.cid = cid;
             this.pickCode = pickCode; this.isDir = isDir; this.size = size;
+            this.modifiedMs = modifiedMs;
         }
     }
 
@@ -200,7 +202,7 @@ public final class Manga115Api {
             if (name.isEmpty()) continue;
             String fid = first(it, "file_id", "fid");
             String childCid = first(it, "cid");
-            String pc = first(it, "pick_code", "pc");
+            String pc = first(it, "pick_code", "pc", "pickcode");
             boolean dir;
             if (it.has("is_dir")) {
                 dir = it.optInt("is_dir", 0) == 1;
@@ -211,7 +213,15 @@ public final class Manga115Api {
                 if (fid.isEmpty() && !childCid.isEmpty()) dir = true;
             }
             long size = it.has("size") ? it.optLong("size") : it.optLong("s");
-            out.add(new DirEntry(name, fid, childCid, pc, dir, size));
+            long mtime = it.has("uptime") ? it.optLong("uptime")
+                    : (it.has("ptime") ? it.optLong("ptime") : it.optLong("t"));
+            DirEntry entry = new DirEntry(name, fid, childCid, pc, dir, size, mtime);
+            out.add(entry);
+            if (i < 3) {
+                Log.i(TAG, "listDir sample: n=" + name + " fid=" + fid
+                        + " cid=" + childCid + " isDir=" + dir
+                        + " pc=" + pc + " s=" + size + " mtime=" + mtime);
+            }
         }
         Log.i(TAG, "listDir " + cid + " -> " + out.size() + " entries");
         return out;

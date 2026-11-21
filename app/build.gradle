@@ -716,21 +716,25 @@ dependencies {
     implementation libs.zip4j
     implementation libs.apache.commonsmath3
 
-    // Network manga sources: SMB2/3 client + QR code for netdisk login
+    // Network manga sources: SMB2/3 client + QR code for netdisk login.
+    // BOTH smbj and jcifs-ng need BouncyCastle. They must share ONE bcprov jar:
+    // exclude smbj's bcprov-jdk18on (1.75 dropped org.bouncycastle.asn1.
+    // ASN1ApplicationSpecific, which jcifs NTLM/SPNEGO needs at runtime) and
+    // add a single bcprov-jdk15on 1.70 below (has both ASN.1 + the crypto
+    // primitives smbj uses). Two bcprov jars => D8 duplicate-class failure,
+    // so the single explicit version is the only safe combination.
     implementation(libs.smbj) {
-        // Transitive logging binding is not needed; keep the API jar only.
         exclude group: 'org.slf4j', module: 'slf4j-simple'
+        exclude group: 'org.bouncycastle', module: 'bcprov-jdk18on'
     }
     // jcifs-ng is used only to ENUMERATE shares on a host (smb://host/).
-    // smbj has no NetShareEnum API. Exclude its heavy/conflicting transitives:
-    // bcprov-jdk15on collides with smbj's bcprov-jdk18on (same org.bouncycastle
-    // classes); servlet/annotation are provided-only; slf4j-log4j12 is test-only.
     implementation(libs.jcifs.ng) {
         exclude group: 'org.bouncycastle', module: 'bcprov-jdk15on'
         exclude group: 'javax.servlet', module: 'javax.servlet-api'
         exclude group: 'javax.annotation', module: 'javax.annotation-api'
         exclude group: 'org.slf4j', module: 'slf4j-log4j12'
     }
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
     implementation libs.zxing.core
 
     // AOSP
