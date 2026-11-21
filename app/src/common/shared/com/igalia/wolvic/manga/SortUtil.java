@@ -6,6 +6,9 @@
 package com.igalia.wolvic.manga;
 
 import java.util.Comparator;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 /** Shared sorting for local / SMB / 115 listings.
  *  Mode: 0 name asc, 1 name desc, 2 date newest first, 3 date oldest first. */
@@ -45,6 +48,33 @@ public final class SortUtil {
             case 0:
             default: return "名称 ↑（A→Z）";
         }
+    }
+
+    /**
+     * Comparator for a mixed folder listing. Enforces, in order:
+     *   1) directories before files
+     *   2) videos before images (only when [videoFirst] is true)
+     *   3) the shared name/date sort mode within each group
+     * This is used identically by the LOCAL / SMB / 115 file browsers so all
+     * three behave the same way.
+     */
+    public static <T> Comparator<T> listingComparator(
+            int mode, boolean videoFirst,
+            Function<T, Boolean> isDir,
+            Predicate<T> isVideo,
+            Function<T, String> name,
+            ToLongFunction<T> dateMs) {
+        final Comparator<T> base = comparator(mode, name, dateMs);
+        return (a, b) -> {
+            boolean da = isDir.apply(a), db = isDir.apply(b);
+            if (da != db) return da ? -1 : 1;
+            if (videoFirst) {
+                boolean va = !da && isVideo.test(a);
+                boolean vb = !db && isVideo.test(b);
+                if (va != vb) return va ? -1 : 1;
+            }
+            return base.compare(a, b);
+        };
     }
 
     public static int next(int mode) {

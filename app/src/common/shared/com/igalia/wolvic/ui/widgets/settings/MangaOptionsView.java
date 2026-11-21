@@ -180,6 +180,7 @@ public class MangaOptionsView extends SettingsView
         switchRow("自然排序（第2页在第10页前）", MangaSettings.SOURCE_NATURAL_SORT);
         switchRow("包含隐藏文件", MangaSettings.SOURCE_INCLUDE_HIDDEN);
         switchRow("视频优先播放", MangaSettings.SOURCE_VIDEO_FIRST);
+        switchRow("文件列表中视频置顶", MangaSettings.SORT_VIDEO_FIRST);
         switchRow("递归扫描子目录", MangaSettings.SOURCE_RECURSIVE);
         radio("书架列数", MangaSettings.SOURCE_SPAN_COUNT,
                 new String[]{"2 列", "3 列", "4 列", "5 列", "6 列"},

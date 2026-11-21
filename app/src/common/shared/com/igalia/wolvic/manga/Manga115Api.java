@@ -235,27 +235,43 @@ public final class Manga115Api {
         return "";
     }
 
-    /** Resolves an image direct link for a single (small) file via the web
-     *  endpoint and downloads its bytes. Cookie + matching UA required.
+    /** Resolves an image direct link via the web endpoint and downloads its
+     *  bytes. [id] is normally a pickcode; when the listing did not provide a
+     *  pickcode we fall back to the file_id. Tries both parameter forms so a
+     *  folder of loose images works regardless of which schema 115 returned.
      *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
-    public static byte[] imageBytes(String cookie, String pickCode) throws Exception {
-        if (pickCode == null || pickCode.isEmpty()) {
-            throw new IllegalStateException("115 图片缺少 pickcode");
+    public static byte[] imageBytes(String cookie, String id) throws Exception {
+        if (id == null || id.isEmpty()) {
+            throw new IllegalStateException("115 图片缺少 pickcode/file_id");
         }
-        String meta = httpGet("https://webapi.115.com/files/download?pickcode="
-                + enc(pickCode), cookie);
-        JSONObject root = new JSONObject(meta);
-        String durl = root.optString("file_url", "");
-        if (durl.isEmpty() && root.has("data")) {
-            JSONObject d = root.optJSONObject("data");
-            if (d != null) durl = d.optString("file_url", "");
+        String[] metaUrls = {
+                "https://webapi.115.com/files/download?pickcode=" + enc(id),
+                "https://webapi.115.com/files/download?fid=" + enc(id),
+        };
+        String lastErr = null;
+        for (String metaUrl : metaUrls) {
+            try {
+                String meta = httpGet(metaUrl, cookie);
+                JSONObject root = new JSONObject(meta);
+                String durl = root.optString("file_url", "");
+                if (durl.isEmpty() && root.has("data")) {
+                    JSONObject d = root.optJSONObject("data");
+                    if (d != null) durl = d.optString("file_url", "");
+                }
+                if (durl.isEmpty()) {
+                    int errno = root.optInt("errno", -1);
+                    lastErr = "errno=" + errno + " " + root.optString("error");
+                    Log.w(TAG, "imageBytes " + metaUrl.split("\\?")[0]
+                            + " no url: " + lastErr + " id=" + id);
+                    continue;
+                }
+                return httpGetBytes(durl, cookie);
+            } catch (Exception e) {
+                lastErr = e.getMessage();
+                Log.w(TAG, "imageBytes attempt failed: " + lastErr + " id=" + id);
+            }
         }
-        if (durl.isEmpty()) {
-            int errno = root.optInt("errno", -1);
-            throw new IllegalStateException("115 取直链失败 errno=" + errno
-                    + " " + root.optString("error"));
-        }
-        return httpGetBytes(durl, cookie);
+        throw new IllegalStateException("115 取直链失败 " + lastErr + " id=" + id);
     }
 
     /** Downloads raw bytes from a direct link with the login Cookie attached

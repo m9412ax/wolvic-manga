@@ -191,6 +191,13 @@ public class MangaLibraryWidget extends UIWidget {
     private boolean mSmbConfigOpen = false;
     /** Local-browser settings fold (default folder set/clear, etc.). */
     private boolean mLocalSettingsOpen = false;
+    /** Netdisk (WebDAV/115) settings fold - all config lives here so the page
+     *  itself stays a clean file-manager directory. */
+    private boolean mNetdiskSettingsOpen = false;
+    /** Netdisk browser is at the top-level drive list (vs inside a drive). */
+    private boolean mNetdiskAtRoot = true;
+    /** Which drive is currently open: "115" or "webdav". */
+    private String mNetdiskMode = "";
     /** Shares discovered on the host when SMB_SHARE is left empty. */
     private final List<String> mSmbShares = new ArrayList<>();
     /** Relative path of the folder currently selected as a "manga to read". */
@@ -201,6 +208,9 @@ public class MangaLibraryWidget extends UIWidget {
     /** 115 online browser state (cid "0" = root). */
     private String mP115Cid = "0";
     private String mP115Title = "115 漫画";
+    /** Parent (cid,title) stack so "← 上级" returns to the real parent instead
+     *  of always jumping to root. */
+    private final java.util.Deque<String[]> mP115ParentStack = new java.util.ArrayDeque<>();
     private boolean mP115Restored = false;
     private final List<Manga115Api.DirEntry> mP115Entries = new ArrayList<>();
     private String mP115DirStatus = "";
@@ -215,6 +225,9 @@ public class MangaLibraryWidget extends UIWidget {
         return thread;
     });
     private final Handler mMain = new Handler(Looper.getMainLooper());
+    /** Timestamp guard: a VR pointer can fire several click events for one
+     *  physical press; opening the reader repeatedly stacks windows. */
+    private long mLastOpenReaderMs = 0L;
 
     public MangaLibraryWidget(Context aContext) {
         super(aContext);
@@ -602,7 +615,8 @@ public class MangaLibraryWidget extends UIWidget {
         if (page == MangaPage.SMB && smbConfigured() && !mSmbAutoConnected) {
             mSmbAutoConnected = true;
             mSmbConfigOpen = false;
-            mSmbPath = mSettings.text(MangaSettings.SMB_PATH);
+            String def = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
+            mSmbPath = def.isEmpty() ? mSettings.text(MangaSettings.SMB_PATH) : def;
             connectSmb();
         }
         Log.i(TAG, "switchPage " + page.name());
@@ -759,6 +773,12 @@ public class MangaLibraryWidget extends UIWidget {
         if (folder == null) {
             return;
         }
+        long nowOpen = System.currentTimeMillis();
+        if (nowOpen - mLastOpenReaderMs < 900L) {
+            Log.i(TAG, "openLocalSession suppressed duplicate click");
+            return;
+        }
+        mLastOpenReaderMs = nowOpen;
         Context context = getContext();
         if (!(context instanceof VRBrowserActivity)) {
             return;
@@ -951,6 +971,19 @@ public class MangaLibraryWidget extends UIWidget {
      *  download), then the reader fetches pages on demand with the same
      *  layered/concurrent pipeline as extension sources. */
     private void openRemoteManga(final RemoteManga manga) {
+        openRemoteManga(manga, null);
+    }
+
+    /** [startPageName] positions the reader at a specific image of the folder
+     *  (used when the user taps one file: open the WHOLE manga at that page). */
+    private void openRemoteManga(final RemoteManga manga, final String startPageName) {
+        // Guard against repeated VR clicks opening the same reader many times.
+        long now = System.currentTimeMillis();
+        if (now - mLastOpenReaderMs < 900L) {
+            Log.i(TAG, "openRemoteManga suppressed duplicate click");
+            return;
+        }
+        mLastOpenReaderMs = now;
         Toast.makeText(getContext(), "正在读取 " + manga.title() + " 的章节…", Toast.LENGTH_SHORT).show();
         mIoExecutor.execute(() -> {
             try {
@@ -976,6 +1009,16 @@ public class MangaLibraryWidget extends UIWidget {
                     page = (int) saved[1];
                     frac = saved[2];
                 }
+                // If the user tapped a specific file, position the reader at
+                // that image instead of at the saved/first page.
+                if (startPageName != null && !startPageName.isEmpty()) {
+                    int[] found = locateRemotePage(manga, chapters, startPageName);
+                    if (found != null) {
+                        index = found[0];
+                        page = found[1];
+                        frac = 0f;
+                    }
+                }
                 final int fi = index, fp = page;
                 final float ff = frac;
                 mMain.post(() -> {
@@ -992,6 +1035,29 @@ public class MangaLibraryWidget extends UIWidget {
                 Log.w(TAG, "openRemoteManga failed: " + msg);
             }
         });
+    }
+
+    /** Finds (chapterIndex, pageIndex) of a tapped file by name. Runs on the IO
+     *  thread. Returns null when not found (caller keeps saved position). */
+    private int[] locateRemotePage(RemoteManga manga,
+                                   List<RemoteManga.ChapterInfo> chapters,
+                                   String startPageName) {
+        for (int c = 0; c < chapters.size(); c++) {
+            try {
+                List<RemoteManga.PageInfo> pages = manga.listPages(chapters.get(c));
+                for (int p = 0; p < pages.size(); p++) {
+                    String hint = pages.get(p).nameHint;
+                    if (hint != null && (hint.equals(startPageName)
+                            || hint.endsWith("/" + startPageName)
+                            || startPageName.equals(new File(hint).getName()))) {
+                        return new int[]{c, p};
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "locateRemotePage chapter " + c + ": " + e.getMessage());
+            }
+        }
+        return null;
     }
 
     /** Adds a remote manga to the bookshelf as a tagged string (no download). */
@@ -1243,7 +1309,20 @@ public class MangaLibraryWidget extends UIWidget {
                 }
             }
         }
-        media.sort((a, b) -> MangaCoverAdapter.naturalCompare(a.getName(), b.getName()));
+        final java.util.Comparator<File> mediaBase = SortUtil.comparator(
+                mSettings.integer(MangaSettings.SORT_MODE), File::getName, File::lastModified);
+        java.util.Comparator<File> mediaCmp = mediaBase;
+        if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST)) {
+            final String[] videoExt = mSettings.videoExtensions();
+            final java.util.Comparator<File> base = mediaBase;
+            mediaCmp = (a, b) -> {
+                boolean va = MangaSettings.hasExtension(a.getName(), videoExt);
+                boolean vb = MangaSettings.hasExtension(b.getName(), videoExt);
+                if (va != vb) return va ? -1 : 1;
+                return base.compare(a, b);
+            };
+        }
+        media.sort(mediaCmp);
         if (media.isEmpty()) {
             addInfo(content, "文件", "此目录没有图片或视频，可进入上方章节。");
             return;
@@ -1516,6 +1595,10 @@ public class MangaLibraryWidget extends UIWidget {
                 connectSmb();
             });
             if (smbConfigured()) {
+                addButton(actions, "清除默认位置", v -> {
+                    mSettings.put(MangaSettings.SMB_DEFAULT_PATH, "");
+                    Toast.makeText(getContext(), "已清除 SMB 默认位置", Toast.LENGTH_SHORT).show();
+                });
                 addButton(actions, "取消", v -> {
                     mSmbConfigOpen = false;
                     refreshPage(MangaPage.SMB);
@@ -1567,6 +1650,17 @@ public class MangaLibraryWidget extends UIWidget {
         addButton(actions, "刷新", v -> connectSmb());
         addButton(actions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
                 v -> cycleSortAndApply(MangaPage.SMB));
+        String smbDef = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
+        addButton(actions, smbDef.isEmpty() ? "★ 设为默认位置" : "★ 默认位置", v -> {
+            String target = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
+            if (target.isEmpty()) {
+                mSettings.put(MangaSettings.SMB_DEFAULT_PATH, mSmbPath);
+                Toast.makeText(getContext(), "已设为 SMB 默认位置", Toast.LENGTH_SHORT).show();
+            } else {
+                mSmbPath = target;
+                connectSmb();
+            }
+        });
         addButton(actions, "▷ 在线阅读", v -> readSmbFolderOnline(mSmbPath));
         addButton(actions, "＋ 加入书架", v -> {
             String key = SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
@@ -1590,8 +1684,14 @@ public class MangaLibraryWidget extends UIWidget {
         final java.util.Comparator<MangaSmb.Entry> smbBase =
                 SortUtil.comparator(smbSort,
                         (MangaSmb.Entry e) -> e.name, (MangaSmb.Entry e) -> e.modifiedMs);
+        final String[] smbVideoExt = mSettings.videoExtensions();
         mSmbEntries.sort((a, b) -> {
             if (a.directory != b.directory) return a.directory ? -1 : 1;
+            if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST) && !a.directory) {
+                boolean va = MangaSettings.hasExtension(a.name, smbVideoExt);
+                boolean vb = MangaSettings.hasExtension(b.name, smbVideoExt);
+                if (va != vb) return va ? -1 : 1;
+            }
             return smbBase.compare(a, b);
         });
         if (mSmbEntries.isEmpty()) {
@@ -1608,7 +1708,10 @@ public class MangaLibraryWidget extends UIWidget {
                     mSmbPath = entryPath;
                     connectSmb();
                 } else {
-                    downloadSingleSmb(entry);
+                    // Open the WHOLE current folder as a manga, positioned at
+                    // this image - so up/down page turns work (not single-file).
+                    String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+                    openRemoteManga(new SmbRemoteManga(smbAuth(), mSmbPath, media), entry.name);
                 }
             });
             content.addView(row, wrapParams());
@@ -1848,9 +1951,8 @@ public class MangaLibraryWidget extends UIWidget {
 
     // ----------------------------------------------------------- 115 netdisk
 
-    /** In-Netdisk WebDAV page: 115 QR login. Scanning is done inside the app
-     *  (QR bitmap shown on the VR panel); the resulting cookie is saved in
-     *  settings. Browsing 115 files is added after login is verified. */
+    /** 115 account settings (QR login / status). Shown only inside the
+     *  "⚙ 设置" fold so the netdisk page itself is a clean file manager. */
     private void fill115LoginSection(LinearLayout content) {
         String cookie = mSettings.text(MangaSettings.P115_COOKIE);
         boolean loggedIn = !cookie.isEmpty();
@@ -1865,7 +1967,7 @@ public class MangaLibraryWidget extends UIWidget {
         }
         addInfo(content, "115 网盘（扫码登录）",
                 loggedIn
-                        ? "已登录。浏览文件夹，点「在线阅读」首图秒开、边看边缓存；点「＋ 加入书架」收藏。"
+                        ? "已登录。返回目录列表即可浏览；点文件夹进入，点图片进入看图。"
                         : "用 115 手机 App 扫码登录，登录态保存在本机。");
         addInfo(content, "115 状态", mP115Status);
 
@@ -1878,63 +1980,32 @@ public class MangaLibraryWidget extends UIWidget {
                 mP115Status = "已退出登录";
                 mP115Qr = null;
                 mP115PollHandler.removeCallbacks(mP115Poll);
+                clearP115QrBitmap();
+                mNetdiskAtRoot = true;
                 refreshPage(MangaPage.WEBDAV);
             });
         } else {
             addButton(row, "扫码登录", v -> start115Login());
         }
 
-        // Online directory browser (only when logged in).
+        // Default folder for 115 (a cid + title). Set to the directory the user
+        // is currently standing in, so entering the netdisk jumps straight there.
         if (loggedIn) {
-            addInfo(content, "115 目录", "0".equals(mP115Cid) ? "（根目录）" : mP115Cid);
-            addInfo(content, "目录状态", mP115DirStatus);
-            LinearLayout dirActions = addRow(content);
-            addButton(dirActions, "列出当前目录", v -> listP115Dir(mP115Cid));
-            addButton(dirActions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                    v -> cycleSortAndApply(MangaPage.WEBDAV));
-            addButton(dirActions, "← 上级", v -> {
-                // 115 has no parent id in the entry; keep a simple stack via title.
-                mP115Cid = "0";
-                listP115Dir(mP115Cid);
+            String defCid = mSettings.text(MangaSettings.P115_DEFAULT_CID);
+            addInfo(content, "115 默认目录",
+                    defCid.isEmpty() ? "未设置（进入时加载根目录）"
+                            : mSettings.text(MangaSettings.P115_DEFAULT_TITLE));
+            LinearLayout defRow = addRow(content);
+            addButton(defRow, "设为当前目录", v -> {
+                mSettings.put(MangaSettings.P115_DEFAULT_CID, mP115Cid);
+                mSettings.put(MangaSettings.P115_DEFAULT_TITLE, mP115Title);
+                Toast.makeText(getContext(), "已设为 115 默认目录", Toast.LENGTH_SHORT).show();
             });
-            addButton(dirActions, "▷ 在线阅读本目录", v -> readP115Online(mP115Cid, mP115Title));
-            addButton(dirActions, "＋ 加入书架", v -> {
-                addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title);
+            addButton(defRow, "清除默认", v -> {
+                mSettings.put(MangaSettings.P115_DEFAULT_CID, "");
+                mSettings.put(MangaSettings.P115_DEFAULT_TITLE, "");
+                refreshPage(MangaPage.WEBDAV);
             });
-            final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
-            final java.util.Comparator<Manga115Api.DirEntry> p115Base =
-                    SortUtil.comparator(p115Sort,
-                            (Manga115Api.DirEntry e) -> e.name,
-                            (Manga115Api.DirEntry e) -> e.modifiedMs);
-            mP115Entries.sort((a, b) -> {
-                if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-                return p115Base.compare(a, b);
-            });
-            for (final Manga115Api.DirEntry e : mP115Entries) {
-                Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
-                        + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
-                entryRow.setOnClickListener(v -> {
-                    if (e.isDir) {
-                        mP115Cid = e.cid;
-                        mP115Title = e.name;
-                        mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
-                        mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
-                        listP115Dir(mP115Cid);
-                    } else {
-                        final String useCookie = mSettings.text(MangaSettings.P115_COOKIE);
-                        final String pickCode = e.pickCode;
-                        openSingleRemoteFile(e.name, dest -> {
-                            byte[] bytes = Manga115Api.imageBytes(useCookie, pickCode);
-                            java.io.File parent = dest.getParentFile();
-                            if (parent != null) parent.mkdirs();
-                            try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
-                                out.write(bytes);
-                            }
-                        });
-                    }
-                });
-                content.addView(entryRow, wrapParams());
-            }
         }
 
         if (mP115Qr != null) {
@@ -1947,18 +2018,96 @@ public class MangaLibraryWidget extends UIWidget {
                 android.widget.ImageView qrImage = new android.widget.ImageView(getContext());
                 qrImage.setImageBitmap(mP115QrBitmap);
                 qrImage.setAdjustViewBounds(true);
-                // Large on the VR panel so a phone camera can scan it at range.
                 int qrDp = dp(440);
                 LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(qrDp, qrDp);
                 ip.gravity = Gravity.CENTER_HORIZONTAL;
                 ip.setMargins(0, dp(12), 0, dp(12));
                 qrImage.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
                 content.addView(qrImage, ip);
-                addInfo(content, "请用 115 App 扫码", "二维码已放大。扫码后在手机上确认，本页面会自动登录。");
+                addInfo(content, "请用 115 App 扫码", "扫码后在手机上确认，本页面会自动登录。");
             } else {
-                // Fallback: show the raw link if bitmap generation failed.
                 addInfo(content, "二维码生成失败", "请用手机打开：\n" + mP115Qr.qrContent);
             }
+        }
+    }
+
+    /** Pure 115 directory browser: folders first, then media files, with a
+     *  compact action row. No config/login UI lives here. */
+    private void fill115Browser(LinearLayout content) {
+        addInfo(content, "115 · " + (mP115Title == null ? "网盘" : mP115Title),
+                "0".equals(mP115Cid) ? "（根目录）" : mP115Cid);
+        if (!mP115DirStatus.isEmpty()) {
+            addInfo(content, "状态", mP115DirStatus);
+        }
+        LinearLayout dirActions = addRow(content);
+        addButton(dirActions, "⌂ 网盘列表", v -> {
+            mNetdiskAtRoot = true;
+            refreshPage(MangaPage.WEBDAV);
+        });
+        if (!"0".equals(mP115Cid)) {
+            addButton(dirActions, "← 上级", v -> {
+                if (!mP115ParentStack.isEmpty()) {
+                    String[] parent = mP115ParentStack.pop();
+                    mP115Cid = parent[0];
+                    mP115Title = parent[1];
+                } else {
+                    mP115Cid = "0";
+                    mP115Title = "115 网盘";
+                }
+                mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
+                mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
+                listP115Dir(mP115Cid);
+            });
+        }
+        addButton(dirActions, "刷新", v -> listP115Dir(mP115Cid));
+        addButton(dirActions, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                v -> cycleSortAndApply(MangaPage.WEBDAV));
+        addButton(dirActions, "▷ 在线阅读", v -> readP115Online(mP115Cid, mP115Title));
+        addButton(dirActions, "＋ 书架", v ->
+                addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title));
+
+        final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
+        final java.util.Comparator<Manga115Api.DirEntry> p115Base =
+                SortUtil.comparator(p115Sort,
+                        (Manga115Api.DirEntry e) -> e.name,
+                        (Manga115Api.DirEntry e) -> e.modifiedMs);
+        final String[] videoExt = mSettings.videoExtensions();
+        mP115Entries.sort((a, b) -> {
+            if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+            if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST) && !a.isDir) {
+                boolean va = MangaSettings.hasExtension(a.name, videoExt);
+                boolean vb = MangaSettings.hasExtension(b.name, videoExt);
+                if (va != vb) return va ? -1 : 1;
+            }
+            return p115Base.compare(a, b);
+        });
+        if (mP115Entries.isEmpty()) {
+            addInfo(content, "目录内容",
+                    (mP115DirStatus == null || mP115DirStatus.isEmpty())
+                            ? "空目录或尚未读取成功。" : mP115DirStatus);
+            return;
+        }
+        for (final Manga115Api.DirEntry e : mP115Entries) {
+            Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
+                    + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
+            entryRow.setTextColor(e.isDir ? 0xFF8EC5FF : 0xFFFFFFFF);
+            entryRow.setOnClickListener(v -> {
+                if (e.isDir) {
+                    String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
+                    mP115ParentStack.push(new String[]{mP115Cid, mP115Title});
+                    mP115Cid = childId;
+                    mP115Title = e.name;
+                    mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
+                    mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
+                    listP115Dir(mP115Cid);
+                } else {
+                    String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                    openRemoteManga(new Netdisk115RemoteManga(
+                            cookie, mP115Cid, mP115Title, media), e.name);
+                }
+            });
+            content.addView(entryRow, wrapParams());
         }
     }
 
@@ -2005,6 +2154,7 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void start115Login() {
+        mNetdiskSettingsOpen = true; // QR lives in the settings fold
         mP115Status = "正在获取二维码…";
         clearP115QrBitmap();
         mP115Qr = null;
@@ -2072,6 +2222,8 @@ public class MangaLibraryWidget extends UIWidget {
                     mP115Qr = null;
                     clearP115QrBitmap();
                     mP115PollHandler.removeCallbacks(mP115Poll);
+                    mNetdiskSettingsOpen = false;
+                    mNetdiskAtRoot = true;
                     Toast.makeText(getContext(), "115 登录成功", Toast.LENGTH_SHORT).show();
                     refreshPage(MangaPage.WEBDAV);
                 });
@@ -2140,32 +2292,105 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void fillWebDavPage(LinearLayout content) {
-        addDefaultDirControls(content, "WEBDAV",
-                new File(mSettings.text(MangaSettings.DOWNLOAD_DIR)));
-        fill115LoginSection(content);
-        addInfo(content, "网盘 WebDAV",
-                "真实 PROPFIND 列目录 + HTTP GET 下载；配置、格式过滤、并发与仅 WiFi 均取自漫画设置。");
-        addInfo(content, "当前目录", mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);
-        addInfo(content, "状态", mWebDavStatus);
+        // Only the sort + settings toggles stay on the page. Everything else
+        // (login forms, WebDAV URL/user/pass, default folders) is in ⚙ 设置.
+        LinearLayout top = addRow(content);
+        addButton(top, mNetdiskSettingsOpen ? "✓ 收起设置" : "⚙ 设置", v -> {
+            mNetdiskSettingsOpen = !mNetdiskSettingsOpen;
+            refreshPage(MangaPage.WEBDAV);
+        });
+        addButton(top, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                v -> cycleSortAndApply(MangaPage.WEBDAV));
 
+        if (mNetdiskSettingsOpen) {
+            fill115LoginSection(content);
+            fillWebDavSettings(content);
+            return;
+        }
+
+        // Pure file-manager view: a top-level drive list, then the open drive.
+        String cookie115 = mSettings.text(MangaSettings.P115_COOKIE);
+        boolean has115 = !cookie115.isEmpty();
+        boolean hasWebdav = !mSettings.text(MangaSettings.WEBDAV_URL).trim().isEmpty();
+
+        if (mNetdiskAtRoot) {
+            addInfo(content, "网盘", "点文件夹进入；登录与默认目录在 ⚙ 设置 中。");
+            if (has115) {
+                Button drive = newButton("▣ 115网盘");
+                drive.setTextColor(0xFF8EC5FF);
+                drive.setOnClickListener(v -> {
+                    mNetdiskMode = "115";
+                    mNetdiskAtRoot = false;
+                    String def = mSettings.text(MangaSettings.P115_DEFAULT_CID);
+                    mP115Cid = def.isEmpty() ? "0" : def;
+                    mP115Title = mSettings.text(MangaSettings.P115_DEFAULT_TITLE);
+                    if (mP115Title.isEmpty()) mP115Title = "115网盘";
+                    mP115ParentStack.clear();
+                    listP115Dir(mP115Cid);
+                });
+                content.addView(drive, wrapParams());
+            } else {
+                Button drive = newButton("▣ 115网盘（未登录 · 点 ⚙ 设置 扫码）");
+                drive.setOnClickListener(v -> {
+                    mNetdiskSettingsOpen = true;
+                    refreshPage(MangaPage.WEBDAV);
+                });
+                content.addView(drive, wrapParams());
+            }
+            if (hasWebdav) {
+                Button drive = newButton("▣ WebDAV 网盘");
+                drive.setTextColor(0xFF8EC5FF);
+                drive.setOnClickListener(v -> {
+                    mNetdiskMode = "webdav";
+                    mNetdiskAtRoot = false;
+                    mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
+                    connectWebDav();
+                });
+                content.addView(drive, wrapParams());
+            }
+            if (!has115 && !hasWebdav) {
+                addInfo(content, "没有已配置的网盘", "在 ⚙ 设置 里扫码登录 115 或填写 WebDAV 地址。");
+            }
+            return;
+        }
+
+        if ("115".equals(mNetdiskMode)) {
+            fill115Browser(content);
+        } else {
+            fillWebDavBrowser(content);
+        }
+    }
+
+    /** WebDAV connection settings - only rendered inside the ⚙ 设置 fold. */
+    private void fillWebDavSettings(LinearLayout content) {
+        addInfo(content, "WebDAV 设置",
+                "真实 PROPFIND 列目录 + HTTP GET 下载；格式过滤与并发取自漫画设置。");
         String[] fields = {
                 MangaSettings.WEBDAV_URL, "WebDAV 地址",
                 MangaSettings.WEBDAV_USER, "用户名",
                 MangaSettings.WEBDAV_PASS, "密码"};
         final List<EditText> inputs = bindConfigFields(content, fields);
-
         LinearLayout actions = addRow(content);
         addButton(actions, "保存配置", v -> {
             saveConfigFields(fields, inputs);
             mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
             refreshPage(MangaPage.WEBDAV);
         });
-        addButton(actions, "连接 / 列出", v -> {
-            saveConfigFields(fields, inputs);
-            mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
-            connectWebDav();
+        addButton(actions, "打开本地下载目录", v ->
+                openReader(new File(mSettings.text(MangaSettings.DOWNLOAD_DIR))));
+    }
+
+    /** Pure WebDAV directory browser (no config UI). */
+    private void fillWebDavBrowser(LinearLayout content) {
+        addInfo(content, "WebDAV · 当前目录",
+                mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);
+        addInfo(content, "状态", mWebDavStatus);
+        LinearLayout actions = addRow(content);
+        addButton(actions, "⌂ 网盘列表", v -> {
+            mNetdiskAtRoot = true;
+            refreshPage(MangaPage.WEBDAV);
         });
-        addButton(actions, "返回上级", v -> {
+        addButton(actions, "← 上级", v -> {
             int slash = mWebDavUrl.lastIndexOf('/');
             if (slash > 8) {
                 String trimmed = mWebDavUrl.endsWith("/")
@@ -2177,31 +2402,23 @@ public class MangaLibraryWidget extends UIWidget {
                 }
             }
         });
-        addButton(actions, "下载当前目录媒体", v -> downloadCurrentWebDav());
-        addButton(actions, "打开本地下载目录", v ->
-                openReader(new File(mSettings.text(MangaSettings.DOWNLOAD_DIR))));
+        addButton(actions, "刷新", v -> connectWebDav());
+        addButton(actions, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
+                v -> cycleSortAndApply(MangaPage.WEBDAV));
+        addButton(actions, "▷ 在线阅读", v -> downloadCurrentWebDav());
 
         if (mWebDavEntries.isEmpty()) {
-            addInfo(content, "目录内容", "点击「连接 / 列出」获取远程文件。");
+            addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
         }
         for (MangaWebDav.Entry entry : mWebDavEntries) {
-            Button row = new Button(getContext());
-            row.setText((entry.directory ? "[目录] " : "[文件] ") + entry.name
+            Button row = newButton((entry.directory ? "▣ " : "▤ ") + entry.name
                     + (entry.size > 0 ? "  " + (entry.size / 1024) + " KB" : ""));
-            row.setAllCaps(false);
-            row.setTextSize(17f);
-            row.setTextColor(0xFFFFFFFF);
-            row.setBackgroundColor(0xFF23232C);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setMinHeight(dp(50));
             row.setOnClickListener(v -> {
                 if (entry.directory) {
                     try {
                         mWebDavUrl = MangaWebDav.resolve(mWebDavUrl, entry.href);
-                        if (!mWebDavUrl.endsWith("/")) {
-                            mWebDavUrl += "/";
-                        }
+                        if (!mWebDavUrl.endsWith("/")) mWebDavUrl += "/";
                         connectWebDav();
                     } catch (Exception e) {
                         mWebDavStatus = "路径解析失败：" + e.getMessage();
@@ -2211,11 +2428,7 @@ public class MangaLibraryWidget extends UIWidget {
                     downloadSingleWebDav(entry);
                 }
             });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, dp(3), 0, dp(3));
-            content.addView(row, lp);
+            content.addView(row, wrapParams());
         }
     }
 

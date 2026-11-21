@@ -41,15 +41,28 @@ public final class SmbRemoteManga implements RemoteManga {
     public List<ChapterInfo> listChapters() throws Exception {
         List<MangaSmb.Entry> entries = MangaSmb.list(auth, remotePath);
         List<ChapterInfo> out = new ArrayList<>();
+        // Loose media directly in this folder = the FIRST chapter, so opening
+        // the current folder reads exactly the pictures the browser displayed.
+        boolean hasDirectMedia = false;
+        for (MangaSmb.Entry e : entries) {
+            if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
+                hasDirectMedia = true;
+                break;
+            }
+        }
+        if (hasDirectMedia) {
+            out.add(new ChapterInfo(remotePath, title));
+        }
         for (MangaSmb.Entry e : entries) {
             if (e.directory) {
                 out.add(new ChapterInfo(e.path, e.name));
             }
         }
-        // Flat folder (images directly inside): expose one synthetic chapter.
+        // Flat folder with no sub-folders: expose one synthetic chapter.
         if (out.isEmpty()) {
             out.add(new ChapterInfo(remotePath, title));
         }
+        out.sort((a, b) -> NaturalOrder.compare(a.name, b.name));
         return out;
     }
 

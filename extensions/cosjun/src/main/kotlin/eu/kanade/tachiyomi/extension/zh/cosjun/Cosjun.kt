@@ -23,27 +23,21 @@ import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Cosjun (cosjun.cn) — WordPress/ripro image gallery source.
  *
- * One catalogue entry is one picture folder (a set of images + optional video),
- * not a multi-chapter comic. To make "next page" flow into the next item in the
- * exact order the user was browsing, the last browse/search result URL list is
- * cached in [browseQueue] and [fetchChapterList] exposes the tail of it as
- * pseudo-chapters, with the current item first.
- *
- * Login: credentials are entered in the source settings (EditTextPreference).
- * [ensureLoggedIn] posts to admin-ajax.php?action=user_login once and relies on
- * the shared cookie jar (PHPSESSID / wordpress_logged_in_*) for all later calls.
+ * Navigation mirrors the site's five top-level tabs:
+ *   COS妹子 /photo · COS本子 /benzi · 少女日常 /life · 付费专区 /zhuanqu · 妹子目录 /tags
+ * "全部" (the first catalogue option) aggregates the four content tabs and
+ * merges them newest-first. "妹子目录" is the COS-name tag directory: its tags
+ * are exposed as flat, tappable chips in the filter panel.
  */
 class Cosjun : HttpSource(), ConfigurableSource {
 
@@ -51,7 +45,7 @@ class Cosjun : HttpSource(), ConfigurableSource {
     override val baseUrl = "https://www.cosjun.cn"
     override val lang = "zh"
     override val supportsLatest = true
-    override val versionId = 1
+    override val versionId = 2
 
     private val prefs: SharedPreferences by lazy {
         Injekt.get<android.content.Context>()
@@ -98,22 +92,13 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     // ------------------------------------------------------------------ login
 
-    /** Last successful login time, PERSISTED. An in-memory-only stamp resets to
-     *  0 on process restart while [hasSession] stays true (session is in prefs),
-     *  which made every request re-login synchronously - the "everything slow"
-     *  bug. Persisting it keeps the 30-minute throttle across restarts. */
     private var loginStamp: Long
         get() = prefs.getLong(KEY_LOGIN_STAMP, 0L)
         set(value) = prefs.edit().putLong(KEY_LOGIN_STAMP, value).apply()
 
-    /** Whether a persisted login session is known to work. Once we log in
-     *  successfully the PHPSESSID is saved to prefs and injected on every
-     *  request via [client], so login survives process restarts ("permanent"). */
     private val hasSession: Boolean
         get() = !prefs.getString(KEY_SESSION, "").isNullOrEmpty()
 
-    // Inject the persisted PHPSESSID into every cosjun.cn request. Built lazily
-    // on top of the shared client so it keeps the host's cookie jar / cf_clearance.
     override val client: OkHttpClient by lazy {
         network.client.newBuilder()
             .addInterceptor { chain ->
@@ -133,8 +118,6 @@ class Cosjun : HttpSource(), ConfigurableSource {
         val user = prefs.getString(KEY_USER, "")?.trim().orEmpty()
         val pass = prefs.getString(KEY_PASS, "")?.trim().orEmpty()
         if (user.isEmpty() || pass.isEmpty()) return@withContext
-        // A persisted session means we are already logged in; only re-login on
-        // a 30-minute refresh cadence (or when the session is not known good).
         if (hasSession && System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@withContext
         synchronized(this@Cosjun) {
             if (hasSession && System.currentTimeMillis() - loginStamp < 30 * 60 * 1000L) return@synchronized
@@ -148,7 +131,6 @@ class Cosjun : HttpSource(), ConfigurableSource {
                 val req = POST("$baseUrl/wp-admin/admin-ajax.php", ajaxHeaders, body)
                 val resp = client.newCall(req).execute()
                 val ok = resp.use {
-                    // Capture PHPSESSID from Set-Cookie (one or more headers).
                     val setCookies = it.headers("Set-Cookie")
                     val sid = setCookies.firstNotNullOfOrNull { c ->
                         Regex("PHPSESSID=([^;]+)").find(c)?.groupValues?.get(1)
@@ -157,19 +139,13 @@ class Cosjun : HttpSource(), ConfigurableSource {
                     it.body.string().contains("\"status\":\"1\"")
                 }
                 loginStamp = if (ok) System.currentTimeMillis() else 0L
-                if (ok) docCache.clear() // anonymous preview -> full gallery
+                if (ok) docCache.clear()
             } catch (e: Exception) {
-                // Keep any previously persisted session on transient failures.
                 if (!hasSession) loginStamp = 0L
             }
         }
     }
 
-    /** A detail page is fetched for both metadata and the image list. Cache the
-     *  parsed HTML briefly so opening a manga and then its picture folder does
-     *  not download the same large page twice (the main cause of "slow to open"
-     *  and "slow after switching"). Cleared on every (re)login because the
-     *  logged-in page has the full gallery while the anonymous one has 4. */
     private data class DocEntry(val at: Long, val doc: Document)
     private val docCache = java.util.concurrent.ConcurrentHashMap<String, DocEntry>()
     private val DOC_TTL_MS = 60_000L
@@ -195,21 +171,67 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     // ----------------------------------------------------------------- filters
 
+    /** Category selector. "全部" is FIRST and aggregates the four content tabs. */
+    private class CategoryFilter : Filter.Select<String>(
+        "分区", arrayOf("全部", "COS妹子", "COS本子", "少女日常", "付费专区", "妹子目录")
+    )
     private class SortFilter : Filter.Select<String>(
         "排序", arrayOf("新到旧（默认）", "旧到新")
     )
     private class TimeFilter : Filter.Select<String>(
-        "时间范围", arrayOf("全部", "最近一周", "最近一月")
+        "时间范围", arrayOf("全部", "最近一周", "最近一月", "最近一年")
     )
     private class TagFilter(name: String, val slug: String) : Filter.CheckBox(name)
-    private class TagGroup : Filter.Group<TagFilter>("标签（COS 名）", TAG_LIST.map { TagFilter(it, it) })
+    private class TagGroup(tags: List<Pair<String, String>>) :
+        Filter.Group<TagFilter>("妹子目录 · COS 名标签（点选后筛选）",
+            tags.map { TagFilter(it.first, it.second) })
 
-    override fun getFilterList() = FilterList(
-        SortFilter(),
-        TimeFilter(),
-        Filter.Separator(),
-        TagGroup(),
-    )
+    /** Raw tag list (name -> /tag/ path) fetched lazily from /tags, cached. */
+    @Volatile
+    private var tagList: List<Pair<String, String>> = emptyList()
+
+    /** Blocking fetch of /tags. Called from getFilterList() on the IO thread. */
+    private fun loadTags(): List<Pair<String, String>> {
+        val cached = tagList
+        if (cached.isNotEmpty()) return cached
+        return try {
+            val resp = client.newCall(GET("$baseUrl/tags", headers)).execute()
+            val doc = resp.use { it.asJsoup() }
+            val out = LinkedHashMap<String, String>()
+            doc.select("a[href*=/tag/]").forEach { a ->
+                val href = a.attr("href")
+                val name = a.text().trim()
+                if (name.isNotEmpty() && href.contains("/tag/")) {
+                    val path = if (href.startsWith("http")) {
+                        href.substringAfter("cosjun.cn")
+                    } else href
+                    out.putIfAbsent(name, path)
+                }
+            }
+            val list = out.toList()
+            if (list.isNotEmpty()) tagList = list
+            list
+        } catch (e: Exception) {
+            tagList // fall back to whatever we had (may be the static seed)
+        }
+    }
+
+    override fun getFilterList(): FilterList {
+        // Try the live /tags directory first (blocks on the IO thread); fall
+        // back to the static seed only if the network call fails.
+        var tags = loadTags()
+        if (tags.isEmpty()) {
+            tags = FALLBACK_TAGS.map { it.first to "/tag/${it.second}" }
+            tagList = tags
+        }
+        return FilterList(
+            CategoryFilter(),
+            SortFilter(),
+            TimeFilter(),
+            Filter.Separator(),
+            TagGroup(tags),
+        )
+    }
 
     companion object {
         private const val KEY_USER = "cosjun_user"
@@ -218,23 +240,33 @@ class Cosjun : HttpSource(), ConfigurableSource {
         private const val KEY_LOGIN_STAMP = "cosjun_login_stamp"
         private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-        // Popular COS names used as tag shortcuts; /tags lists the full set, but
-        // a compact set keeps the filter UI usable. Each value is the URL-encoded
-        // tag used by the site.
-        private val TAG_LIST = listOf(
-            "ElyEE子", "蠢沫沫", "Natsuko_夏夏子", "抱走莫子", "不呆猫",
-            "菌烨tako", "水淼aqua", "花兮_honoka", "瓜希酱", "Meroko_魅瞳",
+
+        /** Four content categories aggregated by "全部". */
+        private val CONTENT_CATS = arrayOf("photo", "benzi", "life", "zhuanqu")
+        private val CAT_LABELS = arrayOf("全部", "COS妹子", "COS本子", "少女日常", "付费专区", "妹子目录")
+
+        /** Seed tags used only if /tags cannot be fetched on first open. */
+        private val FALLBACK_TAGS = listOf(
+            "蠢沫沫" to "蠢沫沫", "HaneAme" to "haneame", "水淼aqua" to "水淼aqua",
+            "星之迟迟" to "星之迟迟", "日奈娇" to "日奈娇", "神楽坂真冬" to "神楽坂真冬",
+            "抖娘利世" to "抖娘利世", "二佐Nisa" to "二佐Nisa", "桜井宁宁" to "桜井宁宁",
+            "洛璃LoLiSAMA" to "洛璃LoLiSAMA", "桜桃喵" to "桜桃喵", "雯妹不讲道理" to "雯妹不讲道理",
+            "疯猫ss" to "疯猫ss", "ElyEE子" to "elyee", "Natsuko_夏夏子" to "natsuko",
+            "抱走莫子" to "抱走莫子", "不呆猫" to "不呆猫", "菌烨tako" to "菌烨tako",
+            "花兮_honoka" to "花兮", "瓜希酱" to "瓜希酱", "Meroko_魅瞳" to "meroko",
         )
-        private const val CAT_PHOTO = "photo"
     }
 
     /** Category currently being browsed, so search/latest stay in scope. */
     @Volatile
-    private var category = CAT_PHOTO
+    private var category = CONTENT_CATS[0]
 
     /** URL tail of the last browse/search, used to build the "next book" chain. */
     @Volatile
     private var browseQueue: List<String> = emptyList()
+
+    /** Publish timestamps by manga url, used to merge "全部" newest-first. */
+    private val datesByUrl = ConcurrentHashMap<String, Long>()
 
     // --------------------------------------------------------------- requests
 
@@ -245,13 +277,30 @@ class Cosjun : HttpSource(), ConfigurableSource {
     private fun catPath(cat: String, page: Int): String =
         if (page <= 1) "$baseUrl/$cat" else "$baseUrl/$cat/page/$page"
 
-    private fun sortParams(filters: FilterList, url: String): String {
+    private fun sortSuffix(filters: FilterList): String {
         val sort = filters.filterIsInstance<SortFilter>().firstOrNull()?.state ?: 0
-        return if (sort == 1) "$url?orderby=date&order=asc" else url
+        return if (sort == 1) "?orderby=date&order=asc" else ""
+    }
+
+    private fun categoryState(filters: FilterList?): Int =
+        filters?.filterIsInstance<CategoryFilter>()?.firstOrNull()?.state ?: 0
+
+    private fun selectedTags(filters: FilterList?): List<String> =
+        filters?.filterIsInstance<TagGroup>()?.firstOrNull()
+            ?.state?.filter { it.state }?.map { it.slug }.orEmpty()
+
+    private fun timeState(filters: FilterList?): Int =
+        filters?.filterIsInstance<TimeFilter>()?.firstOrNull()?.state ?: 0
+
+    private fun timeRangeMillis(range: Int): Long = when (range) {
+        1 -> 7L * 24 * 3600 * 1000
+        2 -> 30L * 24 * 3600 * 1000
+        3 -> 365L * 24 * 3600 * 1000
+        else -> 0L
     }
 
     override fun popularMangaRequest(page: Int): Request {
-        category = CAT_PHOTO
+        category = CONTENT_CATS[0]
         return GET(catPath(category, page), headers)
     }
 
@@ -259,22 +308,21 @@ class Cosjun : HttpSource(), ConfigurableSource {
         GET(catPath(category, page), headers)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val time = filters.filterIsInstance<TimeFilter>().firstOrNull()?.state ?: 0
-        val tags = filters.filterIsInstance<TagGroup>().firstOrNull()
-            ?.state?.filter { it.state }?.map { it.slug }.orEmpty()
-
+        val catIdx = categoryState(filters)
+        val tags = selectedTags(filters)
         var url = when {
             query.isNotBlank() -> {
                 val q = java.net.URLEncoder.encode(query, "UTF-8")
                 if (page <= 1) "$baseUrl/?s=$q" else "$baseUrl/page/$page/?s=$q"
             }
             tags.size == 1 -> {
-                val t = java.net.URLEncoder.encode(tags[0], "UTF-8")
+                val t = tags[0].removePrefix("/tag/")
                 if (page <= 1) "$baseUrl/tag/$t" else "$baseUrl/tag/$t/page/$page"
             }
-            else -> catPath(category, page)
+            catIdx in 1..4 -> catPath(CONTENT_CATS[catIdx - 1], page)
+            else -> catPath(CONTENT_CATS[0], page) // 全部 / 妹子目录(no tag): catalogue
         }
-        url = sortParams(filters, url)
+        url += sortSuffix(filters)
         // Time range is applied client-side in parse (the site has no server filter).
         return GET(url, headers)
     }
@@ -285,11 +333,8 @@ class Cosjun : HttpSource(), ConfigurableSource {
         val items = doc.select("article.post")
         val df = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
         val now = System.currentTimeMillis()
-        val cutoff = when (timeRange) {
-            1 -> now - 7L * 24 * 3600 * 1000
-            2 -> now - 30L * 24 * 3600 * 1000
-            else -> 0L
-        }
+        val window = timeRangeMillis(timeRange)
+        val cutoff = if (window > 0) now - window else 0L
         val mangas = mutableListOf<SManga>()
         for (el in items) {
             val a = el.selectFirst("h2.entry-title a") ?: continue
@@ -297,18 +342,23 @@ class Cosjun : HttpSource(), ConfigurableSource {
             val id = href.trimEnd('/').substringAfterLast('/')
             if (id.isEmpty() || id == "page") continue
             val timeEl = el.selectFirst("time[datetime]")
-            if (cutoff > 0 && timeEl != null) {
-                val t = try {
+            var posted = 0L
+            if (timeEl != null) {
+                posted = try {
                     df.parse(timeEl.attr("datetime").substring(0, 19))?.time ?: 0L
                 } catch (e: Exception) { 0L }
-                if (t in 1 until cutoff) continue
             }
+            if (cutoff > 0 && posted > 0 && posted < cutoff) continue
             val img = el.selectFirst("img[data-src]")?.attr("data-src")
                 ?: el.selectFirst("img")?.attr("src")
             val cover = img?.let { timthumbToOriginal(it) }
             val locked = el.selectFirst(".entry-format i.fa-lock") != null
+            val cat = href.substringAfter(baseUrl + "/").substringBefore("/")
+                .takeIf { it in CONTENT_CATS } ?: category
+            val url = "/$cat/$id"
+            datesByUrl[url] = posted
             mangas += SManga.create().apply {
-                url = "/$category/$id"
+                this.url = url
                 title = a.text().trim()
                 thumbnail_url = cover
                 author = title.substringBefore(' ').ifBlank { null }
@@ -317,10 +367,29 @@ class Cosjun : HttpSource(), ConfigurableSource {
                 initialized = false
             }
         }
-        // Remember this list order for the next-book chain.
         browseQueue = mangas.map { it.url }
         val hasNext = doc.selectFirst(".pagination a.next, a.next, .pagination .current~a") != null
         return MangasPage(mangas, hasNext)
+    }
+
+    /** Builds "全部": fetch all four content pages, merge, sort newest-first. */
+    private suspend fun aggregateAll(page: Int, timeRange: Int): MangasPage {
+        val merged = mutableListOf<SManga>()
+        var hasNext = false
+        for (cat in CONTENT_CATS) {
+            try {
+                val url = catPath(cat, page)
+                val resp = client.newCall(GET(url, headers)).awaitSuccess()
+                val part = resp.use { parseList(it.asJsoup(), timeRange) }
+                merged.addAll(part.mangas)
+                hasNext = hasNext || part.hasNextPage
+            } catch (e: Exception) {
+                // Keep whatever categories succeeded - do not blank the page.
+            }
+        }
+        merged.sortByDescending { datesByUrl[it.url] ?: 0L }
+        browseQueue = merged.map { it.url }
+        return MangasPage(merged, hasNext)
     }
 
     private fun timthumbToOriginal(url: String): String {
@@ -335,21 +404,44 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     override suspend fun getPopularManga(page: Int): MangasPage {
         ensureLoggedIn()
-        val resp = client.newCall(popularMangaRequest(page)).awaitSuccess()
-        return resp.use { parseList(it.asJsoup(), 0) }
+        // The default catalogue ("全部") aggregates the four content tabs.
+        return aggregateAll(page, 0)
     }
 
     override suspend fun getLatestUpdates(page: Int): MangasPage {
         ensureLoggedIn()
+        if (category == CONTENT_CATS[0]) return aggregateAll(page, 0)
         val resp = client.newCall(latestUpdatesRequest(page)).awaitSuccess()
         return resp.use { parseList(it.asJsoup(), 0) }
     }
 
     override suspend fun getSearchManga(page: Int, query: String, filters: FilterList): MangasPage {
         ensureLoggedIn()
-        val time = filters.filterIsInstance<TimeFilter>().firstOrNull()?.state ?: 0
+        val catIdx = categoryState(filters)
+        val tags = selectedTags(filters)
+        // Multiple COS-name tags, or "妹子目录" with tags selected -> aggregate
+        // each tag page and merge. Single tag / category goes through request.
+        if (tags.size > 1) {
+            val merged = mutableListOf<SManga>()
+            for (t in tags) {
+                try {
+                    val path = t.removePrefix("/tag/")
+                    val url = if (page <= 1) "$baseUrl/tag/$path" else "$baseUrl/tag/$path/page/$page"
+                    val resp = client.newCall(GET(url + sortSuffix(filters), headers)).awaitSuccess()
+                    merged.addAll(resp.use { parseList(it.asJsoup(), timeState(filters)).mangas })
+                } catch (e: Exception) { }
+            }
+            merged.sortByDescending { datesByUrl[it.url] ?: 0L }
+            browseQueue = merged.map { it.url }
+            return MangasPage(merged, false)
+        }
+        if (catIdx == 0 && query.isBlank() && tags.isEmpty()) {
+            return aggregateAll(page, timeState(filters))
+        }
+        val time = timeState(filters)
         val resp = client.newCall(searchMangaRequest(page, query, filters)).awaitSuccess()
-        return resp.use { parseList(it.asJsoup(), time) }
+        val result = resp.use { parseList(it.asJsoup(), time) }
+        return result
     }
 
     // ----------------------------------------------------------------- details
@@ -372,8 +464,6 @@ class Cosjun : HttpSource(), ConfigurableSource {
         val h1 = doc.selectFirst("h1.entry-title")?.text()
             ?: doc.selectFirst("h1")?.text()?.trim()
         val excerpt = doc.selectFirst(".entry-content p")?.text().orEmpty()
-        // The first tag link is the COS name; surface it as the author so the
-        // user can tap it to filter/search that name (see getSearchManga).
         val cosName = doc.selectFirst(".entry-content a[href*=/tag/]")?.text()?.trim()
         val genre = doc.select(".entry-content a[href*=/tag/]")
             .map { it.text().trim() }.filter { it.isNotEmpty() }.distinct()
@@ -387,11 +477,6 @@ class Cosjun : HttpSource(), ConfigurableSource {
         }
     }
 
-    /**
-     * One entry = one picture folder. Expose the current item plus the tail of
-     * the browse queue as pseudo chapters, so crossing the last image of a book
-     * advances into the NEXT book in the exact order the user browsed/searched.
-     */
     private fun chapterChain(manga: SManga): List<SChapter> {
         val self = manga.url
         val queue = browseQueue.ifEmpty { listOf(self) }
@@ -417,18 +502,16 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     private fun parsePages(doc: Document): List<Page> {
         val pages = mutableListOf<Page>()
-        // Video first (it appears between the preview gallery and the full one).
         doc.select("video.wp-video-shortcode source[src]").forEach { src ->
             val v = src.attr("src").substringBefore('?')
             if (v.contains(".mp4")) pages += Page(pages.size, imageUrl = v)
         }
-        // Use the LAST / largest gallery: when logged in it is the full set;
-        // when anonymous it is only the 4-image preview gallery.
         val galleries = doc.select("div.gallery")
         val full = galleries.maxByOrNull { it.select(".gallery-icon a").size }
         full?.select(".gallery-icon a[href]")?.forEach { a ->
             val href = a.attr("href")
-            if (href.contains("/wp-content/uploads/") && href.matches(Regex(".*\\.(jpg|jpeg|png|webp|gif|bmp)(\\?.*)?$", RegexOption.IGNORE_CASE))) {
+            if (href.contains("/wp-content/uploads/") &&
+                href.matches(Regex(".*\\.(jpg|jpeg|png|webp|gif|bmp)(\\?.*)?$", RegexOption.IGNORE_CASE))) {
                 pages += Page(pages.size, imageUrl = href)
             }
         }
@@ -437,7 +520,6 @@ class Cosjun : HttpSource(), ConfigurableSource {
 
     // -------------------------------------------------- HttpSource suspension
 
-    // Route the abstract suspend APIs through our request/parse pairs.
     override fun popularMangaParse(response: Response): MangasPage =
         response.use { parseList(it.asJsoup(), 0) }
 

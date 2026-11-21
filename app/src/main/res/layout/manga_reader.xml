@@ -60,6 +60,46 @@
         android:textColor="#FFFFFFFF"
         android:textSize="20sp" />
 
+    <!-- Centered loading indicator with progress bar + download speed. Shown
+         for every manga page / video while its bytes are still downloading. -->
+    <LinearLayout
+        android:id="@+id/loadingOverlay"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="22dp"
+        android:background="#E6222229"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/loadingLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="正在加载…"
+            android:textColor="#FFFFFFFF"
+            android:textSize="22sp" />
+
+        <ProgressBar
+            android:id="@+id/loadingBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="300dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:max="100"
+            android:indeterminate="true" />
+
+        <TextView
+            android:id="@+id/loadingSpeed"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text=""
+            android:textColor="#FFB0B0B8"
+            android:textSize="17sp" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/readerHint"
         android:layout_width="wrap_content"

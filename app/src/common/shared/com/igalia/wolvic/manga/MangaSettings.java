@@ -94,6 +94,9 @@ public final class MangaSettings {
      *  0 = name ascending (default), 1 = name descending,
      *  2 = date newest first, 3 = date oldest first. */
     public static final String SORT_MODE = "sort_mode";
+    /** When true, media files in local/SMB/115 folder listings are ordered with
+     *  videos pinned to the top regardless of the active name/date sort mode. */
+    public static final String SORT_VIDEO_FIRST = "sort_video_first";
     /** Bookshelf view: 0 = icon grid, 1 = compact list. */
     public static final String LIBRARY_VIEW_MODE = "library_view_mode";
     /** Bookshelf window size: 0 = small (legacy), 1 = medium (default), 2 = large. */
@@ -120,12 +123,17 @@ public final class MangaSettings {
     public static final String SMB_PASS = "smb_pass";
     public static final String SMB_PATH = "smb_path";
     public static final String SMB_MOUNT = "smb_mount";
+    /** Default SMB remote path (relative to the share) used on auto-connect. */
+    public static final String SMB_DEFAULT_PATH = "smb_default_path";
 
     // 115 netdisk (cookie-based login, obtained via in-app QR code)
     public static final String P115_COOKIE = "p115_cookie";
     public static final String P115_DEVICE = "p115_device";
     public static final String P115_LAST_CID = "p115_last_cid";
     public static final String P115_LAST_TITLE = "p115_last_title";
+    /** 115 default folder (cid + display title) used when entering the netdisk. */
+    public static final String P115_DEFAULT_CID = "p115_default_cid";
+    public static final String P115_DEFAULT_TITLE = "p115_default_title";
 
     // Downloads
     public static final String DOWNLOAD_DIR = "download_dir";
@@ -229,6 +237,7 @@ public final class MangaSettings {
             case READER_VIDEO_RESUME:
             case SOURCE_NATURAL_SORT:
             case SOURCE_VIDEO_FIRST:
+            case SORT_VIDEO_FIRST:
             case DOWNLOAD_ONLY_WIFI:
             case PROGRESS_ENABLED:
             case PROGRESS_VIDEO:

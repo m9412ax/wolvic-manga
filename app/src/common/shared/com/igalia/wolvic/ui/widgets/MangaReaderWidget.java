@@ -94,6 +94,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private TextView mPageCounter;
     private TextView mHint;
     private View mBrightnessOverlay;
+    /** Centered loading overlay: progress bar + speed, shown for every manga
+     *  page / video while its bytes are still downloading. */
+    private LinearLayout mLoadingOverlay;
+    private TextView mLoadingLabel;
+    private android.widget.ProgressBar mLoadingBar;
+    private TextView mLoadingSpeed;
+    private volatile long mLoadBytesDone;
+    private volatile long mLoadBytesTotal;
+    private volatile long mLoadBytesStartMs;
     private EditText mGotoInput;
 
     private final List<File> mPages = new ArrayList<>();
@@ -316,6 +325,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPageCounter = findViewById(R.id.pageCounter);
         mHint = findViewById(R.id.readerHint);
         mBrightnessOverlay = findViewById(R.id.brightnessOverlay);
+        mLoadingOverlay = findViewById(R.id.loadingOverlay);
+        mLoadingLabel = findViewById(R.id.loadingLabel);
+        mLoadingBar = findViewById(R.id.loadingBar);
+        mLoadingSpeed = findViewById(R.id.loadingSpeed);
         mGotoInput = findViewById(R.id.gotoInput);
         mStripView = findViewById(R.id.stripView);
         mReaderDragBar = findViewById(R.id.readerDragBar);
@@ -704,18 +717,25 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // page). If it is only a partial/prefetched head, top it up in the
             // background and grow the page list as pages land - this fixes
             // "only 4 images after switching chapters".
+            startChapterLoading("正在加载第 " + (index + 1) + " 章…");
             openChapterDir(dir, page, frac, startFilePath);
             if (mChapterProvider != null) {
                 mChapterProvider.ensureChapter(index, page, new MangaChapterSession.DirCallback() {
                     @Override
                     public void onDir(File d, String error) {
                         // The folder is already open; onProgress grows mPages.
+                        hideLoading();
                     }
                     @Override
                     public void onProgress(int done, int total) {
                         mMainHandler.post(() -> {
                             if (session == mChapterSession && !mDestroyed) {
                                 mPageTotal = total;
+                                if (done < total) {
+                                    updateChapterDownloadProgress(dir, done, total);
+                                } else {
+                                    hideLoading();
+                                }
                                 refreshChapterPageList();
                             }
                         });
@@ -727,6 +747,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mChapterProvider != null) {
             mChapterLoading = true;
             mChapterLoadingSince = android.os.SystemClock.uptimeMillis();
+            startChapterLoading("正在加载第 " + (index + 1) + " 章…");
             showHint("加载第 " + (index + 1) + " 章…");
             mChapterProvider.ensureChapter(index, page, new MangaChapterSession.DirCallback() {
                 private boolean opened;
@@ -738,6 +759,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         }
                         mChapterLoading = false;
                         if (d == null) {
+                            hideLoading();
                             if (!opened) showHint("章节加载失败：" + error);
                             return;
                         }
@@ -759,6 +781,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             return;
                         }
                         mPageTotal = total;
+                        updateChapterDownloadProgress(mChapterDirs.get(index), done, total);
                         if (!opened) {
                             // First page landed: show it now instead of making
                             // the user stare at a hint for the whole chapter.
@@ -766,11 +789,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             if (d != null && countImageFiles(d) > 0) {
                                 opened = true;
                                 mChapterLoading = false;
+                                hideLoading();
                                 mChapterDirs.set(index, d);
                                 openChapterDir(d, page, frac, startFilePath);
                             }
                         } else {
                             // Already open: grow the page list as the tail lands.
+                            if (done >= total) hideLoading();
                             refreshChapterPageList();
                         }
                     });
@@ -1017,6 +1042,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (mDestroyed || mPages.isEmpty() || index < 0 || index >= mPages.size()) {
             if (mPages.isEmpty()) {
+                hideLoading();
                 mPageCounter.setText("0 / 0");
                 showHint("该目录没有可阅读的图片或视频");
             } else if (index >= mPages.size() && index < total) {
@@ -1198,6 +1224,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void displayLoadedPage(Bitmap bitmap) {
         mRequestedPageKey = null;
+        hideLoading();
         mCurrent = bitmap;
         if (bitmap != null) {
             mDisplayWidth = bitmap.getWidth();
@@ -3029,6 +3056,99 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         Log.i(TAG, "persistState index=" + mIndex);
     }
 
+    /** Shows the centered loading overlay. [done]/[total] are page counts;
+     *  [bytesDone]/[bytesTotal] are optional byte counts (>=0) used to compute
+     *  a live download speed. Call on the main thread. */
+    private void showLoading(String label, int done, int total,
+                             long bytesDone, long bytesTotal) {
+        if (mLoadingOverlay == null) {
+            return;
+        }
+        mLoadingLabel.setText(label);
+        if (mLoadingBar != null) {
+            if (total > 0) {
+                mLoadingBar.setIndeterminate(false);
+                mLoadingBar.setMax(total);
+                mLoadingBar.setProgress(Math.max(0, Math.min(done, total)));
+            } else {
+                mLoadingBar.setIndeterminate(true);
+            }
+        }
+        if (bytesDone >= 0 && bytesTotal >= 0) {
+            long elapsed = System.currentTimeMillis() - mLoadBytesStartMs;
+            String speed = "";
+            if (elapsed > 250 && bytesDone > 0) {
+                double kbps = (bytesDone * 1000.0 / elapsed) / 1024.0;
+                speed = kbps >= 1024
+                        ? String.format(java.util.Locale.ROOT, "%.2f MB/s", kbps / 1024.0)
+                        : String.format(java.util.Locale.ROOT, "%.0f KB/s", kbps);
+            }
+            long pct = bytesTotal > 0 ? (bytesDone * 100 / bytesTotal) : -1;
+            mLoadingSpeed.setText(formatMiB(bytesDone) + " / " + formatMiB(bytesTotal)
+                    + (pct >= 0 ? "  (" + pct + "%)" : "")
+                    + (speed.isEmpty() ? "" : "  ·  " + speed));
+        } else if (total > 0) {
+            mLoadingSpeed.setText(done + " / " + total + " 页");
+        } else {
+            mLoadingSpeed.setText("");
+        }
+        mLoadingOverlay.setVisibility(VISIBLE);
+    }
+
+    private void hideLoading() {
+        if (mLoadingOverlay != null) {
+            mLoadingOverlay.setVisibility(GONE);
+        }
+    }
+
+    private static String formatMiB(long bytes) {
+        if (bytes < 0) return "?";
+        if (bytes < 1024L * 1024L) {
+            return String.format(java.util.Locale.ROOT, "%.0f KB", bytes / 1024.0);
+        }
+        return String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0));
+    }
+
+    /** Called from chapter onProgress (main thread). Shows/updates the centered
+     *  download overlay while the chapter's first page is still landing. */
+    private void updateChapterDownloadProgress(File dir, int done, int total) {
+        if (mLoadBytesStartMs <= 0L) {
+            mLoadBytesStartMs = System.currentTimeMillis();
+        }
+        long landed = dirBytes(dir);
+        long estTotal = done > 0 ? (landed * total / done) : -1;
+        if (done >= total && total > 0) {
+            estTotal = landed;
+        }
+        showLoading("正在加载 " + (mChapterIndex + 1) + " / "
+                        + (mChapterDirs == null ? 1 : mChapterDirs.size()) + " 章",
+                done, total, landed, estTotal);
+    }
+
+    /** Begin a fresh loading cycle: reset speed baseline and show overlay. */
+    private void startChapterLoading(String label) {
+        mLoadBytesStartMs = System.currentTimeMillis();
+        mLoadBytesDone = 0L;
+        mLoadBytesTotal = -1L;
+        showLoading(label, -1, -1, -1, -1);
+    }
+
+    /** Sums the byte size of all landed (non-.tmp) media files in a chapter
+     *  cache dir - used to derive a live download speed without changing the
+     *  downloader's progress interface. */
+    private long dirBytes(File dir) {
+        if (dir == null || !dir.isDirectory()) return 0L;
+        File[] files = dir.listFiles();
+        if (files == null) return 0L;
+        long n = 0L;
+        for (File f : files) {
+            if (f != null && f.isFile() && !f.getName().endsWith(".tmp")) {
+                n += f.length();
+            }
+        }
+        return n;
+    }
+
     private void showHint(String message) {
         if (mHint == null) {
             return;
@@ -3513,6 +3633,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoPage = page;
         mVideoSeeking = false;
         mMainHandler.removeCallbacks(mClearVideoSeekLock);
+        showLoading("正在准备视频…", -1, -1, -1, -1);
         showHint("正在准备视频…");
         updateVideoControls();
         // Seek completion is the authoritative moment to release the UI lock.
@@ -3538,6 +3659,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             // Must precede transforms: size/layout can update progress immediately.
             mVideoPrepared = true;
+            hideLoading();
             mVideoWidth = mp.getVideoWidth();
             mVideoHeight = mp.getVideoHeight();
             Log.i(TAG, "video prepared " + mVideoWidth + "x" + mVideoHeight
