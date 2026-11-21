@@ -235,17 +235,20 @@ public final class Manga115Api {
         return "";
     }
 
-    /** Resolves an image direct link via the web endpoint and downloads its
-     *  bytes. [id] is normally a pickcode; when the listing did not provide a
-     *  pickcode we fall back to the file_id. Tries both parameter forms so a
-     *  folder of loose images works regardless of which schema 115 returned.
-     *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
-    public static byte[] imageBytes(String cookie, String id) throws Exception {
-        if (id == null || id.isEmpty()) {
-            throw new IllegalStateException("115 图片缺少 pickcode/file_id");
-        }
+    /** Browser-like UA. 115's web API + CDN reject generic/truncated UAs. */
+    private static final String UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    private static final String REFERER = "https://115.com/";
+
+    /** Resolves a playable/downloadable direct URL for a file id (pickcode or
+     *  fid). Tries BOTH webapi endpoints; keeps the last error for diagnostics.
+     *  Returns null when no endpoint yields a file_url. */
+    public static String resolveDirectUrl(String cookie, String id) {
+        if (id == null || id.isEmpty()) return null;
         String[] metaUrls = {
+                "https://webapi.115.com/files/download?aid=1&pickcode=" + enc(id),
                 "https://webapi.115.com/files/download?pickcode=" + enc(id),
+                "https://webapi.115.com/files/download?aid=1&fid=" + enc(id),
                 "https://webapi.115.com/files/download?fid=" + enc(id),
         };
         String lastErr = null;
@@ -258,41 +261,68 @@ public final class Manga115Api {
                     JSONObject d = root.optJSONObject("data");
                     if (d != null) durl = d.optString("file_url", "");
                 }
-                if (durl.isEmpty()) {
-                    int errno = root.optInt("errno", -1);
-                    lastErr = "errno=" + errno + " " + root.optString("error");
-                    Log.w(TAG, "imageBytes " + metaUrl.split("\\?")[0]
-                            + " no url: " + lastErr + " id=" + id);
-                    continue;
+                if (!durl.isEmpty()) {
+                    Log.i(TAG, "resolved direct url via " + metaUrl.split("\\?")[0]
+                            + " id=" + id);
+                    return durl;
                 }
-                return httpGetBytes(durl, cookie);
+                int errno = root.optInt("errno", -1);
+                lastErr = "errno=" + errno + " " + root.optString("error")
+                        + " body=" + meta.substring(0, Math.min(160, meta.length()));
+                Log.w(TAG, "resolveDirectUrl no url: " + lastErr + " id=" + id);
             } catch (Exception e) {
                 lastErr = e.getMessage();
-                Log.w(TAG, "imageBytes attempt failed: " + lastErr + " id=" + id);
+                Log.w(TAG, "resolveDirectUrl attempt failed: " + lastErr + " id=" + id);
             }
         }
-        throw new IllegalStateException("115 取直链失败 " + lastErr + " id=" + id);
+        Log.e(TAG, "resolveDirectUrl FAILED id=" + id + " : " + lastErr);
+        return null;
     }
 
-    /** Downloads raw bytes from a direct link with the login Cookie attached
-     *  (115 CDN returns 403 without it). */
-    private static byte[] httpGetBytes(String url, String cookie) throws Exception {
+    /** Resolves an image/video direct link via the web endpoint and downloads
+     *  its bytes. [id] is normally a pickcode; when the listing did not provide a
+     *  pickcode we fall back to the file_id. Both parameter forms are tried so
+     *  a folder of loose images works regardless of which schema 115 returned.
+     *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
+    public static byte[] imageBytes(String cookie, String id) throws Exception {
+        String durl = resolveDirectUrl(cookie, id);
+        if (durl == null) {
+            throw new IllegalStateException("115 取直链失败 id=" + id
+                    + "（检查登录态 / 文件是否为图片或视频）");
+        }
+        return httpGetBytes(durl, cookie, true);
+    }
+
+    /** Downloads raw bytes from a direct link. 115 CDN returns 403 without a
+     *  browser UA + Referer. Follows up to 5 redirects (cross-host included,
+     *  because 115 CDN often 302s to another host). */
+    private static byte[] httpGetBytes(String url, String cookie, boolean follow) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setInstanceFollowRedirects(false);
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        conn.setRequestProperty("User-Agent", UA);
+        conn.setRequestProperty("Referer", REFERER);
         if (cookie != null && !cookie.isEmpty()) {
             conn.setRequestProperty("Cookie", cookie);
         }
         try {
             int code = conn.getResponseCode();
+            if (code >= 300 && code < 400 && follow) {
+                String loc = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (loc != null && !loc.isEmpty()) {
+                    String next = new URL(new URL(url), loc).toString();
+                    return httpGetBytes(next, cookie, true);
+                }
+            }
             if (code < 200 || code >= 300) {
-                throw new IllegalStateException("HTTP " + code + " 下载图片失败");
+                throw new IllegalStateException("HTTP " + code + " 下载失败 " + hostOf(url));
             }
             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
             try (InputStream in = conn.getInputStream()) {
-                byte[] buf = new byte[8192];
+                byte[] buf = new byte[16384];
                 int n;
                 while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
             }
@@ -309,7 +339,8 @@ public final class Manga115Api {
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(15000);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        conn.setRequestProperty("User-Agent", UA);
+        conn.setRequestProperty("Referer", REFERER);
         if (cookie != null && !cookie.isEmpty()) {
             conn.setRequestProperty("Cookie", cookie);
         }
@@ -331,7 +362,8 @@ public final class Manga115Api {
         conn.setReadTimeout(15000);
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0");
+        conn.setRequestProperty("User-Agent", UA);
+        conn.setRequestProperty("Referer", REFERER);
         if (cookie != null && !cookie.isEmpty()) {
             conn.setRequestProperty("Cookie", cookie);
         }

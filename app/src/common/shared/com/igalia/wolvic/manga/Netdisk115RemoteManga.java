@@ -5,16 +5,15 @@
 
 package com.igalia.wolvic.manga;
 
-import android.util.Log;
+import android.media.MediaDataSource;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
 /** A 115 netdisk folder read on demand as a manga: sub-folders = chapters.
- *  Works with loose image files (jpg/png/...), which use the simple web
+ *  Works with loose image files (jpg/png/...) and videos, both via the web
  *  pickcode direct link. Whole-zip manga are not supported by this path. */
 public final class Netdisk115RemoteManga implements RemoteManga {
 
@@ -24,12 +23,23 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     private final String cid;
     private final String title;
     private final String[] media;
+    private final String[] videoExt;
+    private final int sortMode;
+    private final boolean videoFirst;
 
     public Netdisk115RemoteManga(String cookie, String cid, String title, String[] media) {
+        this(cookie, cid, title, media, new String[0], 0, true);
+    }
+
+    public Netdisk115RemoteManga(String cookie, String cid, String title, String[] media,
+                                 String[] videoExt, int sortMode, boolean videoFirst) {
         this.cookie = cookie;
         this.cid = (cid == null || cid.isEmpty()) ? "0" : cid;
         this.title = (title == null || title.isEmpty()) ? "115 网盘" : title;
         this.media = media;
+        this.videoExt = videoExt == null ? new String[0] : videoExt;
+        this.sortMode = sortMode;
+        this.videoFirst = videoFirst;
     }
 
     @Override
@@ -59,8 +69,6 @@ public final class Netdisk115RemoteManga implements RemoteManga {
                 // A folder's own id is file_id in the long schema (e.cid is the
                 // PARENT id in that schema); fall back to cid for the short one.
                 String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
-                Log.i(TAG, "chapter: " + e.name + " id=" + childId
-                        + " (fileId=" + e.fileId + " cid=" + e.cid + ")");
                 out.add(new ChapterInfo(childId, e.name));
             }
         }
@@ -76,29 +84,28 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     @Override
     public List<PageInfo> listPages(ChapterInfo chapter) throws Exception {
         List<Manga115Api.DirEntry> entries = Manga115Api.listDir(cookie, chapter.id);
-        List<PageInfo> out = new ArrayList<>();
+        List<Manga115Api.DirEntry> mediaEntries = new ArrayList<>();
         for (Manga115Api.DirEntry e : entries) {
-            Log.i(TAG, "entry name=" + e.name + " isDir=" + e.isDir
-                    + " fileId=" + e.fileId + " pickCode=" + e.pickCode + " size=" + e.size);
-            if (e.isDir || !isMedia(e.name)) continue;
-            // Use pickcode when present, otherwise fall back to file_id. Both
-            // are accepted by Manga115Api.imageBytes (it tries both endpoints).
-            String id = !e.pickCode.isEmpty() ? e.pickCode : e.fileId;
-            if (id.isEmpty()) {
-                Log.w(TAG, "skip media entry with no id: " + e.name);
-                continue;
+            if (!e.isDir && isMedia(e.name)
+                    && (!e.pickCode.isEmpty() || !e.fileId.isEmpty())) {
+                mediaEntries.add(e);
             }
-            out.add(new PageInfo(out.size(), id, e.name));
         }
-        out.sort((a, b) -> NaturalOrder.compare(a.nameHint, b.nameHint));
-        List<PageInfo> reindexed = new ArrayList<>();
-        for (int j = 0; j < out.size(); j++) {
-            PageInfo p = out.get(j);
-            reindexed.add(new PageInfo(j, p.id, p.nameHint));
+        // Same order as the file browser (video-first + shared name/date sort).
+        mediaEntries.sort(SortUtil.listingComparator(sortMode, videoFirst,
+                e -> false,
+                e -> MangaSettings.hasExtension(e.name, videoExt),
+                e -> e.name,
+                e -> e.modifiedMs));
+        List<PageInfo> out = new ArrayList<>();
+        for (int i = 0; i < mediaEntries.size(); i++) {
+            Manga115Api.DirEntry e = mediaEntries.get(i);
+            String id = !e.pickCode.isEmpty() ? e.pickCode : e.fileId;
+            out.add(new PageInfo(i, id, e.name, e.size, e.modifiedMs));
         }
-        Log.i(TAG, "listPages " + chapter.name + " (cid=" + chapter.id + ") -> "
-                + reindexed.size());
-        return reindexed;
+        android.util.Log.i(TAG, "listPages " + chapter.name + " (cid=" + chapter.id + ") -> "
+                + out.size());
+        return out;
     }
 
     @Override
@@ -106,9 +113,14 @@ public final class Netdisk115RemoteManga implements RemoteManga {
         byte[] bytes = Manga115Api.imageBytes(cookie, page.id);
         File parent = dest.getParentFile();
         if (parent != null) parent.mkdirs();
-        try (FileOutputStream out = new FileOutputStream(dest)) {
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
             out.write(bytes);
         }
+    }
+
+    @Override
+    public MediaDataSource openVideo(PageInfo page) {
+        return new HttpVideoDataSource(cookie, page.id);
     }
 
     private boolean isMedia(String name) {

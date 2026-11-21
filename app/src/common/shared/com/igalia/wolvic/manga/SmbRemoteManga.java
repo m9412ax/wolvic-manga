@@ -5,6 +5,8 @@
 
 package com.igalia.wolvic.manga;
 
+import android.media.MediaDataSource;
+
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,12 +17,23 @@ public final class SmbRemoteManga implements RemoteManga {
     private final MangaSmb.Auth auth;
     private final String remotePath;
     private final String[] media;
+    private final String[] videoExt;
+    private final int sortMode;
+    private final boolean videoFirst;
     private final String title;
 
     public SmbRemoteManga(MangaSmb.Auth auth, String remotePath, String[] media) {
+        this(auth, remotePath, media, new String[0], 0, true);
+    }
+
+    public SmbRemoteManga(MangaSmb.Auth auth, String remotePath, String[] media,
+                          String[] videoExt, int sortMode, boolean videoFirst) {
         this.auth = auth;
         this.remotePath = remotePath == null ? "" : remotePath;
         this.media = media;
+        this.videoExt = videoExt == null ? new String[0] : videoExt;
+        this.sortMode = sortMode;
+        this.videoFirst = videoFirst;
         String leaf = this.remotePath.isEmpty() ? auth.share
                 : this.remotePath.substring(this.remotePath.lastIndexOf('/') + 1);
         this.title = leaf;
@@ -69,12 +82,24 @@ public final class SmbRemoteManga implements RemoteManga {
     @Override
     public List<PageInfo> listPages(ChapterInfo chapter) throws Exception {
         List<MangaSmb.Entry> entries = MangaSmb.list(auth, chapter.id);
-        List<PageInfo> out = new ArrayList<>();
-        int i = 0;
+        List<MangaSmb.Entry> mediaEntries = new ArrayList<>();
         for (MangaSmb.Entry e : entries) {
             if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
-                out.add(new PageInfo(i++, e.path, e.name));
+                mediaEntries.add(e);
             }
+        }
+        // Order exactly like the file browser: videos first (when enabled),
+        // then the shared name/date sort. This keeps the cached page order and
+        // "next picture" identical to what the user sees in the folder list.
+        mediaEntries.sort(SortUtil.listingComparator(sortMode, videoFirst,
+                e -> false,
+                e -> MangaSettings.hasExtension(e.name, videoExt),
+                e -> e.name,
+                e -> e.modifiedMs));
+        List<PageInfo> out = new ArrayList<>();
+        for (int i = 0; i < mediaEntries.size(); i++) {
+            MangaSmb.Entry e = mediaEntries.get(i);
+            out.add(new PageInfo(i, e.path, e.name, e.size, e.modifiedMs));
         }
         return out;
     }
@@ -82,5 +107,10 @@ public final class SmbRemoteManga implements RemoteManga {
     @Override
     public void fetchPage(PageInfo page, File dest) throws Exception {
         MangaSmb.download(auth, page.id, dest, null);
+    }
+
+    @Override
+    public MediaDataSource openVideo(PageInfo page) {
+        return new SmbVideoDataSource(auth, page.id);
     }
 }

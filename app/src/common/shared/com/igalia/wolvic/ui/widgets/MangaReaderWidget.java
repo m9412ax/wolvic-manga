@@ -45,6 +45,7 @@ import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
+import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
@@ -121,6 +122,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private int mChapterIndex;
     private String mChapterProgressKey;
     private MangaChapterSession.ChapterProvider mChapterProvider;
+    /** Non-null for SMB/115 online sessions; enables streaming video markers. */
+    private RemoteManga mRemoteManga;
     private boolean mLoadingChapter;
     private boolean mChapterLoading;
     /** Bumped on every new chapter session. Async chapter downloads from an
@@ -140,6 +143,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private MediaPlayer mMediaPlayer;
     private Surface mVideoSurface;
     private SurfaceTexture mVideoSurfaceTexture;
+    /** Streaming source for a remote video; closed when playback stops. */
+    private android.media.MediaDataSource mVideoDataSource;
 
     private boolean mVideoPrepared;
     private File mVideoPage;
@@ -695,6 +700,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         clearStripSegments();
         mChapterDirs = session.dirs;
         mChapterProvider = session.provider;
+        mRemoteManga = session.remoteManga;
         mChapterProgressKey = session.progressKey;
         mChapterIndex = session.index;
         Log.i(TAG, "setChapters chapters=" + session.dirs.size() + " index=" + session.index
@@ -715,9 +721,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (hasPages) {
             // Open immediately with whatever is already cached (fast first
             // page). If it is only a partial/prefetched head, top it up in the
-            // background and grow the page list as pages land - this fixes
-            // "only 4 images after switching chapters".
-            startChapterLoading("正在加载第 " + (index + 1) + " 章…");
+            // background and grow the page list as pages land. NO loading
+            // overlay here: there is already readable content on screen.
             openChapterDir(dir, page, frac, startFilePath);
             if (mChapterProvider != null) {
                 mChapterProvider.ensureChapter(index, page, new MangaChapterSession.DirCallback() {
@@ -3110,8 +3115,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     /** Called from chapter onProgress (main thread). Shows/updates the centered
-     *  download overlay while the chapter's first page is still landing. */
+     *  download overlay ONLY while the screen has no readable content (a page
+     *  image or a prepared video). Once something is displayed the overlay is
+     *  suppressed so background page downloads never cover what is being read. */
     private void updateChapterDownloadProgress(File dir, int done, int total) {
+        if (hasVisibleContent()) {
+            return;
+        }
         if (mLoadBytesStartMs <= 0L) {
             mLoadBytesStartMs = System.currentTimeMillis();
         }
@@ -3123,6 +3133,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         showLoading("正在加载 " + (mChapterIndex + 1) + " / "
                         + (mChapterDirs == null ? 1 : mChapterDirs.size()) + " 章",
                 done, total, landed, estTotal);
+    }
+
+    /** True when the reader is currently showing an image page or a prepared
+     *  video - i.e. the screen is NOT a blank "nothing loaded yet" state. */
+    private boolean hasVisibleContent() {
+        if (mVideoPrepared && mMediaPlayer != null) return true;
+        // mCurrent is assigned in every image display path (single, tiled,
+        // continuous strip) and cleared when a new session/page starts.
+        return mCurrent != null;
     }
 
     /** Begin a fresh loading cycle: reset speed baseline and show overlay. */
@@ -3713,21 +3732,39 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 Log.e(TAG, "video error what=" + what + " extra=" + extra
                         + " file=" + page.getName());
                 stopVideo(false);
+                hideLoading();
                 showHint("视频无法播放(what=" + what + "/extra=" + extra
                         + ")：" + page.getName());
             }
             return true;
         });
         try {
-            // Original, proven path-based setup: this is what worked with
-            // picture + sound in every earlier build.
-            player.setDataSource(page.getAbsolutePath());
+            boolean streamed = false;
+            // SMB/115 videos are stored as tiny marker files: stream the real
+            // bytes on demand through MediaDataSource so playback starts
+            // immediately (no full download) and seeking/fast-forward works.
+            if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
+                RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
+                android.media.MediaDataSource ds = (pi == null) ? null : mRemoteManga.openVideo(pi);
+                if (ds != null) {
+                    mVideoDataSource = ds;
+                    player.setDataSource(ds);
+                    streamed = true;
+                    Log.i(TAG, "streaming video via MediaDataSource: " + page.getName());
+                }
+            }
+            if (!streamed) {
+                // Original, proven path-based setup for local/extension videos.
+                player.setDataSource(page.getAbsolutePath());
+            }
             player.setSurface(mVideoSurface);
             player.prepareAsync();
         } catch (Exception e) {
+            Log.e(TAG, "setDataSource failed: " + e.getMessage(), e);
             if (player == mMediaPlayer) {
                 stopVideo(false);
-                showHint("视频无法打开：" + page.getName());
+                hideLoading();
+                showHint("视频无法打开：" + page.getName() + " · " + e.getMessage());
             }
         }
     }
@@ -3761,6 +3798,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             player.reset();
             player.release();
         } catch (Exception ignored) {
+        }
+        // Close the lazy network stream after MediaPlayer has released it.
+        if (mVideoDataSource != null) {
+            try { mVideoDataSource.close(); } catch (Exception ignored) { }
+            mVideoDataSource = null;
         }
     }
 

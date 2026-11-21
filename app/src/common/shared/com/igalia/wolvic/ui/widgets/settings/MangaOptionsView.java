@@ -244,11 +244,14 @@ public class MangaOptionsView extends SettingsView
         switchRow("保存阅读进度", MangaSettings.PROGRESS_ENABLED);
         switchRow("保存视频播放位置", MangaSettings.PROGRESS_VIDEO);
         radio("页面缓存上限", MangaSettings.CACHE_MB,
-                new String[]{"64 MB", "128 MB", "256 MB", "512 MB"},
-                new int[]{64, 128, 256, 512});
+                new String[]{"64 MB", "128 MB", "256 MB", "512 MB", "1 GB"},
+                new int[]{64, 128, 256, 512, 1024});
         radio("在线章节磁盘缓存上限", MangaSettings.SOURCE_CACHE_MB,
-                new String[]{"256 MB", "512 MB", "1024 MB", "2048 MB"},
-                new int[]{256, 512, 1024, 2048});
+                new String[]{"256 MB", "512 MB", "1 GB", "2 GB", "4 GB"},
+                new int[]{256, 512, 1024, 2048, 4096});
+        radio("SMB / 115 在线缓存上限", MangaSettings.REMOTE_CACHE_MB,
+                new String[]{"128 MB", "256 MB", "512 MB", "1 GB", "2 GB", "4 GB"},
+                new int[]{128, 256, 512, 1024, 2048, 4096});
         radio("图源 DNS over HTTPS（重启生效）", MangaSettings.NET_DOH,
                 new String[]{"关闭", "Cloudflare", "Google", "阿里 DNS", "DNSPod"},
                 new int[]{-1, 1, 2, 5, 6});

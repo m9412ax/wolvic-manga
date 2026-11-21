@@ -53,10 +53,19 @@ public class MangaChapterSession {
     public final String startFilePath;
     public final String progressKey;
     public final ChapterProvider provider;
+    /** Non-null for SMB/115 online sessions; used by the reader to stream
+     *  video marker files instead of decoding them as images. */
+    public final RemoteManga remoteManga;
 
     private MangaChapterSession(List<File> dirs, int index, int page, float frac,
                                 String startFilePath, String progressKey,
                                 ChapterProvider provider) {
+        this(dirs, index, page, frac, startFilePath, progressKey, provider, null);
+    }
+
+    private MangaChapterSession(List<File> dirs, int index, int page, float frac,
+                                String startFilePath, String progressKey,
+                                ChapterProvider provider, RemoteManga remoteManga) {
         this.dirs = dirs;
         this.index = index;
         this.page = page;
@@ -64,6 +73,7 @@ public class MangaChapterSession {
         this.startFilePath = startFilePath;
         this.progressKey = progressKey;
         this.provider = provider;
+        this.remoteManga = remoteManga;
     }
 
     public static MangaChapterSession local(File root, List<File> chapters, int index,
@@ -113,7 +123,8 @@ public class MangaChapterSession {
      *  maps to a stable local cache folder; pages are fetched on demand through
      *  RemoteChapterLoader with the same layered/concurrent pipeline as source
      *  chapters (first page shows immediately, the rest stream in). */
-    public static MangaChapterSession remote(final RemoteManga manga,
+    public static MangaChapterSession remote(final Context context,
+                                             final RemoteManga manga,
                                              final List<RemoteManga.ChapterInfo> chapters,
                                              final List<File> dirs,
                                              int index, int page, float frac) {
@@ -124,7 +135,7 @@ public class MangaChapterSession {
                     callback.onDir(null, "章节序号越界");
                     return;
                 }
-                RemoteChapterLoader.download(manga, chapters.get(i), dirs.get(i),
+                RemoteChapterLoader.download(context, manga, chapters.get(i), dirs.get(i),
                         startPage, callback::onProgress,
                         (dir, error) -> callback.onDir(dir, error));
             }
@@ -136,6 +147,6 @@ public class MangaChapterSession {
             }
         };
         return new MangaChapterSession(dirs, index, page, frac, null,
-                "remote:" + manga.key(), provider);
+                "remote:" + manga.key(), provider, manga);
     }
 }

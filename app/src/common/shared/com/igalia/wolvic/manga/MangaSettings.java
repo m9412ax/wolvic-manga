@@ -146,6 +146,8 @@ public final class MangaSettings {
     // Progress / backup
     public static final String PROGRESS_ENABLED = "progress_enabled";
     public static final String PROGRESS_VIDEO = "progress_video";
+    /** Disk cap for the SMB/115 on-demand cache (<cache>/remote-manga). */
+    public static final String REMOTE_CACHE_MB = "remote_cache_mb";
     public static final String CACHE_MB = "cache_mb";
     public static final String SOURCE_CACHE_MB = "source_cache_mb";
 
@@ -271,6 +273,8 @@ public final class MangaSettings {
                 return 2;
             case CACHE_MB:
                 return 256;
+            case REMOTE_CACHE_MB:
+                return 512;
             case SOURCE_CACHE_MB:
                 return 1024;
             case LIBRARY_SIZE:

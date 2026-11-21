@@ -5,33 +5,29 @@
 
 package com.igalia.wolvic.manga;
 
+import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Downloads ONE online chapter page-by-page into a local cache folder, with
- * the same layered priority as extension sources: page 0 first (folder handed
- * back immediately -> "open now"), leading 4 pages, 4 pages after the reader's
- * entry page, then the rest concurrently. Already-cached pages are skipped.
+ * Downloads ONE online chapter into a local cache folder, page by page in the
+ * EXACT order of the file browser (SMB/115 links are constant-speed, so
+ * parallel downloads only punch holes and stall at the slowest page).
+ *
+ * Videos are NOT downloaded: a tiny marker file is written and the reader
+ * opens a MediaDataSource that streams the bytes on demand, so playback starts
+ * instantly (crucial for LAN SMB). The whole remote cache is capped by the
+ * REMOTE_CACHE_MB setting with oldest-chapter-first eviction.
  */
 public final class RemoteChapterLoader {
 
     private static final String TAG = "RemoteLoader";
-    private static final int CONCURRENCY = 6;
-    private static final int HEAD = 4;
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     public interface Progress { void onProgress(int done, int total); }
@@ -39,85 +35,83 @@ public final class RemoteChapterLoader {
 
     private RemoteChapterLoader() {}
 
-    public static void download(final RemoteManga manga,
+    /** Root of all remote chapter caches: <cache>/remote-manga/<hash>/<chapter>. */
+    public static File remoteCacheRoot(Context context) {
+        File base = context.getExternalCacheDir();
+        if (base == null) base = context.getCacheDir();
+        return new File(base, "remote-manga");
+    }
+
+    public static void download(final Context context,
+                                final RemoteManga manga,
                                 final RemoteManga.ChapterInfo chapter,
                                 final File dir,
                                 final int startPage,
                                 final Progress progress,
                                 final Callback callback) {
         new Thread(() -> {
-            final boolean[] opened = {false};
             try {
                 final List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
                 if (pages == null || pages.isEmpty()) {
-                    throw new IllegalStateException("章节页面列表为空");
+                    throw new IllegalStateException("章节没有可读取的图片或视频");
                 }
                 if (!dir.exists() && !dir.mkdirs()) {
                     throw new IllegalStateException("无法创建缓存目录: " + dir.getAbsolutePath());
                 }
                 final int total = pages.size();
-                final int start = Math.max(0, Math.min(startPage, total - 1));
+                final int[] done = {0};
                 Log.i(TAG, "download " + manga.key() + "/" + chapter.name
-                        + " pages=" + total + " start=" + start);
+                        + " pages=" + total + " (sequential)");
 
-                final Set<Integer> reported = java.util.Collections.synchronizedSet(new HashSet<>());
-                final AtomicInteger done = new AtomicInteger(0);
-                final Semaphore sem = new Semaphore(CONCURRENCY);
-                final ExecutorService pool = Executors.newFixedThreadPool(CONCURRENCY);
-
-                // Helper that downloads a single page (idempotent, thread-safe).
-                final OnePage onePage = i -> {
-                    if (i < 0 || i >= total || !reported.add(i)) return;
+                boolean opened = false;
+                for (int i = 0; i < total; i++) {
                     RemoteManga.PageInfo p = pages.get(i);
                     File out = cachedFile(dir, i, p.nameHint);
                     try {
                         if (!isValidCached(out)) {
-                            File tmp = new File(out.getAbsolutePath() + ".tmp");
-                            manga.fetchPage(p, tmp);
-                            if (!tmp.exists() || tmp.length() == 0L) {
-                                throw new IllegalStateException("第 " + (i + 1) + " 页下载为空");
+                            if (isVideoName(p.nameHint)) {
+                                // Marker instead of the full video: reader will
+                                // stream it lazily through MediaDataSource.
+                                RemoteManga.writeVideoMarker(out, p);
+                                Log.i(TAG, "video marker " + out.getName()
+                                        + " for " + p.nameHint);
+                            } else {
+                                File tmp = new File(out.getAbsolutePath() + ".tmp");
+                                manga.fetchPage(p, tmp);
+                                if (!tmp.exists() || tmp.length() == 0L) {
+                                    throw new IllegalStateException("第 " + (i + 1) + " 页为空");
+                                }
+                                if (out.exists() && !out.delete()) Log.w(TAG, "delete old " + out);
+                                if (!tmp.renameTo(out)) {
+                                    throw new IllegalStateException("重命名失败: " + out);
+                                }
                             }
-                            if (out.exists() && !out.delete()) Log.w(TAG, "delete old " + out);
-                            if (!tmp.renameTo(out)) throw new IllegalStateException("重命名失败: " + out);
                         }
                     } catch (Throwable e) {
                         Log.w(TAG, "page " + i + " failed: " + e.getMessage());
-                    } finally {
-                        int d = done.incrementAndGet();
-                        final int dd = d;
-                        MAIN.post(() -> {
-                            if (progress != null) progress.onProgress(dd, total);
-                        });
                     }
-                };
-
-                try {
-                    // Stage 1: first page alone, hand the folder straight back.
-                    onePage.run(0);
-                    if (!opened[0]) {
-                        opened[0] = true;
+                    final int d = ++done[0];
+                    MAIN.post(() -> {
+                        if (progress != null) progress.onProgress(d, total);
+                    });
+                    // Hand the folder back as soon as the first page lands.
+                    if (!opened) {
+                        opened = true;
                         MAIN.post(() -> callback.onResult(dir, null));
                     }
-                    // Stage 2: leading window.
-                    awaitAll(pool, range(1, Math.min(HEAD, total)), onePage, sem);
-                    // Stage 3: pages just after the reader's entry page.
-                    awaitAll(pool, range(start + 1, Math.min(start + 5, total)), onePage, sem);
-                    // Stage 4: everything else, capped concurrency.
-                    awaitAll(pool, range(0, total), onePage, sem);
-                } finally {
-                    pool.shutdown();
+                    if (d % 8 == 0) enforceCacheCap(context, dir);
                 }
-                Log.i(TAG, "download done " + chapter.name + " pages=" + done.get());
+                enforceCacheCap(context, dir);
+                Log.i(TAG, "download done " + chapter.name + " pages=" + done[0]);
             } catch (Throwable e) {
                 Log.e(TAG, "download failed " + e.getMessage(), e);
                 final String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                if (!opened[0]) MAIN.post(() -> callback.onResult(null, msg));
+                MAIN.post(() -> callback.onResult(null, msg));
             }
         }, "remote-chapter-download").start();
     }
 
-    /** Warms up only the first [maxPages] pages of a chapter (cheap pre-cache
-     *  for instant chapter switching). Skips already-cached pages. */
+    /** Warms up only the first [maxPages] pages (sequential, silent). */
     public static void prefetch(final RemoteManga manga,
                                 final RemoteManga.ChapterInfo chapter,
                                 final File dir, final int maxPages) {
@@ -131,6 +125,10 @@ public final class RemoteChapterLoader {
                     RemoteManga.PageInfo p = pages.get(i);
                     File out = cachedFile(dir, i, p.nameHint);
                     if (isValidCached(out)) continue;
+                    if (isVideoName(p.nameHint)) {
+                        RemoteManga.writeVideoMarker(out, p);
+                        continue;
+                    }
                     File tmp = new File(out.getAbsolutePath() + ".tmp");
                     manga.fetchPage(p, tmp);
                     if (!tmp.exists() || tmp.length() == 0L) continue;
@@ -144,31 +142,65 @@ public final class RemoteChapterLoader {
         }, "remote-prefetch").start();
     }
 
-    private interface OnePage { void run(int i) throws Exception; }
-
-    private static List<Integer> range(int from, int to) {
-        List<Integer> out = new ArrayList<>();
-        for (int i = from; i < to; i++) out.add(i);
-        return out;
+    /** Evicts oldest chapter folders until the remote cache is under the cap.
+     *  Never deletes [protectDir] (the chapter currently being read). */
+    public static void enforceCacheCap(Context context, File protectDir) {
+        try {
+            File root = remoteCacheRoot(context);
+            if (!root.isDirectory()) return;
+            long cap = MangaSettings.get(context).integer(MangaSettings.REMOTE_CACHE_MB)
+                    * 1024L * 1024L;
+            List<File> chapters = new ArrayList<>();
+            File[] mangas = root.listFiles();
+            if (mangas != null) {
+                for (File m : mangas) {
+                    if (!m.isDirectory()) continue;
+                    File[] chs = m.listFiles();
+                    if (chs == null) continue;
+                    for (File ch : chs) if (ch.isDirectory()) chapters.add(ch);
+                }
+            }
+            // Clean .tmp leftovers first (never readable, always count against cap).
+            for (File ch : chapters) {
+                File[] fs = ch.listFiles();
+                if (fs == null) continue;
+                for (File f : fs) if (f.isFile() && f.getName().endsWith(".tmp")) f.delete();
+            }
+            long total = 0L;
+            for (File ch : chapters) total += dirSize(ch);
+            if (total <= cap) return;
+            chapters.sort((a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            String protect = protectDir == null ? "" : protectDir.getAbsolutePath();
+            for (File ch : chapters) {
+                if (total <= cap) break;
+                if (ch.getAbsolutePath().equals(protect)) continue;
+                long s = dirSize(ch);
+                if (ch.delete()) {
+                    total -= s;
+                    Log.i(TAG, "evicted " + ch.getAbsolutePath() + " (" + s + " bytes)");
+                }
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "enforceCacheCap failed: " + e.getMessage());
+        }
     }
 
-    private static void awaitAll(ExecutorService pool, List<Integer> indices,
-                                 OnePage onePage, Semaphore sem) throws Exception {
-        List<Future<?>> futures = new ArrayList<>();
-        for (int i : indices) {
-            futures.add(pool.submit(() -> {
-                try {
-                    sem.acquire();
-                    try { onePage.run(i); } finally { sem.release(); }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch (Throwable ignored) {
-                    Log.w(TAG, "page task failed: " + ignored.getMessage());
-                }
-                return null;
-            }));
-        }
-        for (Future<?> f : futures) f.get();
+    private static long dirSize(File dir) {
+        long n = 0L;
+        File[] fs = dir.listFiles();
+        if (fs == null) return 0L;
+        for (File f : fs) if (f != null && f.isFile() && !f.getName().endsWith(".tmp")) n += f.length();
+        return n;
+    }
+
+    private static boolean isVideoName(String name) {
+        if (name == null) return false;
+        String[] V = {"mp4", "mkv", "webm", "avi", "mov", "3gp", "ts", "m4v", "hevc", "h265", "av1"};
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return false;
+        String ext = name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        for (String e : V) if (e.equals(ext)) return true;
+        return false;
     }
 
     private static File cachedFile(File dir, int index, String nameHint) {

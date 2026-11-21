@@ -967,6 +967,24 @@ public class MangaLibraryWidget extends UIWidget {
         return String.format(java.util.Locale.ROOT, "%08x", h);
     }
 
+    /** Builds a remote source with the SAME sort config the file browser uses,
+     *  so the reader's page order == the folder listing order. */
+    private RemoteManga smbManga(MangaSmb.Auth auth, String path) {
+        return new SmbRemoteManga(auth, path,
+                concat(mSettings.imageExtensions(), mSettings.videoExtensions()),
+                mSettings.videoExtensions(),
+                mSettings.integer(MangaSettings.SORT_MODE),
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+    }
+
+    private RemoteManga p115Manga(String cookie, String cid, String title) {
+        return new Netdisk115RemoteManga(cookie, cid, title,
+                concat(mSettings.imageExtensions(), mSettings.videoExtensions()),
+                mSettings.videoExtensions(),
+                mSettings.integer(MangaSettings.SORT_MODE),
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+    }
+
     /** Opens a remote manga ONLINE: chapters are listed first (no image
      *  download), then the reader fetches pages on demand with the same
      *  layered/concurrent pipeline as extension sources. */
@@ -1023,7 +1041,7 @@ public class MangaLibraryWidget extends UIWidget {
                 final float ff = frac;
                 mMain.post(() -> {
                     MangaChapterSession session = MangaChapterSession.remote(
-                            manga, chapters, dirs, fi, fp, ff);
+                            getContext(), manga, chapters, dirs, fi, fp, ff);
                     ((VRBrowserActivity) getContext()).openMangaReaderSession(session);
                     Log.i(TAG, "openRemoteManga " + manga.key()
                             + " chapters=" + chapters.size() + " index=" + fi);
@@ -1082,21 +1100,19 @@ public class MangaLibraryWidget extends UIWidget {
                     mSettings.text(MangaSettings.SMB_DOMAIN),
                     mSettings.text(MangaSettings.SMB_USER),
                     mSettings.text(MangaSettings.SMB_PASS));
-            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
-            openRemoteManga(new SmbRemoteManga(auth, path, media));
+            openRemoteManga(smbManga(auth, path));
         } else if (shelfKey.startsWith(SHELF_115)) {
             String rest = shelfKey.substring(SHELF_115.length());
             int sep = rest.indexOf('|');
             final String cid = sep > 0 ? rest.substring(0, sep) : rest;
             final String title = sep > 0 ? rest.substring(sep + 1) : "115 网盘";
-            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
             String cookie = mSettings.text(MangaSettings.P115_COOKIE);
             if (cookie == null || cookie.isEmpty()) {
                 Toast.makeText(getContext(), "请先登录 115", Toast.LENGTH_SHORT).show();
                 switchPage(MangaPage.WEBDAV);
                 return;
             }
-            openRemoteManga(new Netdisk115RemoteManga(cookie, cid, title, media));
+            openRemoteManga(p115Manga(cookie, cid, title));
         }
     }
 
@@ -1710,8 +1726,7 @@ public class MangaLibraryWidget extends UIWidget {
                 } else {
                     // Open the WHOLE current folder as a manga, positioned at
                     // this image - so up/down page turns work (not single-file).
-                    String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
-                    openRemoteManga(new SmbRemoteManga(smbAuth(), mSmbPath, media), entry.name);
+                    openRemoteManga(smbManga(smbAuth(), mSmbPath), entry.name);
                 }
             });
             content.addView(row, wrapParams());
@@ -1819,8 +1834,7 @@ public class MangaLibraryWidget extends UIWidget {
             refreshPage(MangaPage.SMB);
             return;
         }
-        String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
-        openRemoteManga(new SmbRemoteManga(auth, remotePath, media));
+        openRemoteManga(smbManga(auth, remotePath));
     }
 
     private void readSmbFolderAsManga(String remotePath) {
@@ -2101,10 +2115,8 @@ public class MangaLibraryWidget extends UIWidget {
                     mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
                     listP115Dir(mP115Cid);
                 } else {
-                    String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
                     String cookie = mSettings.text(MangaSettings.P115_COOKIE);
-                    openRemoteManga(new Netdisk115RemoteManga(
-                            cookie, mP115Cid, mP115Title, media), e.name);
+                    openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), e.name);
                 }
             });
             content.addView(entryRow, wrapParams());
@@ -2142,8 +2154,7 @@ public class MangaLibraryWidget extends UIWidget {
             Toast.makeText(getContext(), "请先登录 115", Toast.LENGTH_SHORT).show();
             return;
         }
-        String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
-        openRemoteManga(new Netdisk115RemoteManga(cookie, cid, title, media));
+        openRemoteManga(p115Manga(cookie, cid, title));
     }
 
     private void clearP115QrBitmap() {
