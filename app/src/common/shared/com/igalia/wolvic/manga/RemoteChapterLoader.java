@@ -175,7 +175,9 @@ public final class RemoteChapterLoader {
                 if (total <= cap) break;
                 if (ch.getAbsolutePath().equals(protect)) continue;
                 long s = dirSize(ch);
-                if (ch.delete()) {
+                // File.delete() fails on a NON-EMPTY directory - that bug let
+                // the cache grow to 3 GB. Delete the files inside first.
+                if (deleteRecursively(ch)) {
                     total -= s;
                     Log.i(TAG, "evicted " + ch.getAbsolutePath() + " (" + s + " bytes)");
                 }
@@ -183,6 +185,20 @@ public final class RemoteChapterLoader {
         } catch (Throwable e) {
             Log.w(TAG, "enforceCacheCap failed: " + e.getMessage());
         }
+    }
+
+    /** Deletes a directory and everything under it (File.delete() alone
+     *  cannot remove a non-empty dir - the cause of the unbounded cache). */
+    private static boolean deleteRecursively(File dir) {
+        if (dir == null) return false;
+        File[] fs = dir.listFiles();
+        if (fs != null) {
+            for (File f : fs) {
+                if (f.isDirectory()) deleteRecursively(f);
+                else f.delete();
+            }
+        }
+        return dir.delete();
     }
 
     private static long dirSize(File dir) {

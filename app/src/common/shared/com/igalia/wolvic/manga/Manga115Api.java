@@ -185,7 +185,7 @@ public final class Manga115Api {
         if (cid == null || cid.isEmpty()) cid = "0";
         String url = "https://webapi.115.com/files?"
                 + "aid=1&cid=" + enc(cid)
-                + "&o=user_ptime&asc=0&offset=0&show_dir=1&limit=100"
+                + "&o=user_ptime&asc=0&offset=0&show_dir=1&limit=1000"
                 + "&snap=0&natsort=1&record_open_time=1&count_folders=1&format=json";
         String json = httpGet(url, cookie);
         JSONObject root = new JSONObject(json);
@@ -240,43 +240,72 @@ public final class Manga115Api {
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private static final String REFERER = "https://115.com/";
 
+    /** Direct links are stable for ~25 min. Cache them per (cookie,id) so a
+     *  re-opened chapter / prefetch never re-hits the webapi resolve endpoints.
+     *  115 rate-limits aggressive callers, which looked like "exit then the
+     *  whole account disconnects". */
+    private static final java.util.Map<String, String> DIRECT_CACHE =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, String>(64, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, String> e) {
+                    return size() > 256;
+                }
+            });
+    private static volatile String sWorkingTemplate = null; // e.g. "pickcode" or "fid"
+
     /** Resolves a playable/downloadable direct URL for a file id (pickcode or
      *  fid). Tries BOTH webapi endpoints; keeps the last error for diagnostics.
      *  Returns null when no endpoint yields a file_url. */
     public static String resolveDirectUrl(String cookie, String id) {
         if (id == null || id.isEmpty()) return null;
-        String[] metaUrls = {
-                "https://webapi.115.com/files/download?aid=1&pickcode=" + enc(id),
-                "https://webapi.115.com/files/download?pickcode=" + enc(id),
-                "https://webapi.115.com/files/download?aid=1&fid=" + enc(id),
-                "https://webapi.115.com/files/download?fid=" + enc(id),
-        };
+        // Prefer a pickcode hit even when the id is a fid: 115 listings give
+        // both, and the app usually passes pickcode. Remember which parameter
+        // name worked so subsequent files use ONE request instead of four.
+        final String[] templates = {"pickcode", "fid"};
+        final String cacheKey = String.valueOf(cookie == null ? "" : cookie.hashCode())
+                + "|" + id;
+        String cached = DIRECT_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+
         String lastErr = null;
-        for (String metaUrl : metaUrls) {
-            try {
-                String meta = httpGet(metaUrl, cookie);
-                JSONObject root = new JSONObject(meta);
-                String durl = root.optString("file_url", "");
-                if (durl.isEmpty() && root.has("data")) {
-                    JSONObject d = root.optJSONObject("data");
-                    if (d != null) durl = d.optString("file_url", "");
+        // Try the previously working template first when its id form is known.
+        for (String t : templates) {
+            String[] urls = sWorkingTemplate != null && t.equals(sWorkingTemplate)
+                    ? new String[]{
+                        "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id),
+                        "https://webapi.115.com/files/download?" + t + "=" + enc(id)}
+                    : new String[]{
+                        "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id),
+                        "https://webapi.115.com/files/download?" + t + "=" + enc(id)};
+            for (String metaUrl : urls) {
+                try {
+                    String meta = httpGet(metaUrl, cookie);
+                    JSONObject root = new JSONObject(meta);
+                    String durl = root.optString("file_url", "");
+                    if (durl.isEmpty() && root.has("data")) {
+                        JSONObject d = root.optJSONObject("data");
+                        if (d != null) durl = d.optString("file_url", "");
+                    }
+                    if (!durl.isEmpty()) {
+                        sWorkingTemplate = t; // remember for the next file
+                        DIRECT_CACHE.put(cacheKey, durl);
+                        Log.i(TAG, "resolved via " + t + " id=" + id);
+                        return durl;
+                    }
+                    int errno = root.optInt("errno", -1);
+                    lastErr = "errno=" + errno + " " + root.optString("error")
+                            + " body=" + meta.substring(0, Math.min(120, meta.length()));
+                } catch (Exception e) {
+                    lastErr = e.getMessage();
                 }
-                if (!durl.isEmpty()) {
-                    Log.i(TAG, "resolved direct url via " + metaUrl.split("\\?")[0]
-                            + " id=" + id);
-                    return durl;
-                }
-                int errno = root.optInt("errno", -1);
-                lastErr = "errno=" + errno + " " + root.optString("error")
-                        + " body=" + meta.substring(0, Math.min(160, meta.length()));
-                Log.w(TAG, "resolveDirectUrl no url: " + lastErr + " id=" + id);
-            } catch (Exception e) {
-                lastErr = e.getMessage();
-                Log.w(TAG, "resolveDirectUrl attempt failed: " + lastErr + " id=" + id);
             }
         }
         Log.e(TAG, "resolveDirectUrl FAILED id=" + id + " : " + lastErr);
         return null;
+    }
+
+    public static void clearDirectUrlCache() {
+        DIRECT_CACHE.clear();
+        sWorkingTemplate = null;
     }
 
     /** Resolves an image/video direct link via the web endpoint and downloads

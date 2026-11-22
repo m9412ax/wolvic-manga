@@ -20,20 +20,23 @@ public final class SmbRemoteManga implements RemoteManga {
     private final String[] videoExt;
     private final int sortMode;
     private final boolean videoFirst;
+    private final int videoBufferBytes;
     private final String title;
 
     public SmbRemoteManga(MangaSmb.Auth auth, String remotePath, String[] media) {
-        this(auth, remotePath, media, new String[0], 0, true);
+        this(auth, remotePath, media, new String[0], 0, true, 4 * 1024 * 1024);
     }
 
     public SmbRemoteManga(MangaSmb.Auth auth, String remotePath, String[] media,
-                          String[] videoExt, int sortMode, boolean videoFirst) {
+                          String[] videoExt, int sortMode, boolean videoFirst,
+                          int videoBufferBytes) {
         this.auth = auth;
         this.remotePath = remotePath == null ? "" : remotePath;
         this.media = media;
         this.videoExt = videoExt == null ? new String[0] : videoExt;
         this.sortMode = sortMode;
         this.videoFirst = videoFirst;
+        this.videoBufferBytes = videoBufferBytes;
         String leaf = this.remotePath.isEmpty() ? auth.share
                 : this.remotePath.substring(this.remotePath.lastIndexOf('/') + 1);
         this.title = leaf;
@@ -111,6 +114,6 @@ public final class SmbRemoteManga implements RemoteManga {
 
     @Override
     public MediaDataSource openVideo(PageInfo page) {
-        return new SmbVideoDataSource(auth, page.id);
+        return new SmbVideoDataSource(auth, page.id, videoBufferBytes);
     }
 }

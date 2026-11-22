@@ -148,6 +148,10 @@ public final class MangaSettings {
     public static final String PROGRESS_VIDEO = "progress_video";
     /** Disk cap for the SMB/115 on-demand cache (<cache>/remote-manga). */
     public static final String REMOTE_CACHE_MB = "remote_cache_mb";
+    /** In-memory read-ahead buffer for ONLINE video streaming (SMB/115).
+     *  Independent of the image DISK cache: streamed video is never written
+     *  to the image cache, so this cannot starve page turning. */
+    public static final String VIDEO_BUFFER_MB = "video_buffer_mb";
     public static final String CACHE_MB = "cache_mb";
     public static final String SOURCE_CACHE_MB = "source_cache_mb";
 
@@ -275,6 +279,8 @@ public final class MangaSettings {
                 return 256;
             case REMOTE_CACHE_MB:
                 return 512;
+            case VIDEO_BUFFER_MB:
+                return 16;
             case SOURCE_CACHE_MB:
                 return 1024;
             case LIBRARY_SIZE:

@@ -974,7 +974,8 @@ public class MangaLibraryWidget extends UIWidget {
                 concat(mSettings.imageExtensions(), mSettings.videoExtensions()),
                 mSettings.videoExtensions(),
                 mSettings.integer(MangaSettings.SORT_MODE),
-                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
+                mSettings.integer(MangaSettings.VIDEO_BUFFER_MB) * 1024 * 1024);
     }
 
     private RemoteManga p115Manga(String cookie, String cid, String title) {
@@ -1991,6 +1992,7 @@ public class MangaLibraryWidget extends UIWidget {
             addButton(row, "重新扫码", v -> start115Login());
             addButton(row, "退出登录", v -> {
                 mSettings.put(MangaSettings.P115_COOKIE, "");
+                Manga115Api.clearDirectUrlCache();
                 mP115Status = "已退出登录";
                 mP115Qr = null;
                 mP115PollHandler.removeCallbacks(mP115Poll);
@@ -2139,8 +2141,21 @@ public class MangaLibraryWidget extends UIWidget {
                 });
             } catch (Exception e) {
                 final String msg = e.getMessage();
+                // A failed listing (e.g. after heavy reading) is usually an
+                // expired / rate-limited cookie. Clear stale direct links and
+                // tell the user to re-login instead of silently showing an
+                // empty folder ("看不了目录").
+                boolean auth = msg != null && (msg.contains("errno=990001")
+                        || msg.contains("errno=990002") || msg.contains("登录")
+                        || msg.contains("401") || msg.contains("403"));
+                if (auth) {
+                    Manga115Api.clearDirectUrlCache();
+                }
+                final String status = auth
+                        ? "登录态已失效，请到设置里重新扫码登录（" + msg + "）"
+                        : "读取失败：" + msg;
                 mMain.post(() -> {
-                    mP115DirStatus = "读取失败：" + msg;
+                    mP115DirStatus = status;
                     mP115Entries.clear();
                     refreshPage(MangaPage.WEBDAV);
                 });
@@ -2228,6 +2243,7 @@ public class MangaLibraryWidget extends UIWidget {
             try {
                 final String cookie = Manga115Api.exchangeCookie(session, device);
                 mMain.post(() -> {
+                    Manga115Api.clearDirectUrlCache();
                     mSettings.put(MangaSettings.P115_COOKIE, cookie);
                     mP115Status = "登录成功，已保存登录态";
                     mP115Qr = null;

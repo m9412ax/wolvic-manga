@@ -21,17 +21,26 @@ import com.hierynomus.smbj.share.DiskShare;
 import java.util.EnumSet;
 
 /**
- * Lazy MediaDataSource for an SMB video file. Construction does NO network;
- * the SMB connection is opened on the first readAt()/getSize() call. MediaPlayer
- * then pulls byte ranges over SMB2 with seeking/fast-forward, so a video on the
- * LAN starts instantly instead of waiting for the whole file to download.
+ * Lazy MediaDataSource for an SMB video with a SLIDING READ-AHEAD WINDOW.
+ *
+ * MediaPlayer asks for small chunks very frequently. Doing one smbj SMB2 READ
+ * per chunk is a network round-trip each time, which on VR WiFi shows up as a
+ * stutter every 2-3 s (the decoder drains its tiny buffer before the next
+ * round-trip lands). This class fills a contiguous window (configurable via
+ * VIDEO_BUFFER_MB, default 4 MB) in 256 KB SMB reads and serves all in-window
+ * readAt() calls from memory - one network trip per window, not per chunk.
+ * Seeks simply re-anchor the window, so fast-forward stays smooth.
+ *
+ * Construction does NO network; the connection opens on first getSize/readAt.
  */
 public final class SmbVideoDataSource extends MediaDataSource {
 
     private static final String TAG = "SmbVideoDS";
+    private static final int SMB_CHUNK = 256 * 1024; // stay under negotiated max read size
 
     private final MangaSmb.Auth auth;
     private final String path;
+    private final int windowSize;
     private long size = -1L;
 
     private SMBClient client;
@@ -39,6 +48,11 @@ public final class SmbVideoDataSource extends MediaDataSource {
     private Session session;
     private DiskShare share;
     private com.hierynomus.smbj.share.File file;
+
+    // Sliding read-ahead window.
+    private byte[] window;
+    private long windowStart = -1L;
+    private int windowLen = 0;
 
     private static final java.util.Set<AccessMask> READ_MASK = EnumSet.of(
             AccessMask.FILE_READ_DATA, AccessMask.FILE_READ_ATTRIBUTES,
@@ -49,8 +63,14 @@ public final class SmbVideoDataSource extends MediaDataSource {
             FileAttributes.FILE_ATTRIBUTE_NORMAL);
 
     public SmbVideoDataSource(MangaSmb.Auth auth, String path) {
+        this(auth, path, 4 * 1024 * 1024);
+    }
+
+    public SmbVideoDataSource(MangaSmb.Auth auth, String path, int windowSize) {
         this.auth = auth;
         this.path = path;
+        this.windowSize = Math.max(256 * 1024, windowSize);
+        this.window = new byte[this.windowSize];
     }
 
     private synchronized boolean ensureOpen() {
@@ -67,7 +87,7 @@ public final class SmbVideoDataSource extends MediaDataSource {
             size = share.getFileInformation(p).getStandardInformation().getEndOfFile();
             file = share.openFile(p, READ_MASK, FILE_ATTRS, SHARE_ACCESS,
                     SMB2CreateDisposition.FILE_OPEN, null);
-            Log.i(TAG, "opened " + path + " size=" + size);
+            Log.i(TAG, "opened " + path + " size=" + size + " window=" + windowSize);
             return true;
         } catch (Throwable e) {
             Log.e(TAG, "open failed " + path + ": " + e.getMessage(), e);
@@ -76,17 +96,37 @@ public final class SmbVideoDataSource extends MediaDataSource {
         }
     }
 
+    /** Fills the read-ahead window starting at [position] using several SMB
+     *  reads of SMB_CHUNK so no single request exceeds the negotiated limit. */
+    private void fillWindow(long position) {
+        windowStart = position;
+        windowLen = 0;
+        if (size >= 0 && position >= size) return;
+        long available = (size >= 0) ? (size - position) : windowSize;
+        int want = (int) Math.min(windowSize, available);
+        int filled = 0;
+        while (filled < want) {
+            int chunk = Math.min(SMB_CHUNK, want - filled);
+            int n = file.read(window, position + filled, filled, chunk);
+            if (n <= 0) break;
+            filled += n;
+        }
+        windowLen = filled;
+    }
+
     @Override
     public synchronized int readAt(long position, byte[] buffer, int offset, int length) {
         if (!ensureOpen()) return -1;
-        try {
-            // smbj supports random-offset reads: byte[], fileOffset, bufOffset, len
-            int n = file.read(buffer, position, offset, length);
-            return n; // -1 at EOF is exactly what MediaDataSource expects
-        } catch (Throwable e) {
-            Log.w(TAG, "readAt pos=" + position + " len=" + length + ": " + e.getMessage());
-            return -1;
+        if (length <= 0) return 0;
+        // Reuse the window when the requested position still lies inside it.
+        if (windowStart < 0 || position < windowStart || position >= windowStart + windowLen) {
+            fillWindow(position);
         }
+        if (windowLen <= 0) return -1;
+        int inWindow = (int) Math.min(length, windowLen - (position - windowStart));
+        if (inWindow <= 0) return -1;
+        System.arraycopy(window, (int) (position - windowStart), buffer, offset, inWindow);
+        return inWindow;
     }
 
     @Override
@@ -111,5 +151,6 @@ public final class SmbVideoDataSource extends MediaDataSource {
         connection = null;
         try { if (client != null) client.close(); } catch (Throwable ignored) { }
         client = null;
+        window = null;
     }
 }

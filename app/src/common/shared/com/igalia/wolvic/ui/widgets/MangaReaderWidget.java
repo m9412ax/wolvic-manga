@@ -104,6 +104,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private volatile long mLoadBytesDone;
     private volatile long mLoadBytesTotal;
     private volatile long mLoadBytesStartMs;
+    /** Delayed show of the page-decode loading overlay, so a fast cache-hit
+     *  decode never flashes it. Cancelled as soon as the bitmap lands. */
+    private final Runnable mShowDecodeLoading = () ->
+            showLoading("正在加载图片…", -1, -1, -1, -1);
     private EditText mGotoInput;
 
     private final List<File> mPages = new ArrayList<>();
@@ -1220,15 +1224,25 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             displayLoadedPage(cached);
             return;
         }
+        // Cache miss: nothing is decoded for this page and the old frame has
+        // just been cleared, so the screen is genuinely blank. Large images
+        // (AVIF/tiled/high-res) can take seconds to decode - show the loading
+        // overlay here and hide it in displayLoadedPage() once the bitmap is
+        // ready. This is the "turn a few pages then black screen" case.
         mCurrent = null;
         if (!continuous) {
             mPageImage.setImageDrawable(null);
         }
+        // Only show the overlay if decoding actually takes a while (large
+        // image / AVIF). Fast decodes cancel it in displayLoadedPage().
+        mMainHandler.removeCallbacks(mShowDecodeLoading);
+        mMainHandler.postDelayed(mShowDecodeLoading, 250L);
         mRequestedPageKey = cacheKey;
     }
 
     private void displayLoadedPage(Bitmap bitmap) {
         mRequestedPageKey = null;
+        mMainHandler.removeCallbacks(mShowDecodeLoading);
         hideLoading();
         mCurrent = bitmap;
         if (bitmap != null) {
@@ -2757,10 +2771,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // On a video page the horizontal stick seeks +/-5 s instead of paging.
         if (isVideoPage() && !mResizeModifier) {
             if (!mJoyPageCooldown && Math.abs(mScrollAccumX) > 0.22f) {
-                // Keep the same sign convention as image paging
-                // (pageDelta(mScrollAccumX > 0 ? -1 : 1)): pushing right must
-                // advance the video, not rewind it.
-                seekVideo(mScrollAccumX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                // Native dx>0 maps to "previous page" for images (see the
+                // pageDelta(...) call below), i.e. physical LEFT. For video we
+                // want the opposite so physical RIGHT = fast-forward, matching
+                // the left-to-right seek bar. Hence the inverted sign here.
+                seekVideo(mScrollAccumX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
                 mScrollAccumX = 0f;
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
@@ -2899,7 +2914,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (isVideoPage() && !mResizeModifier) {
             if (Math.abs(mAxisX) > dead && !mJoyPageCooldown) {
-                seekVideo(mAxisX > 0 ? VIDEO_SEEK_STEP_MS : -VIDEO_SEEK_STEP_MS);
+                // Physical RIGHT (native axis sign is inverted vs. intent, same
+                // as the image-paging convention) = fast-forward.
+                seekVideo(mAxisX > 0 ? -VIDEO_SEEK_STEP_MS : VIDEO_SEEK_STEP_MS);
                 mJoyPageCooldown = true;
                 mMainHandler.postDelayed(() -> mJoyPageCooldown = false, 350);
             }
@@ -3101,6 +3118,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void hideLoading() {
+        mMainHandler.removeCallbacks(mShowDecodeLoading);
         if (mLoadingOverlay != null) {
             mLoadingOverlay.setVisibility(GONE);
         }
