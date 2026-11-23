@@ -48,7 +48,14 @@ public final class RemoteChapterLoader {
         ActiveDownload(String key) { this.key = key; }
 
         synchronized void add(Progress p, Callback c) {
-            if (p != null) progresses.add(p);
+            if (p != null) {
+                progresses.add(p);
+                // Replay the latest snapshot so a late joiner sees real progress.
+                if (lastTotal > 0) {
+                    try { p.onProgress(lastDone, lastTotal, lastName, lastCurDone, lastCurTotal); }
+                    catch (Throwable ignored) { }
+                }
+            }
             if (c != null) callbacks.add(c);
         }
         synchronized void progress(int done, int total, String name, long cd, long ct) {
@@ -58,12 +65,17 @@ public final class RemoteChapterLoader {
                 try { p.onProgress(done, total, name, cd, ct); } catch (Throwable ignored) { }
             }
         }
+        /** Delivers the one-shot onDir result. Progress listeners stay attached
+         *  so the reader keeps growing its page list as the rest lands. */
         synchronized void result(File dir, String error) {
             for (Callback c : callbacks) {
                 try { c.onResult(dir, error); } catch (Throwable ignored) { }
             }
             callbacks.clear();
+        }
+        synchronized void finish() {
             progresses.clear();
+            callbacks.clear();
         }
     }
 
@@ -197,7 +209,8 @@ public final class RemoteChapterLoader {
                 Log.i(TAG, "download done " + chapter.name + " pages=" + done[0]);
                 MAIN.post(() -> {
                     active.progress(done[0], total, null, 0, 0);
-                    active.result(dir, null);
+                    active.result(dir, null);   // idempotent: callbacks already cleared
+                    active.finish();
                     ACTIVE.remove(key, active);
                 });
             } catch (Throwable e) {
@@ -205,6 +218,7 @@ public final class RemoteChapterLoader {
                 final String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
                 MAIN.post(() -> {
                     active.result(null, msg);
+                    active.finish();
                     ACTIVE.remove(key, active);
                 });
             }
