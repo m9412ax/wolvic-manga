@@ -240,54 +240,76 @@ public final class Manga115Api {
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
     private static final String REFERER = "https://115.com/";
 
+    /** A resolved CDN link plus the one-time cookie the downurl API sets.
+     *  115's CDN rejects the download with 403 "no cookie value" unless this
+     *  exact cookie (from the /files/download response Set-Cookie) is sent. */
+    public static final class ResolvedLink {
+        public final String url;
+        public final String cdnCookie;
+        ResolvedLink(String url, String cdnCookie) {
+            this.url = url; this.cdnCookie = cdnCookie;
+        }
+    }
+
     /** Direct links are stable for ~25 min. Cache them per (cookie,id) so a
      *  re-opened chapter / prefetch never re-hits the webapi resolve endpoints.
      *  115 rate-limits aggressive callers, which looked like "exit then the
      *  whole account disconnects". */
-    private static final java.util.Map<String, String> DIRECT_CACHE =
-            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, String>(64, 0.75f, true) {
-                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, String> e) {
+    private static final java.util.Map<String, ResolvedLink> DIRECT_CACHE =
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<String, ResolvedLink>(64, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, ResolvedLink> e) {
                     return size() > 256;
                 }
             });
-    private static volatile String sWorkingTemplate = null; // e.g. "pickcode" or "fid"
 
     /** 115Browser UA required by the app downurl endpoint. The legacy plain
      *  browser UA is throttled to zero since 2026; OpenList/115driver uses this
      *  exact string. */
     private static final String UA_115 = "Mozilla/5.0 115Browser/27.0.5.7";
 
-    /** Resolves a downloadable direct URL for a file's pickcode using the
-     *  CURRENT 115 app API: POST proapi.115.com/app/chrome/downurl with an
-     *  m115-encrypted payload. Falls back to the legacy webapi form if the app
-     *  API returns nothing. Returns null only when no endpoint yields a URL. */
-    public static String resolveDirectUrl(String cookie, String id) {
+    /** Resolves a downloadable direct URL for a file id (pickcode or fid).
+     *  Uses the web /files/download endpoint (verified working with a valid
+     *  cookie) and CAPTURES the Set-Cookie it returns - the CDN requires that
+     *  cookie on every download or it answers 403 "no cookie value". */
+    public static ResolvedLink resolveLink(String cookie, String id) {
         if (id == null || id.isEmpty()) return null;
         final String cacheKey = String.valueOf(cookie == null ? "" : cookie.hashCode())
                 + "|" + id;
-        String cached = DIRECT_CACHE.get(cacheKey);
+        ResolvedLink cached = DIRECT_CACHE.get(cacheKey);
         if (cached != null) return cached;
 
         String lastErr = null;
-        // --- Primary: encrypted 115 app downurl API (what Thru3D/OpenList use).
-        try {
-            String url = resolveViaAppApi(cookie, id);
-            if (url != null && !url.isEmpty()) {
-                DIRECT_CACHE.put(cacheKey, url);
-                Log.i(TAG, "resolveDirectUrl OK via app API id=" + id);
-                return url;
-            }
-        } catch (Exception e) {
-            lastErr = "app API: " + e.getMessage();
-            Log.w(TAG, "resolveViaAppApi failed id=" + id + " : " + e.getMessage());
-        }
-
-        // --- Fallback: legacy plain webapi (pickcode/fid forms).
         final String[] templates = {"pickcode", "fid"};
         for (String t : templates) {
             String metaUrl = "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id);
+            HttpURLConnection conn = null;
             try {
-                String meta = httpGet(metaUrl, cookie);
+                conn = (HttpURLConnection) new URL(metaUrl).openConnection();
+                conn.setRequestMethod("GET");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("User-Agent", UA_115);
+                conn.setRequestProperty("Referer", REFERER);
+                if (cookie != null && !cookie.isEmpty()) {
+                    conn.setRequestProperty("Cookie", cookie);
+                }
+                int code = conn.getResponseCode();
+                if (code < 200 || code >= 300) {
+                    lastErr = "HTTP " + code + " " + hostOf(metaUrl);
+                    continue;
+                }
+                String meta = readAll(conn.getInputStream());
+                // Collect the per-file cookie(s) the API sets for the CDN.
+                StringBuilder cdn = new StringBuilder();
+                java.util.List<String> setCookies = conn.getHeaderFields().get("Set-Cookie");
+                if (setCookies != null) {
+                    for (String sc : setCookies) {
+                        String pair = sc.split(";", 2)[0].trim();
+                        if (pair.isEmpty()) continue;
+                        if (cdn.length() > 0) cdn.append("; ");
+                        cdn.append(pair);
+                    }
+                }
                 JSONObject root = new JSONObject(meta);
                 String durl = root.optString("file_url", "");
                 if (durl.isEmpty() && root.has("data")) {
@@ -295,18 +317,28 @@ public final class Manga115Api {
                     if (d != null) durl = d.optString("file_url", "");
                 }
                 if (!durl.isEmpty()) {
-                    DIRECT_CACHE.put(cacheKey, durl);
-                    Log.i(TAG, "resolveDirectUrl OK via legacy " + t + " id=" + id);
-                    return durl;
+                    ResolvedLink link = new ResolvedLink(durl, cdn.toString());
+                    DIRECT_CACHE.put(cacheKey, link);
+                    Log.i(TAG, "resolveLink OK via " + t + " id=" + id
+                            + " cdnCookie=" + (cdn.length() > 0 ? "yes" : "NO"));
+                    return link;
                 }
-                lastErr = "legacy errno=" + root.optInt("errno", -1)
-                        + " " + root.optString("error");
+                lastErr = "errno=" + root.optInt("errno", -1) + " " + root.optString("error");
             } catch (Exception e) {
-                lastErr = "legacy " + t + ": " + e.getMessage();
+                lastErr = t + ": " + e.getMessage();
+            } finally {
+                if (conn != null) conn.disconnect();
             }
         }
-        Log.e(TAG, "resolveDirectUrl FAILED id=" + id + " : " + lastErr);
+        Log.e(TAG, "resolveLink FAILED id=" + id + " : " + lastErr);
         return null;
+    }
+
+    /** Backwards-compatible: just the URL string (no cookie). Only used by
+     *  callers that manage the CDN header themselves. */
+    public static String resolveDirectUrl(String cookie, String id) {
+        ResolvedLink link = resolveLink(cookie, id);
+        return link == null ? null : link.url;
     }
 
     /** POST https://proapi.115.com/app/chrome/downurl?t=<seconds> with form
@@ -355,7 +387,6 @@ public final class Manga115Api {
 
     public static void clearDirectUrlCache() {
         DIRECT_CACHE.clear();
-        sWorkingTemplate = null;
     }
 
     /** Resolves an image/video direct link via the web endpoint and downloads
@@ -364,12 +395,16 @@ public final class Manga115Api {
      *  a folder of loose images works regardless of which schema 115 returned.
      *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
     public static byte[] imageBytes(String cookie, String id) throws Exception {
-        String durl = resolveDirectUrl(cookie, id);
-        if (durl == null) {
+        ResolvedLink link = resolveLink(cookie, id);
+        if (link == null) {
             throw new IllegalStateException("115 取直链失败 id=" + id
                     + "（检查登录态 / 文件是否为图片或视频）");
         }
-        return httpGetBytes(durl, cookie, true);
+        // The CDN link is bound to the Set-Cookie from the downurl response,
+        // NOT the login cookie. Send the CDN cookie (fall back to login cookie
+        // for old cached links captured before this fix).
+        String cdnCookie = !link.cdnCookie.isEmpty() ? link.cdnCookie : cookie;
+        return httpGetBytes(link.url, cdnCookie, true);
     }
 
     /** Downloads raw bytes from a direct link. 115 CDN returns 403 without a
@@ -381,7 +416,8 @@ public final class Manga115Api {
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
-        conn.setRequestProperty("User-Agent", UA);
+        // CDN links are bound to the UA used at resolve time (115Browser).
+        conn.setRequestProperty("User-Agent", UA_115);
         conn.setRequestProperty("Referer", REFERER);
         if (cookie != null && !cookie.isEmpty()) {
             conn.setRequestProperty("Cookie", cookie);

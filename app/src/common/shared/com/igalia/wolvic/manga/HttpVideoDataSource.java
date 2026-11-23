@@ -25,6 +25,7 @@ public final class HttpVideoDataSource implements PrefetchVideoDataSource.Reader
     private final String cookie;
     private final String fileId;
     private String url;
+    private String cdnCookie;
     private long size = -1L;
     private final Object urlLock = new Object();
 
@@ -36,12 +37,15 @@ public final class HttpVideoDataSource implements PrefetchVideoDataSource.Reader
     private boolean ensureUrl() {
         synchronized (urlLock) {
             if (url != null) return true;
-            url = Manga115Api.resolveDirectUrl(cookie, fileId);
-            if (url == null) {
+            Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, fileId);
+            if (link == null) {
                 Log.e(TAG, "cannot resolve direct url for " + fileId);
                 return false;
             }
-            Log.i(TAG, "resolved " + fileId + " -> " + url.split("\\?")[0]);
+            url = link.url;
+            cdnCookie = !link.cdnCookie.isEmpty() ? link.cdnCookie : cookie;
+            Log.i(TAG, "resolved " + fileId + " -> " + url.split("\\?")[0]
+                    + " cdnCookie=" + (cdnCookie != null ? "yes" : "no"));
             return true;
         }
     }
@@ -56,8 +60,9 @@ public final class HttpVideoDataSource implements PrefetchVideoDataSource.Reader
         conn.setRequestProperty("Referer", "https://115.com/");
         conn.setRequestProperty("Range", "bytes=" + position + "-"
                 + (position + Math.max(0, length - 1)));
-        if (cookie != null && !cookie.isEmpty()) {
-            conn.setRequestProperty("Cookie", cookie);
+        String useCookie = (cdnCookie != null && !cdnCookie.isEmpty()) ? cdnCookie : cookie;
+        if (useCookie != null && !useCookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", useCookie);
         }
         return conn;
     }

@@ -76,14 +76,13 @@ public final class RemoteChapterLoader {
                                 Log.i(TAG, "video marker " + out.getName()
                                         + " for " + p.nameHint);
                             } else {
-                                File tmp = new File(out.getAbsolutePath() + ".tmp");
-                                manga.fetchPage(p, tmp);
-                                if (!tmp.exists() || tmp.length() == 0L) {
+                                // fetchPage implementations (SMB/115) write to
+                                // their OWN .tmp and rename atomically. Passing
+                                // an extra ".tmp" here created ".tmp.tmp" files
+                                // that never validated and were downloaded again.
+                                manga.fetchPage(p, out);
+                                if (!out.exists() || out.length() == 0L) {
                                     throw new IllegalStateException("第 " + (i + 1) + " 页为空");
-                                }
-                                if (out.exists() && !out.delete()) Log.w(TAG, "delete old " + out);
-                                if (!tmp.renameTo(out)) {
-                                    throw new IllegalStateException("重命名失败: " + out);
                                 }
                             }
                         }
@@ -129,11 +128,8 @@ public final class RemoteChapterLoader {
                         RemoteManga.writeVideoMarker(out, p);
                         continue;
                     }
-                    File tmp = new File(out.getAbsolutePath() + ".tmp");
-                    manga.fetchPage(p, tmp);
-                    if (!tmp.exists() || tmp.length() == 0L) continue;
-                    if (out.exists()) out.delete();
-                    tmp.renameTo(out);
+                    manga.fetchPage(p, out);
+                    if (!out.exists() || out.length() == 0L) continue;
                 }
                 Log.i(TAG, "prefetch " + chapter.name + " " + n + " pages");
             } catch (Throwable e) {
@@ -150,6 +146,11 @@ public final class RemoteChapterLoader {
             if (!root.isDirectory()) return;
             long cap = MangaSettings.get(context).integer(MangaSettings.IMAGE_CACHE_MB)
                     * 1024L * 1024L;
+            // A single chapter of full-resolution scans can be several GB.
+            // Never evict below one chapter worth of headroom, otherwise the
+            // cap logic deletes pages out of the chapter being read/written
+            // (seen as "SMB 下载为空" with a 1.7 GB folder full of holes).
+            long floor = Math.max(cap, 6L * 1024L * 1024L * 1024L);
             List<File> chapters = new ArrayList<>();
             File[] mangas = root.listFiles();
             if (mangas != null) {
@@ -168,11 +169,11 @@ public final class RemoteChapterLoader {
             }
             long total = 0L;
             for (File ch : chapters) total += dirSize(ch);
-            if (total <= cap) return;
+            if (total <= floor) return;
             chapters.sort((a, b) -> Long.compare(a.lastModified(), b.lastModified()));
             String protect = protectDir == null ? "" : protectDir.getAbsolutePath();
             for (File ch : chapters) {
-                if (total <= cap) break;
+                if (total <= floor) break;
                 if (ch.getAbsolutePath().equals(protect)) continue;
                 long s = dirSize(ch);
                 // File.delete() fails on a NON-EMPTY directory - that bug let
