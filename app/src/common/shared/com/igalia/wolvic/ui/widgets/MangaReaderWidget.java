@@ -3806,6 +3806,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final MediaPlayer player = new MediaPlayer();
         mVideoPrepared = false;
         mVideoPlayFailed = false;
+        mVideoPaused = false;  // a fresh player must not inherit a stale pause
         mMediaPlayer = player;
         mVideoPage = page;
         mVideoSeeking = false;
