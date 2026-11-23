@@ -80,9 +80,32 @@ public final class VideoFileCache {
     }
 
     /** Head threshold: enough to prepare() and play a few seconds. */
-    private long headBytes() {
-        long h = Math.min(12L * 1024 * 1024, size / 10);
+    private long headBytes(long total) {
+        long h = Math.min(12L * 1024 * 1024, total / 10);
         return Math.max(h, 512L * 1024);
+    }
+
+    /** A real media container has a non-zero magic in its first bytes
+     *  (ftyp for MP4/MOV, EBML header for MKV/WEBM, RIFF for AVI...).
+     *  An all-zero head is the signature of the old broken cache. */
+    private boolean hasValidHeader(RandomAccessFile raf) {
+        try {
+            byte[] head = new byte[16];
+            raf.seek(0);
+            int n = raf.read(head);
+            if (n < 4) return false;
+            int nonZero = 0;
+            for (byte b : head) if (b != 0) nonZero++;
+            if (nonZero == 0) return false;
+            // Optional sanity: known container magics.
+            boolean ftyp = n >= 8 && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p';
+            boolean ebml = head[0] == (byte) 0x1A && head[1] == (byte) 0x45
+                    && head[2] == (byte) 0xDF && head[3] == (byte) 0xA3;
+            boolean riff = head[0] == 'R' && head[1] == 'I' && head[2] == 'F' && head[3] == 'F';
+            return ftyp || ebml || riff || nonZero >= 8;
+        } catch (Throwable e) {
+            return false;
+        }
     }
 
     private void run() {
@@ -95,53 +118,76 @@ public final class VideoFileCache {
             if (total <= 0) throw new IllegalStateException("视频大小未知");
 
             raf = new RandomAccessFile(dest, "rw");
-            // If a complete cached copy exists, reuse it.
-            if (dest.length() == total) {
+            // Capture length BEFORE any setLength(). The old build read
+            // dest.length() AFTER setLength(total), so it always saw "complete"
+            // and skipped the loop -> full-size ALL-ZERO file -> error what=1.
+            long existing = dest.length();
+            if (existing == total && hasValidHeader(raf)) {
                 downloaded = total;
                 signalReady();
                 safeProgress(total, total);
                 Log.i(TAG, "reuse complete cache " + dest.getName());
                 return;
             }
-            // Pre-allocate to full size so MediaPlayer can seek anywhere without
-            // hitting EOF. Unfilled regions are zeros until written.
+            // Anything else (short / corrupt / all-zero full-size) -> fresh copy.
+            if (existing > 0) {
+                Log.w(TAG, "discard cache " + dest.getName() + " (" + existing
+                        + " bytes, total=" + total + ", valid=" + (existing == total && hasValidHeader(raf)) + ")");
+            }
+            raf.setLength(0L);
+            // Pre-allocate to the full size: MediaPlayer needs to seek within a
+            // file whose length already equals the real movie duration. Unwritten
+            // regions stay zero until the sequential fill reaches them.
             raf.setLength(total);
-            long cursor = Math.min(dest.length(), total);
-            downloaded = cursor;
-            if (cursor >= headBytes() && !signalledReady) signalReady();
+            downloaded = 0L;
+            Log.i(TAG, "cache start " + dest.getName() + " total=" + total);
 
             byte[] buf = new byte[CHUNK];
-            while (!cancelled && cursor < total) {
+            long headTarget = headBytes(total);
+            long tailBytes = Math.min(4L * 1024 * 1024, total / 10);
+            long tailStart = Math.max(headTarget, total - tailBytes);
+
+            // Phase 1: the HEAD. This is where ftyp/moov normally lives; a real
+            // container header must be on disk before prepare() can succeed.
+            long headDone = fillRange(raf, reader, buf, 0L, headTarget, total);
+            if (cancelled) return;
+
+            // Phase 2: the TAIL. Some records put moov at the END (non-faststart);
+            // downloading only the head would make prepare() fail with what=1.
+            if (tailStart < total) {
+                fillRange(raf, reader, buf, tailStart, total, total);
+                if (cancelled) return;
+            }
+
+            // Head + tail are now real bytes -> safe to hand to MediaPlayer.
+            downloaded = headDone;
+            Log.i(TAG, "head+tail ready " + dest.getName()
+                    + " head=" + headDone + " tailStart=" + tailStart);
+            signalReady();
+
+            // Phase 3: fill the middle sequentially. A seek re-anchors the cursor
+            // so the requested region is downloaded first.
+            long cursor = headTarget;
+            while (!cancelled && cursor < tailStart) {
                 Long anchor = seekAnchor;
-                if (anchor != null && anchor >= 0) {
-                    cursor = Math.min(anchor, total - 1);
+                if (anchor != null && anchor >= 0 && anchor < total) {
                     seekAnchor = -1L;
-                    Log.i(TAG, "seek re-anchor to " + cursor);
+                    if (anchor > cursor + CHUNK && anchor < tailStart) {
+                        cursor = anchor;
+                        Log.i(TAG, "seek re-anchor to " + cursor);
+                    }
                 }
-                int want = (int) Math.min(CHUNK, total - cursor);
-                int n;
-                try {
-                    n = reader.readAt(cursor, buf, 0, want);
-                } catch (Throwable e) {
-                    if (cancelled) return;
-                    Log.w(TAG, "readAt " + cursor + ": " + e.getMessage());
-                    try { Thread.sleep(300); } catch (InterruptedException ignored) { }
-                    continue;
-                }
-                if (n <= 0) {
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) { }
-                    continue;
-                }
-                synchronized (this) {
-                    raf.seek(cursor);
-                    raf.write(buf, 0, n);
-                }
+                int want = (int) Math.min(CHUNK, tailStart - cursor);
+                int n = readInto(reader, cursor, buf, want);
+                if (n <= 0) { sleep(200); continue; }
+                writeAt(raf, cursor, buf, n);
                 cursor += n;
-                downloaded = cursor;
-                if (!signalledReady && cursor >= headBytes()) signalReady();
-                safeProgress(cursor, total);
+                downloaded = Math.max(downloaded, cursor);
+                safeProgress(downloaded, total);
             }
             if (!cancelled) {
+                downloaded = total;
+                signalReady();
                 safeProgress(total, total);
                 Log.i(TAG, "cache complete " + dest.getName());
             }
@@ -154,6 +200,49 @@ public final class VideoFileCache {
         } finally {
             if (raf != null) try { raf.close(); } catch (Throwable ignored) { }
         }
+    }
+
+    /** Fills [from, to) contiguously. Used for head and tail where seek
+     *  re-anchoring must NOT skip bytes. Returns the final cursor. */
+    private long fillRange(RandomAccessFile raf, PrefetchVideoDataSource.Reader reader,
+                           byte[] buf, long from, long to, long total) throws java.io.IOException {
+        long cursor = from;
+        int stalls = 0;
+        while (!cancelled && cursor < to) {
+            int want = (int) Math.min(CHUNK, to - cursor);
+            int n = readInto(reader, cursor, buf, want);
+            if (n <= 0) {
+                if (++stalls > 40) throw new IllegalStateException("读取视频数据连续失败");
+                sleep(200);
+                continue;
+            }
+            stalls = 0;
+            writeAt(raf, cursor, buf, n);
+            cursor += n;
+            safeProgress(Math.max(downloaded, cursor), total);
+        }
+        return cursor;
+    }
+
+    private int readInto(PrefetchVideoDataSource.Reader r, long pos, byte[] buf, int len) {
+        try {
+            return r.readAt(pos, buf, 0, len);
+        } catch (Throwable e) {
+            if (cancelled) return -1;
+            Log.w(TAG, "readAt " + pos + ": " + e.getMessage());
+            return -1;
+        }
+    }
+
+    private void writeAt(RandomAccessFile raf, long pos, byte[] buf, int n) throws java.io.IOException {
+        synchronized (this) {
+            raf.seek(pos);
+            raf.write(buf, 0, n);
+        }
+    }
+
+    private void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) { }
     }
 
     private void signalReady() {

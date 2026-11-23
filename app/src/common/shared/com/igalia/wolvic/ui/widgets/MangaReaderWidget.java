@@ -158,6 +158,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private com.igalia.wolvic.manga.VideoFileCache mVideoFileCache;
 
     private boolean mVideoPrepared;
+    /** Set when MediaPlayer reports an unrecoverable error, so the后台 cache
+     *  downloader's onProgress cannot re-show the buffering overlay afterwards. */
+    private volatile boolean mVideoPlayFailed;
     private File mVideoPage;
     private File mPendingVideoPage;
     private boolean mVideoPaused;
@@ -3196,7 +3199,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // screen is misleading - the user thinks the video is being downloaded
         // when it is actually streaming. Let the video's own overlay own this.
         if (isVideoPage()) {
-            if (!mVideoPrepared) {
+            if (!mVideoPrepared && !mVideoPlayFailed) {
                 showLoading("正在缓冲视频…", -1, -1, -1, -1);
             }
             return;
@@ -3746,6 +3749,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final int generation = mLoadGeneration;
         final MediaPlayer player = new MediaPlayer();
         mVideoPrepared = false;
+        mVideoPlayFailed = false;
         mMediaPlayer = player;
         mVideoPage = page;
         mVideoSeeking = false;
@@ -3824,6 +3828,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         player.setOnErrorListener((mp, what, extra) -> {
             if (player == mMediaPlayer && generation == mLoadGeneration && !mDestroyed) {
                 mVideoPrepared = false;
+                mVideoPlayFailed = true;  // keep buffering overlay from returning
                 // Do NOT auto-advance on error. The next page is often a huge
                 // image, so an unsupported codec turned into a "video failed"
                 // hint followed immediately by a fatal Canvas crash.
@@ -3904,7 +3909,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             @Override public void onProgress(long done, long total) {
                                 mMainHandler.post(() -> {
                                     if (player != mMediaPlayer || generation != mLoadGeneration
-                                            || mDestroyed || mVideoPrepared) return;
+                                            || mDestroyed || mVideoPrepared || mVideoPlayFailed) return;
                                     if (mLoadBytesStartMs <= 0L) {
                                         mLoadBytesStartMs = System.currentTimeMillis();
                                     }

@@ -14,6 +14,8 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Downloads ONE online chapter into a local cache folder, page by page in the
@@ -29,6 +31,41 @@ public final class RemoteChapterLoader {
 
     private static final String TAG = "RemoteLoader";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
+    /** One download per chapter folder. The reader's loadChapter and the
+     *  library's prefetch can both request the same dir; without this guard
+     *  several threads fetch the SAME pages into the SAME .tmp path, racing
+     *  rename() and producing endless "SMB 下载为空" / black pages. */
+    private static final Map<String, ActiveDownload> ACTIVE = new ConcurrentHashMap<>();
+
+    private static final class ActiveDownload {
+        final String key;
+        final List<Progress> progresses = new ArrayList<>();
+        final List<Callback> callbacks = new ArrayList<>();
+        int lastDone, lastTotal;
+        String lastName;
+        long lastCurDone, lastCurTotal;
+        ActiveDownload(String key) { this.key = key; }
+
+        synchronized void add(Progress p, Callback c) {
+            if (p != null) progresses.add(p);
+            if (c != null) callbacks.add(c);
+        }
+        synchronized void progress(int done, int total, String name, long cd, long ct) {
+            lastDone = done; lastTotal = total; lastName = name;
+            lastCurDone = cd; lastCurTotal = ct;
+            for (Progress p : progresses) {
+                try { p.onProgress(done, total, name, cd, ct); } catch (Throwable ignored) { }
+            }
+        }
+        synchronized void result(File dir, String error) {
+            for (Callback c : callbacks) {
+                try { c.onResult(dir, error); } catch (Throwable ignored) { }
+            }
+            callbacks.clear();
+            progresses.clear();
+        }
+    }
 
     /** Progress of a sequential chapter download.
      *  done/total = pages finished / pages in chapter.
@@ -56,6 +93,17 @@ public final class RemoteChapterLoader {
                                 final int startPage,
                                 final Progress progress,
                                 final Callback callback) {
+        final String key = dir.getAbsolutePath();
+        final ActiveDownload active = new ActiveDownload(key);
+        ActiveDownload existing = ACTIVE.putIfAbsent(key, active);
+        if (existing != null) {
+            // Same chapter is already streaming. piggyback on it instead of
+            // launching a second downloader that fights over the same .tmp files.
+            existing.add(progress, callback);
+            Log.i(TAG, "dedup join " + key);
+            return;
+        }
+        active.add(progress, callback);
         new Thread(() -> {
             try {
                 final List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
@@ -112,12 +160,9 @@ public final class RemoteChapterLoader {
                                         manga.fetchPage(p, out, (d0, t0) -> {
                                             curBytes[0] = d0;
                                             if (t0 > 0) curBytes[1] = t0;
-                                            MAIN.post(() -> {
-                                                if (progress != null) {
-                                                    progress.onProgress(done[0], total,
-                                                            curName, curBytes[0], curBytes[1]);
-                                                }
-                                            });
+                                            final long cd = curBytes[0], ct = curBytes[1];
+                                            MAIN.post(() -> active.progress(done[0], total,
+                                                    curName, cd, ct));
                                         });
                                         landed = out.exists() && out.length() > 0;
                                     } catch (Throwable e) {
@@ -139,24 +184,29 @@ public final class RemoteChapterLoader {
                     // stay out of the counter, so the bar matches what is readable.
                     if (landed) done[0]++;
                     final int d = done[0];
-                    MAIN.post(() -> {
-                        if (progress != null) {
-                            progress.onProgress(d, total, curName, curBytes[0], curBytes[1]);
-                        }
-                    });
+                    final long cd = curBytes[0], ct = curBytes[1];
+                    MAIN.post(() -> active.progress(d, total, curName, cd, ct));
                     // Hand the folder back as soon as the first page lands.
                     if (!opened) {
                         opened = true;
-                        MAIN.post(() -> callback.onResult(dir, null));
+                        MAIN.post(() -> active.result(dir, null));
                     }
                     if (d % 8 == 0) enforceCacheCap(context, dir);
                 }
                 enforceCacheCap(context, dir);
                 Log.i(TAG, "download done " + chapter.name + " pages=" + done[0]);
+                MAIN.post(() -> {
+                    active.progress(done[0], total, null, 0, 0);
+                    active.result(dir, null);
+                    ACTIVE.remove(key, active);
+                });
             } catch (Throwable e) {
                 Log.e(TAG, "download failed " + e.getMessage(), e);
                 final String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                MAIN.post(() -> callback.onResult(null, msg));
+                MAIN.post(() -> {
+                    active.result(null, msg);
+                    ACTIVE.remove(key, active);
+                });
             }
         }, "remote-chapter-download").start();
     }
@@ -165,6 +215,12 @@ public final class RemoteChapterLoader {
     public static void prefetch(final RemoteManga manga,
                                 final RemoteManga.ChapterInfo chapter,
                                 final File dir, final int maxPages) {
+        // Never prefetch a chapter that is actively downloading: two threads
+        // writing the same page's .tmp is exactly what causes "下载为空".
+        if (ACTIVE.containsKey(dir.getAbsolutePath())) {
+            Log.i(TAG, "prefetch skipped (active) " + dir.getAbsolutePath());
+            return;
+        }
         new Thread(() -> {
             try {
                 List<RemoteManga.PageInfo> pages = manga.listPages(chapter);

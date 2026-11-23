@@ -272,12 +272,22 @@ public final class Manga115Api {
      *  Uses the web /files/download endpoint (verified working with a valid
      *  cookie) and CAPTURES the Set-Cookie it returns - the CDN requires that
      *  cookie on every download or it answers 403 "no cookie value". */
+    /** Short-lived negative cache: a file whose links cannot be resolved is
+     *  retried at most once per 15 s. Without this, one failing image re-runs
+     *  the whole 3-endpoint chain (up to 45 s) on EVERY page request, which
+     *  freezes a sequentially-downloaded chapter. */
+    private static final java.util.Map<String, Long> FAIL_CACHE = new java.util.HashMap<>();
+
     public static ResolvedLink resolveLink(String cookie, String id) {
         if (id == null || id.isEmpty()) return null;
         final String cacheKey = String.valueOf(cookie == null ? "" : cookie.hashCode())
                 + "|" + id;
         ResolvedLink cached = DIRECT_CACHE.get(cacheKey);
         if (cached != null) return cached;
+        synchronized (FAIL_CACHE) {
+            Long until = FAIL_CACHE.get(cacheKey);
+            if (until != null && until > System.currentTimeMillis()) return null;
+        }
 
         String lastErr = null;
         // --- Primary: encrypted 115 app API. This is the ONLY endpoint that
@@ -287,6 +297,7 @@ public final class Manga115Api {
             ResolvedLink appLink = resolveViaAppApi(cookie, id);
             if (appLink != null && !appLink.url.isEmpty()) {
                 DIRECT_CACHE.put(cacheKey, appLink);
+                synchronized (FAIL_CACHE) { FAIL_CACHE.remove(cacheKey); }
                 Log.i(TAG, "resolveLink OK via app API id=" + id);
                 return appLink;
             }
@@ -335,6 +346,7 @@ public final class Manga115Api {
                 if (!durl.isEmpty()) {
                     ResolvedLink link = new ResolvedLink(durl, cdn.toString());
                     DIRECT_CACHE.put(cacheKey, link);
+                    synchronized (FAIL_CACHE) { FAIL_CACHE.remove(cacheKey); }
                     Log.i(TAG, "resolveLink OK via " + t + " id=" + id
                             + " cdnCookie=" + (cdn.length() > 0 ? "yes" : "NO"));
                     return link;
@@ -347,6 +359,7 @@ public final class Manga115Api {
             }
         }
         Log.e(TAG, "resolveLink FAILED id=" + id + " : " + lastErr);
+        synchronized (FAIL_CACHE) { FAIL_CACHE.put(cacheKey, System.currentTimeMillis() + 15000L); }
         return null;
     }
 
@@ -417,6 +430,7 @@ public final class Manga115Api {
 
     public static void clearDirectUrlCache() {
         DIRECT_CACHE.clear();
+        synchronized (FAIL_CACHE) { FAIL_CACHE.clear(); }
     }
 
     /** Resolves an image/video direct link via the web endpoint and downloads
