@@ -1625,6 +1625,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         List<PageLoad> ordered = new ArrayList<>();
         mWindowKeys.clear();
         addWindowPage(mIndex, ordered);
+        // A video page buffers/downloads in the background. Decoding 4K image
+        // neighbours at the same time starves the main thread with arraycopy +
+        // GC (huge 44 MB bitmaps), which freezes playback setup AND controller
+        // input ("cannot go back"). Keep only the current page while a video
+        // is showing; images resume normally once the user pages away.
+        if (isVideoPage()) {
+            for (String key : new ArrayList<>(mPendingPages.keySet())) {
+                if (!mWindowKeys.contains(key)) {
+                    mPendingPages.remove(key).cancelled = true;
+                }
+            }
+            mPreloadExecutor.getQueue().clear();
+            Log.i(TAG, "preload skip neighbours (video page) index=" + mIndex);
+            return;
+        }
         int direction = mSettings.integer(MangaSettings.READER_DIRECTION) == 1 ? -1 : 1;
         for (int distance = 1; distance <= preloadRadius(); distance++) {
             addWindowPage(mIndex + direction * distance, ordered);
@@ -3338,7 +3353,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         mVideoSeekTargetMs = target;
                         mVideoSeeking = true;
                         mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
-                        player.seekTo(target);
+                        // Re-anchor the background local-file download to the
+                        // seek target. Without this (the stick path already
+                        // does it) dragging the bar to an undownloaded region
+                        // reads pre-allocated ZERO bytes -> black screen with
+                        // audio only / decoder stall.
+                        if (mVideoFileCache != null && player.getDuration() > 0) {
+                            long bytePos = (long) target * mVideoFileCache.size()
+                                    / player.getDuration();
+                            mVideoFileCache.seekTo(bytePos);
+                            seekWhenReady(player, target, mVideoFileCache, bytePos);
+                        } else {
+                            player.seekTo(target);
+                        }
                     } catch (Exception ignored) {
                     }
                 }
@@ -3605,6 +3632,33 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    /** Seeks a local-cached video only after the target byte region has been
+     *  downloaded. Seeking into the pre-allocated zero area yields black screen
+     *  with audio (or a decoder stall). Polls up to ~8 s, then seeks anyway. */
+    private void seekWhenReady(final MediaPlayer player, final int targetMs,
+                               final com.igalia.wolvic.manga.VideoFileCache cache,
+                               final long bytePos) {
+        final int gen = mVideoSeekGeneration;
+        final Runnable attempt = new Runnable() {
+            int tries = 0;
+            @Override public void run() {
+                if (player != mMediaPlayer || mDestroyed || !mVideoPrepared
+                        || gen != mVideoSeekGeneration) return;
+                boolean ready = cache.regionReady(bytePos);
+                if (!ready && tries++ < 40) {
+                    mMainHandler.postDelayed(this, 200L);
+                    return;
+                }
+                try {
+                    player.seekTo(targetMs);
+                    Log.i(TAG, "seek executed target=" + targetMs
+                            + "ms ready=" + ready + " tries=" + tries);
+                } catch (Exception ignored) { }
+            }
+        };
+        mMainHandler.post(attempt);
+    }
+
     private void seekVideo(int deltaMs) {
         MediaPlayer player = mMediaPlayer;
         if (!mVideoPrepared || player == null) {
@@ -3626,8 +3680,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (mVideoFileCache != null && duration > 0) {
                 long bytePos = (long) position * mVideoFileCache.size() / duration;
                 mVideoFileCache.seekTo(bytePos);
+                seekWhenReady(player, position, mVideoFileCache, bytePos);
+            } else {
+                player.seekTo(position);
             }
-            player.seekTo(position);
             mVideoCompleted = false;
             // Paint the target immediately; the tick honours the lock.
             paintVideoPosition(position, duration);
@@ -3892,8 +3948,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         new com.igalia.wolvic.manga.VideoFileCache.Callback() {
                             @Override public void onReady(File f) {
                                 mMainHandler.post(() -> {
-                                    if (player != mMediaPlayer || generation != mLoadGeneration
-                                            || mDestroyed) return;
+                                    // A 3 GB video can take >10 s to buffer its
+                                    // head+tail. During that time the chapter's
+                                    // page list keeps growing (mLoadGeneration
+                                    // bumps), so checking generation here made
+                                    // onReady get silently dropped -> stuck on
+                                    // "正在缓冲" forever. Identity of the player
+                                    // and the video page is the right guard.
+                                    if (player != mMediaPlayer || mDestroyed
+                                            || !isVideoPage()
+                                            || mVideoPage == null
+                                            || !mVideoPage.equals(page)) return;
                                     try {
                                         player.setDataSource(f.getAbsolutePath());
                                         player.setSurface(mVideoSurface);
@@ -3908,8 +3973,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             }
                             @Override public void onProgress(long done, long total) {
                                 mMainHandler.post(() -> {
-                                    if (player != mMediaPlayer || generation != mLoadGeneration
-                                            || mDestroyed || mVideoPrepared || mVideoPlayFailed) return;
+                                    if (player != mMediaPlayer || mDestroyed
+                                            || mVideoPrepared || mVideoPlayFailed
+                                            || mVideoPage == null || !mVideoPage.equals(page)) return;
                                     if (mLoadBytesStartMs <= 0L) {
                                         mLoadBytesStartMs = System.currentTimeMillis();
                                     }
@@ -3921,8 +3987,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             }
                             @Override public void onError(String msg) {
                                 mMainHandler.post(() -> {
-                                    if (player != mMediaPlayer || generation != mLoadGeneration
-                                            || mDestroyed) return;
+                                    if (player != mMediaPlayer || mDestroyed) return;
+                                    mVideoPlayFailed = true;
                                     hideLoading();
                                     showHint("视频缓冲失败：" + msg);
                                 });

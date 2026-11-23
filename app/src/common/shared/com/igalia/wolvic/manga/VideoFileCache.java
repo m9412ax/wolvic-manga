@@ -44,6 +44,14 @@ public final class VideoFileCache {
     private volatile boolean signalledReady = false;
     private Thread worker;
 
+    /** Tracks which 256 KB chunks hold REAL bytes (vs pre-allocated zeros).
+     *  A 3 GB movie needs only ~12 K bits = 1.5 KB. Used to delay a seek until
+     *  the target region is actually on disk, otherwise MediaPlayer reads the
+     *  zero-filled preallocation -> black screen with audio only. */
+    private final java.util.BitSet filled = new java.util.BitSet();
+    private static final int READY_AHEAD_CHUNKS = 3; // ~768 KB must be present
+    private volatile long totalBytes = -1L;
+
     public VideoFileCache(PrefetchVideoDataSource.Reader reader, File dest,
                           long size, Callback callback) {
         this.reader = reader;
@@ -66,10 +74,11 @@ public final class VideoFileCache {
     public void seekTo(long position) {
         if (position < 0 || size <= 0) return;
         long p = Math.min(position, size - 1);
-        // Only re-anchor if the target is meaningfully ahead of what we have;
-        // seeking backwards into already-downloaded bytes needs no action.
-        if (p > downloaded + CHUNK) {
-            seekAnchor = p;
+        // Re-anchor whenever the target is past the downloaded frontier, so the
+        // zero hole at the seek point gets filled first. Backward seeks into
+        // already-downloaded bytes need no action.
+        if (p > downloaded - CHUNK) {
+            seekAnchor = Math.max(0, p - CHUNK);
         }
     }
 
@@ -116,6 +125,7 @@ public final class VideoFileCache {
             long remoteSize = reader.size();
             long total = size > 0 ? size : remoteSize;
             if (total <= 0) throw new IllegalStateException("视频大小未知");
+            totalBytes = total;
 
             raf = new RandomAccessFile(dest, "rw");
             // Capture length BEFORE any setLength(). The old build read
@@ -124,6 +134,7 @@ public final class VideoFileCache {
             long existing = dest.length();
             if (existing == total && hasValidHeader(raf)) {
                 downloaded = total;
+                filled.set(0, (int) ((total - 1) / CHUNK) + 1); // all chunks real
                 signalReady();
                 safeProgress(total, total);
                 Log.i(TAG, "reuse complete cache " + dest.getName());
@@ -238,7 +249,26 @@ public final class VideoFileCache {
         synchronized (this) {
             raf.seek(pos);
             raf.write(buf, 0, n);
+            int first = (int) (pos / CHUNK);
+            int last = (int) ((pos + n - 1) / CHUNK);
+            filled.set(first, last + 1);
         }
+    }
+
+    /** True when [pos, pos + ~2 MB) holds real downloaded bytes. Public so the
+     *  reader can postpone MediaPlayer.seekTo until the target is playable. */
+    public boolean regionReady(long pos) {
+        if (pos < 0 || totalBytes <= 0) return true; // unknown size: don't block seek
+        long limit = Math.min(pos + (long) READY_AHEAD_CHUNKS * CHUNK, totalBytes);
+        synchronized (this) {
+            long p = pos;
+            while (p < limit) {
+                int bit = (int) (p / CHUNK);
+                if (!filled.get(bit)) return false;
+                p = (bit + 1L) * CHUNK;
+            }
+        }
+        return true;
     }
 
     private void sleep(long ms) {
