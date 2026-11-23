@@ -146,12 +146,15 @@ public final class MangaSettings {
     // Progress / backup
     public static final String PROGRESS_ENABLED = "progress_enabled";
     public static final String PROGRESS_VIDEO = "progress_video";
-    /** Disk cap for the SMB/115 on-demand cache (<cache>/remote-manga). */
-    public static final String REMOTE_CACHE_MB = "remote_cache_mb";
-    /** In-memory read-ahead buffer for ONLINE video streaming (SMB/115).
-     *  Independent of the image DISK cache: streamed video is never written
-     *  to the image cache, so this cannot starve page turning. */
+    /** Single user-facing image DISK cap (MB). Governs extension-source
+     *  chapters, SMB/115 on-demand chapters and the AVIF page cache. */
+    public static final String IMAGE_CACHE_MB = "image_cache_mb";
+    /** In-memory RAM read-ahead buffer (MB) for ONLINE video streaming.
+     *  Not on disk, never counted against the image cache. */
     public static final String VIDEO_BUFFER_MB = "video_buffer_mb";
+    // Legacy keys kept only so old saved preferences still load; the UI no
+    // longer exposes them and all code reads IMAGE_CACHE_MB instead.
+    public static final String REMOTE_CACHE_MB = "remote_cache_mb";
     public static final String CACHE_MB = "cache_mb";
     public static final String SOURCE_CACHE_MB = "source_cache_mb";
 
@@ -275,6 +278,8 @@ public final class MangaSettings {
                 return 2;
             case DOWNLOAD_RETRY:
                 return 2;
+            case IMAGE_CACHE_MB:
+                return 1024;
             case CACHE_MB:
                 return 256;
             case REMOTE_CACHE_MB:

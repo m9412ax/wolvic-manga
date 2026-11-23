@@ -148,7 +148,7 @@ public final class RemoteChapterLoader {
         try {
             File root = remoteCacheRoot(context);
             if (!root.isDirectory()) return;
-            long cap = MangaSettings.get(context).integer(MangaSettings.REMOTE_CACHE_MB)
+            long cap = MangaSettings.get(context).integer(MangaSettings.IMAGE_CACHE_MB)
                     * 1024L * 1024L;
             List<File> chapters = new ArrayList<>();
             File[] mangas = root.listFiles();

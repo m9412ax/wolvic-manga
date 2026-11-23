@@ -252,55 +252,105 @@ public final class Manga115Api {
             });
     private static volatile String sWorkingTemplate = null; // e.g. "pickcode" or "fid"
 
-    /** Resolves a playable/downloadable direct URL for a file id (pickcode or
-     *  fid). Tries BOTH webapi endpoints; keeps the last error for diagnostics.
-     *  Returns null when no endpoint yields a file_url. */
+    /** 115Browser UA required by the app downurl endpoint. The legacy plain
+     *  browser UA is throttled to zero since 2026; OpenList/115driver uses this
+     *  exact string. */
+    private static final String UA_115 = "Mozilla/5.0 115Browser/27.0.5.7";
+
+    /** Resolves a downloadable direct URL for a file's pickcode using the
+     *  CURRENT 115 app API: POST proapi.115.com/app/chrome/downurl with an
+     *  m115-encrypted payload. Falls back to the legacy webapi form if the app
+     *  API returns nothing. Returns null only when no endpoint yields a URL. */
     public static String resolveDirectUrl(String cookie, String id) {
         if (id == null || id.isEmpty()) return null;
-        // Prefer a pickcode hit even when the id is a fid: 115 listings give
-        // both, and the app usually passes pickcode. Remember which parameter
-        // name worked so subsequent files use ONE request instead of four.
-        final String[] templates = {"pickcode", "fid"};
         final String cacheKey = String.valueOf(cookie == null ? "" : cookie.hashCode())
                 + "|" + id;
         String cached = DIRECT_CACHE.get(cacheKey);
         if (cached != null) return cached;
 
         String lastErr = null;
-        // Try the previously working template first when its id form is known.
+        // --- Primary: encrypted 115 app downurl API (what Thru3D/OpenList use).
+        try {
+            String url = resolveViaAppApi(cookie, id);
+            if (url != null && !url.isEmpty()) {
+                DIRECT_CACHE.put(cacheKey, url);
+                Log.i(TAG, "resolveDirectUrl OK via app API id=" + id);
+                return url;
+            }
+        } catch (Exception e) {
+            lastErr = "app API: " + e.getMessage();
+            Log.w(TAG, "resolveViaAppApi failed id=" + id + " : " + e.getMessage());
+        }
+
+        // --- Fallback: legacy plain webapi (pickcode/fid forms).
+        final String[] templates = {"pickcode", "fid"};
         for (String t : templates) {
-            String[] urls = sWorkingTemplate != null && t.equals(sWorkingTemplate)
-                    ? new String[]{
-                        "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id),
-                        "https://webapi.115.com/files/download?" + t + "=" + enc(id)}
-                    : new String[]{
-                        "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id),
-                        "https://webapi.115.com/files/download?" + t + "=" + enc(id)};
-            for (String metaUrl : urls) {
-                try {
-                    String meta = httpGet(metaUrl, cookie);
-                    JSONObject root = new JSONObject(meta);
-                    String durl = root.optString("file_url", "");
-                    if (durl.isEmpty() && root.has("data")) {
-                        JSONObject d = root.optJSONObject("data");
-                        if (d != null) durl = d.optString("file_url", "");
-                    }
-                    if (!durl.isEmpty()) {
-                        sWorkingTemplate = t; // remember for the next file
-                        DIRECT_CACHE.put(cacheKey, durl);
-                        Log.i(TAG, "resolved via " + t + " id=" + id);
-                        return durl;
-                    }
-                    int errno = root.optInt("errno", -1);
-                    lastErr = "errno=" + errno + " " + root.optString("error")
-                            + " body=" + meta.substring(0, Math.min(120, meta.length()));
-                } catch (Exception e) {
-                    lastErr = e.getMessage();
+            String metaUrl = "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id);
+            try {
+                String meta = httpGet(metaUrl, cookie);
+                JSONObject root = new JSONObject(meta);
+                String durl = root.optString("file_url", "");
+                if (durl.isEmpty() && root.has("data")) {
+                    JSONObject d = root.optJSONObject("data");
+                    if (d != null) durl = d.optString("file_url", "");
                 }
+                if (!durl.isEmpty()) {
+                    DIRECT_CACHE.put(cacheKey, durl);
+                    Log.i(TAG, "resolveDirectUrl OK via legacy " + t + " id=" + id);
+                    return durl;
+                }
+                lastErr = "legacy errno=" + root.optInt("errno", -1)
+                        + " " + root.optString("error");
+            } catch (Exception e) {
+                lastErr = "legacy " + t + ": " + e.getMessage();
             }
         }
         Log.e(TAG, "resolveDirectUrl FAILED id=" + id + " : " + lastErr);
         return null;
+    }
+
+    /** POST https://proapi.115.com/app/chrome/downurl?t=<seconds> with form
+     *  data=<m115 encrypted {"pickcode":id}>. Response data is another m115
+     *  blob that decrypts to {pickcode:{url:{url:"..."}}}. Mirrors the Go
+     *  driver's DownloadWithUA exactly. */
+    private static String resolveViaAppApi(String cookie, String pickcode) throws Exception {
+        M115Crypto.Key key = M115Crypto.generateKey();
+        JSONObject req = new JSONObject();
+        req.put("pickcode", pickcode);
+        String payload = M115Crypto.encode(req.toString().getBytes(StandardCharsets.UTF_8), key);
+        String url = "https://proapi.115.com/app/chrome/downurl?t="
+                + (System.currentTimeMillis() / 1000L);
+        String form = "data=" + enc(payload);
+
+        // 115's resty client sends urlencoded body with a forced JSON content
+        // type; try both because endpoints have flipped behavior across revs.
+        String[] contentTypes = {"application/x-www-form-urlencoded", "application/json"};
+        String lastErr = null;
+        for (String ct : contentTypes) {
+            try {
+                String resp = httpPostWithUA(url, form, cookie, UA_115, ct);
+                JSONObject root = new JSONObject(resp);
+                int errno = root.optInt("errno", -1);
+                String encData = root.optString("data", "");
+                if (errno == 0 && !encData.isEmpty()) {
+                    byte[] plain = M115Crypto.decode(encData, key);
+                    JSONObject data = new JSONObject(new String(plain, StandardCharsets.UTF_8));
+                    java.util.Iterator<String> keys = data.keys();
+                    while (keys.hasNext()) {
+                        JSONObject info = data.optJSONObject(keys.next());
+                        if (info == null) continue;
+                        JSONObject urlObj = info.optJSONObject("url");
+                        if (urlObj == null) continue;
+                        String durl = urlObj.optString("url", "");
+                        if (!durl.isEmpty()) return durl;
+                    }
+                }
+                lastErr = "errno=" + errno + " " + root.optString("error");
+            } catch (Exception e) {
+                lastErr = e.getMessage();
+            }
+        }
+        throw new IllegalStateException(lastErr == null ? "no data" : lastErr);
     }
 
     public static void clearDirectUrlCache() {
@@ -405,6 +455,37 @@ public final class Manga115Api {
             int code = conn.getResponseCode();
             if (code < 200 || code >= 300) {
                 throw new IllegalStateException("HTTP " + code + " " + url);
+            }
+            return readAll(conn.getInputStream());
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    /** POST with an explicit UA + content type (for the m115 downurl API). */
+    private static String httpPostWithUA(String url, String form, String cookie,
+                                         String ua, String contentType) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+        conn.setRequestMethod("POST");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(20000);
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", contentType);
+        conn.setRequestProperty("User-Agent", ua);
+        conn.setRequestProperty("Referer", REFERER);
+        conn.setRequestProperty("Accept", "application/json;charset=UTF-8");
+        if (cookie != null && !cookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", cookie);
+        }
+        try {
+            byte[] body = form.getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(body.length);
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(body);
+            }
+            int code = conn.getResponseCode();
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("HTTP " + code + " " + hostOf(url));
             }
             return readAll(conn.getInputStream());
         } finally {

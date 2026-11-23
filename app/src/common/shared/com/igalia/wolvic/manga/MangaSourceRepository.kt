@@ -328,7 +328,7 @@ object MangaSourceRepository {
     private fun enforceCacheCap(context: Context) {
         try {
             val base = File(context.externalCacheDir ?: context.cacheDir, "manga-sources")
-            val capMb = MangaSettings.get(context).integer(MangaSettings.SOURCE_CACHE_MB)
+            val capMb = MangaSettings.get(context).integer(MangaSettings.IMAGE_CACHE_MB)
             val cap = capMb.toLong() * 1024 * 1024
             val chapters = mutableListOf<File>()
             base.listFiles()?.forEach { src ->

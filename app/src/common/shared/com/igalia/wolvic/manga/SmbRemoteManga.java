@@ -114,6 +114,9 @@ public final class SmbRemoteManga implements RemoteManga {
 
     @Override
     public MediaDataSource openVideo(PageInfo page) {
-        return new SmbVideoDataSource(auth, page.id, videoBufferBytes);
+        // Two slots of videoBufferBytes each; feeder keeps the next slot full
+        // in the background so MediaPlayer's decoder never blocks on SMB I/O.
+        return new PrefetchVideoDataSource(
+                new SmbVideoDataSource(auth, page.id), videoBufferBytes);
     }
 }

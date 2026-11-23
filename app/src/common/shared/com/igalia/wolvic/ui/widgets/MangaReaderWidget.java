@@ -368,7 +368,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         setupVideoBar();
         setupVideoProgressTrack();
 
-        int cacheKb = Math.max(16, mSettings.integer(MangaSettings.CACHE_MB)) * 1024;
+        // In-memory bitmap LRU is a slice of the single image-cache budget, so
+        // users only manage one "image cache" setting. Cap at 384 MB RAM to
+        // stay safe on 4 GB headsets even if the disk cap is set to 4 GB.
+        int cacheKb = Math.min(384, Math.max(64,
+                mSettings.integer(MangaSettings.IMAGE_CACHE_MB) / 2)) * 1024;
         File diskCacheBase = getContext().getExternalCacheDir();
         if (diskCacheBase == null) {
             diskCacheBase = getContext().getCacheDir();

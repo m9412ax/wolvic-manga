@@ -120,7 +120,10 @@ public final class Netdisk115RemoteManga implements RemoteManga {
 
     @Override
     public MediaDataSource openVideo(PageInfo page) {
-        return new HttpVideoDataSource(cookie, page.id);
+        // 8 MB x2 prefetch slots: the feeder issues large Range GETs in the
+        // background, the decoder reads from memory (no per-read HTTP request).
+        return new PrefetchVideoDataSource(
+                new HttpVideoDataSource(cookie, page.id), 8 * 1024 * 1024);
     }
 
     private boolean isMedia(String name) {

@@ -243,18 +243,25 @@ public class MangaOptionsView extends SettingsView
         section("阅读进度");
         switchRow("保存阅读进度", MangaSettings.PROGRESS_ENABLED);
         switchRow("保存视频播放位置", MangaSettings.PROGRESS_VIDEO);
-        radio("页面缓存上限", MangaSettings.CACHE_MB,
-                new String[]{"64 MB", "128 MB", "256 MB", "512 MB", "1 GB"},
-                new int[]{64, 128, 256, 512, 1024});
-        radio("在线章节磁盘缓存上限", MangaSettings.SOURCE_CACHE_MB,
-                new String[]{"256 MB", "512 MB", "1 GB", "2 GB", "4 GB"},
-                new int[]{256, 512, 1024, 2048, 4096});
-        radio("SMB / 115 在线缓存上限（图片）", MangaSettings.REMOTE_CACHE_MB,
-                new String[]{"128 MB", "256 MB", "512 MB", "1 GB", "2 GB", "4 GB"},
-                new int[]{128, 256, 512, 1024, 2048, 4096});
-        radio("在线视频预读缓冲（独立，不占图片缓存）", MangaSettings.VIDEO_BUFFER_MB,
-                new String[]{"4 MB", "8 MB", "16 MB", "32 MB", "64 MB"},
-                new int[]{4, 8, 16, 32, 64});
+        // Only two cache knobs: image (disk) and video (RAM). Both are
+        // labelled with their storage type so it is clear what they govern.
+        radio("图片缓存上限 · 硬盘（在线章节 / 图源 / 解码页共用）",
+                MangaSettings.IMAGE_CACHE_MB,
+                new String[]{"256 MB", "512 MB", "1 GB", "2 GB", "4 GB", "8 GB"},
+                new int[]{256, 512, 1024, 2048, 4096, 8192});
+        radio("视频预读缓冲 · 内存（在线播放，不占硬盘图片缓存）",
+                MangaSettings.VIDEO_BUFFER_MB,
+                new String[]{"8 MB", "16 MB", "32 MB", "64 MB", "128 MB"},
+                new int[]{8, 16, 32, 64, 128});
+        button("当前图片缓存占用（硬盘）· 点击查看数值 / 清除",
+                com.igalia.wolvic.manga.MangaCacheManager.imageCacheLabel(getContext()),
+                () -> {
+                    long freed = com.igalia.wolvic.manga.MangaCacheManager.clearImageCache(getContext());
+                    android.widget.Toast.makeText(getContext(),
+                            "已清除 " + String.format(java.util.Locale.ROOT, "%.1f MB",
+                                    freed / (1024.0 * 1024.0)) + " 缓存",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                });
         radio("图源 DNS over HTTPS（重启生效）", MangaSettings.NET_DOH,
                 new String[]{"关闭", "Cloudflare", "Google", "阿里 DNS", "DNSPod"},
                 new int[]{-1, 1, 2, 5, 6});
