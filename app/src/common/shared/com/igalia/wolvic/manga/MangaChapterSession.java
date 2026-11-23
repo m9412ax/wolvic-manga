@@ -25,9 +25,14 @@ public class MangaChapterSession {
     public interface DirCallback {
         void onDir(File dir, String error);
         /** Fired as pages land on disk so the reader can grow its page list
-         *  while a chapter is still downloading. Default no-op for callers
-         *  that do not care about progressive updates. */
-        default void onProgress(int done, int total) { }
+         *  while a chapter is still downloading. curName/curBytes give the
+         *  file currently downloading for a detailed progress line. */
+        default void onProgress(int done, int total, String curName,
+                                long curDone, long curTotal) { }
+        /** Back-compatible overload. */
+        default void onProgress(int done, int total) {
+            onProgress(done, total, null, -1L, -1L);
+        }
     }
 
     public interface ChapterProvider {

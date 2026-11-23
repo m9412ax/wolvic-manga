@@ -110,12 +110,12 @@ public final class Netdisk115RemoteManga implements RemoteManga {
 
     @Override
     public void fetchPage(PageInfo page, File dest) throws Exception {
-        byte[] bytes = Manga115Api.imageBytes(cookie, page.id);
-        File parent = dest.getParentFile();
-        if (parent != null) parent.mkdirs();
-        try (java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
-            out.write(bytes);
-        }
+        Manga115Api.downloadToFile(cookie, page.id, dest, null);
+    }
+
+    @Override
+    public void fetchPage(PageInfo page, File dest, ProgressListener listener) throws Exception {
+        Manga115Api.downloadToFile(cookie, page.id, dest, listener);
     }
 
     @Override

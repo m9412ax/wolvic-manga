@@ -30,7 +30,14 @@ public final class RemoteChapterLoader {
     private static final String TAG = "RemoteLoader";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
-    public interface Progress { void onProgress(int done, int total); }
+    /** Progress of a sequential chapter download.
+     *  done/total = pages finished / pages in chapter.
+     *  curName/curDone/curTotal = the page currently being fetched, for the
+     *  "downloading <file> (x/y)" progress line. curTotal<0 means unknown. */
+    public interface Progress {
+        void onProgress(int done, int total, String curName,
+                        long curDone, long curTotal);
+    }
     public interface Callback { void onResult(File dir, String error); }
 
     private RemoteChapterLoader() {}
@@ -66,7 +73,10 @@ public final class RemoteChapterLoader {
                 boolean opened = false;
                 for (int i = 0; i < total; i++) {
                     RemoteManga.PageInfo p = pages.get(i);
-                    File out = cachedFile(dir, i, p.nameHint);
+                    final File out = cachedFile(dir, i, p.nameHint);
+                    final String curName = p.nameHint == null ? out.getName() : p.nameHint;
+                    final long[] curBytes = {0L, p.size > 0 ? p.size : -1L};
+                    final int pageIdx = i;
                     try {
                         if (!isValidCached(out)) {
                             if (isVideoName(p.nameHint)) {
@@ -76,22 +86,31 @@ public final class RemoteChapterLoader {
                                 Log.i(TAG, "video marker " + out.getName()
                                         + " for " + p.nameHint);
                             } else {
-                                // fetchPage implementations (SMB/115) write to
-                                // their OWN .tmp and rename atomically. Passing
-                                // an extra ".tmp" here created ".tmp.tmp" files
-                                // that never validated and were downloaded again.
-                                manga.fetchPage(p, out);
+                                // Report this file's own byte progress while it
+                                // downloads (SMB/115 write to their own .tmp).
+                                manga.fetchPage(p, out, (d0, t0) -> {
+                                    curBytes[0] = d0;
+                                    if (t0 > 0) curBytes[1] = t0;
+                                    MAIN.post(() -> {
+                                        if (progress != null) {
+                                            progress.onProgress(done[0], total,
+                                                    curName, curBytes[0], curBytes[1]);
+                                        }
+                                    });
+                                });
                                 if (!out.exists() || out.length() == 0L) {
-                                    throw new IllegalStateException("第 " + (i + 1) + " 页为空");
+                                    throw new IllegalStateException("第 " + (pageIdx + 1) + " 页为空");
                                 }
                             }
                         }
                     } catch (Throwable e) {
-                        Log.w(TAG, "page " + i + " failed: " + e.getMessage());
+                        Log.w(TAG, "page " + pageIdx + " failed: " + e.getMessage());
                     }
                     final int d = ++done[0];
                     MAIN.post(() -> {
-                        if (progress != null) progress.onProgress(d, total);
+                        if (progress != null) {
+                            progress.onProgress(d, total, curName, curBytes[0], curBytes[1]);
+                        }
                     });
                     // Hand the folder back as soon as the first page lands.
                     if (!opened) {

@@ -36,9 +36,20 @@ public interface RemoteManga {
      *  them (dirs first is not relevant here; videos first + name/date sort). */
     List<PageInfo> listPages(ChapterInfo chapter) throws Exception;
 
-    /** Downloads one page's bytes into dest (a .tmp file; caller renames).
-     *  Called sequentially from the download worker thread. */
+    /** Downloads one page's bytes into dest (a file; implementations write to
+     *  their own .tmp then rename atomically). Called sequentially from the
+     *  download worker thread. */
     void fetchPage(PageInfo page, File dest) throws Exception;
+
+    /** Like fetchPage but reports byte progress of the CURRENT file.
+     *  Default falls back to plain fetchPage (no per-file detail). */
+    default void fetchPage(PageInfo page, File dest, ProgressListener listener) throws Exception {
+        fetchPage(page, dest);
+    }
+
+    interface ProgressListener {
+        void onProgress(long done, long total);
+    }
 
     /** Opens a video page for ONLINE streaming. The returned MediaDataSource
      *  must be lazy (no network in the constructor) because it is created on

@@ -113,6 +113,12 @@ public final class SmbRemoteManga implements RemoteManga {
     }
 
     @Override
+    public void fetchPage(PageInfo page, File dest, ProgressListener listener) throws Exception {
+        MangaSmb.download(auth, page.id, dest,
+                listener == null ? null : listener::onProgress);
+    }
+
+    @Override
     public MediaDataSource openVideo(PageInfo page) {
         // Two slots of videoBufferBytes each; feeder keeps the next slot full
         // in the background so MediaPlayer's decoder never blocks on SMB I/O.

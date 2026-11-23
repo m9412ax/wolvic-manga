@@ -740,12 +740,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         hideLoading();
                     }
                     @Override
-                    public void onProgress(int done, int total) {
+                    public void onProgress(int done, int total, String curName,
+                                           long curDone, long curTotal) {
                         mMainHandler.post(() -> {
                             if (session == mChapterSession && !mDestroyed) {
                                 mPageTotal = total;
                                 if (done < total) {
-                                    updateChapterDownloadProgress(dir, done, total);
+                                    updateChapterDownloadProgress(dir, done, total,
+                                            curName, curDone, curTotal);
                                 } else {
                                     hideLoading();
                                 }
@@ -787,14 +789,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     });
                 }
                 @Override
-                public void onProgress(int done, int total) {
+                public void onProgress(int done, int total, String curName,
+                                       long curDone, long curTotal) {
                     mMainHandler.post(() -> {
                         if (session != mChapterSession || mDestroyed
                                 || mChapterDirs == null || index >= mChapterDirs.size()) {
                             return;
                         }
                         mPageTotal = total;
-                        updateChapterDownloadProgress(mChapterDirs.get(index), done, total);
+                        updateChapterDownloadProgress(mChapterDirs.get(index), done, total,
+                                curName, curDone, curTotal);
                         if (!opened) {
                             // First page landed: show it now instead of making
                             // the user stare at a hint for the whole chapter.
@@ -3090,7 +3094,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mLoadingOverlay == null) {
             return;
         }
-        mLoadingLabel.setText(label);
+        // First line: what is being downloaded now (file name + its size/%) or
+        // a generic status label. Kept short so long VR-panel text still fits.
+        String labelText = (label == null || label.isEmpty()) ? "正在加载…" : label;
+        // Long CJK filenames (e.g. whole manga titles) overflow the VR panel;
+        // keep the leading part plus an ellipsis.
+        if (labelText.length() > 42) labelText = labelText.substring(0, 42) + "…";
+        mLoadingLabel.setText(labelText);
+        // Progress bar = overall page count (downloaded / total).
         if (mLoadingBar != null) {
             if (total > 0) {
                 mLoadingBar.setIndeterminate(false);
@@ -3100,24 +3111,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mLoadingBar.setIndeterminate(true);
             }
         }
-        if (bytesDone >= 0 && bytesTotal >= 0) {
+        // Second line: overall count + live speed. Never a grand total size.
+        String overall = (total > 0)
+                ? "已下载 " + done + " / " + total + " 个文件"
+                : "";
+        String speed = "";
+        if (bytesDone > 0 && mLoadBytesStartMs > 0L) {
             long elapsed = System.currentTimeMillis() - mLoadBytesStartMs;
-            String speed = "";
-            if (elapsed > 250 && bytesDone > 0) {
+            if (elapsed > 250) {
                 double kbps = (bytesDone * 1000.0 / elapsed) / 1024.0;
                 speed = kbps >= 1024
-                        ? String.format(java.util.Locale.ROOT, "%.2f MB/s", kbps / 1024.0)
-                        : String.format(java.util.Locale.ROOT, "%.0f KB/s", kbps);
+                        ? String.format(java.util.Locale.ROOT, " · %.2f MB/s", kbps / 1024.0)
+                        : String.format(java.util.Locale.ROOT, " · %.0f KB/s", kbps);
             }
-            long pct = bytesTotal > 0 ? (bytesDone * 100 / bytesTotal) : -1;
-            mLoadingSpeed.setText(formatMiB(bytesDone) + " / " + formatMiB(bytesTotal)
-                    + (pct >= 0 ? "  (" + pct + "%)" : "")
-                    + (speed.isEmpty() ? "" : "  ·  " + speed));
-        } else if (total > 0) {
-            mLoadingSpeed.setText(done + " / " + total + " 页");
-        } else {
-            mLoadingSpeed.setText("");
         }
+        mLoadingSpeed.setText(overall + speed);
         mLoadingOverlay.setVisibility(VISIBLE);
     }
 
@@ -3140,21 +3148,28 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  download overlay ONLY while the screen has no readable content (a page
      *  image or a prepared video). Once something is displayed the overlay is
      *  suppressed so background page downloads never cover what is being read. */
-    private void updateChapterDownloadProgress(File dir, int done, int total) {
+    private void updateChapterDownloadProgress(File dir, int done, int total,
+                                               String curName, long curDone, long curTotal) {
         if (hasVisibleContent()) {
             return;
         }
         if (mLoadBytesStartMs <= 0L) {
             mLoadBytesStartMs = System.currentTimeMillis();
         }
-        long landed = dirBytes(dir);
-        long estTotal = done > 0 ? (landed * total / done) : -1;
-        if (done >= total && total > 0) {
-            estTotal = landed;
+        // Per-file line: "文件名 (x MB / y MB, 42%)". No grand total bytes.
+        String fileLine = "";
+        if (curName != null && !curName.isEmpty()) {
+            String sizePart = "";
+            if (curTotal > 0) {
+                long pct = curDone * 100 / curTotal;
+                sizePart = " " + formatMiB(curDone) + " / " + formatMiB(curTotal)
+                        + " (" + pct + "%)";
+            } else if (curDone > 0) {
+                sizePart = " " + formatMiB(curDone);
+            }
+            fileLine = curName + sizePart;
         }
-        showLoading("正在加载 " + (mChapterIndex + 1) + " / "
-                        + (mChapterDirs == null ? 1 : mChapterDirs.size()) + " 章",
-                done, total, landed, estTotal);
+        showLoading(fileLine, done, total, -1L, -1L);
     }
 
     /** True when the reader is currently showing an image page or a prepared

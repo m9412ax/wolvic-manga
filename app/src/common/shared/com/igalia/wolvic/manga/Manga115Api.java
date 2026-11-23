@@ -279,6 +279,21 @@ public final class Manga115Api {
         if (cached != null) return cached;
 
         String lastErr = null;
+        // --- Primary: encrypted 115 app API. This is the ONLY endpoint that
+        // resolves large files (>2 GB); the web /files/download returns 50028
+        // for them. It also works for small files, so try it first for all.
+        try {
+            ResolvedLink appLink = resolveViaAppApi(cookie, id);
+            if (appLink != null && !appLink.url.isEmpty()) {
+                DIRECT_CACHE.put(cacheKey, appLink);
+                Log.i(TAG, "resolveLink OK via app API id=" + id);
+                return appLink;
+            }
+        } catch (Exception e) {
+            lastErr = "app API: " + e.getMessage();
+            Log.w(TAG, "resolveViaAppApi failed id=" + id + " : " + e.getMessage());
+        }
+
         final String[] templates = {"pickcode", "fid"};
         for (String t : templates) {
             String metaUrl = "https://webapi.115.com/files/download?aid=1&" + t + "=" + enc(id);
@@ -345,7 +360,7 @@ public final class Manga115Api {
      *  data=<m115 encrypted {"pickcode":id}>. Response data is another m115
      *  blob that decrypts to {pickcode:{url:{url:"..."}}}. Mirrors the Go
      *  driver's DownloadWithUA exactly. */
-    private static String resolveViaAppApi(String cookie, String pickcode) throws Exception {
+    private static ResolvedLink resolveViaAppApi(String cookie, String pickcode) throws Exception {
         M115Crypto.Key key = M115Crypto.generateKey();
         JSONObject req = new JSONObject();
         req.put("pickcode", pickcode);
@@ -354,35 +369,49 @@ public final class Manga115Api {
                 + (System.currentTimeMillis() / 1000L);
         String form = "data=" + enc(payload);
 
-        // 115's resty client sends urlencoded body with a forced JSON content
-        // type; try both because endpoints have flipped behavior across revs.
-        String[] contentTypes = {"application/x-www-form-urlencoded", "application/json"};
-        String lastErr = null;
-        for (String ct : contentTypes) {
-            try {
-                String resp = httpPostWithUA(url, form, cookie, UA_115, ct);
-                JSONObject root = new JSONObject(resp);
-                int errno = root.optInt("errno", -1);
-                String encData = root.optString("data", "");
-                if (errno == 0 && !encData.isEmpty()) {
-                    byte[] plain = M115Crypto.decode(encData, key);
-                    JSONObject data = new JSONObject(new String(plain, StandardCharsets.UTF_8));
-                    java.util.Iterator<String> keys = data.keys();
-                    while (keys.hasNext()) {
-                        JSONObject info = data.optJSONObject(keys.next());
-                        if (info == null) continue;
-                        JSONObject urlObj = info.optJSONObject("url");
-                        if (urlObj == null) continue;
-                        String durl = urlObj.optString("url", "");
-                        if (!durl.isEmpty()) return durl;
-                    }
-                }
-                lastErr = "errno=" + errno + " " + root.optString("error");
-            } catch (Exception e) {
-                lastErr = e.getMessage();
-            }
+        String resp = httpPostWithUA(url, form, cookie, UA_115,
+                "application/x-www-form-urlencoded");
+        JSONObject root = new JSONObject(resp);
+        // Success is {"state":true, "msg_code":0, "data":"<m115 blob>"}.
+        // Do NOT look at "errno": it is absent on success (optInt -> -1).
+        boolean ok = root.optBoolean("state", false) || root.optInt("msg_code", -1) == 0
+                || root.optInt("errno", -1) == 0;
+        String encData = root.optString("data", "");
+        if (!ok || encData.isEmpty()) {
+            throw new IllegalStateException("app downurl state=" + root.optBoolean("state", false)
+                    + " errno=" + root.optInt("errno", -1)
+                    + " msg=" + root.optString("msg", root.optString("error")));
         }
-        throw new IllegalStateException(lastErr == null ? "no data" : lastErr);
+        byte[] plain = M115Crypto.decode(encData, key);
+        JSONObject data = new JSONObject(new String(plain, StandardCharsets.UTF_8));
+        // Response shape: { "<pickcode>": { "url": { "url": "https://..." },
+        //   "file_size":..., "header": {...} } } or a flat {"url":{"url":...}}.
+        java.util.Iterator<String> keys = data.keys();
+        while (keys.hasNext()) {
+            JSONObject info = data.optJSONObject(keys.next());
+            if (info == null) continue;
+            JSONObject urlObj = info.optJSONObject("url");
+            if (urlObj == null) continue;
+            String durl = urlObj.optString("url", "");
+            if (durl.isEmpty()) continue;
+            // The app API embeds the CDN auth cookie in the decrypted payload:
+            // url.auth_cookie = {name, value, path}. The CDN 403s with
+            // "no cookie value" unless we send name=value on the download.
+            JSONObject auth = urlObj.optJSONObject("auth_cookie");
+            String cdnCookie = "";
+            if (auth != null) {
+                String name = auth.optString("name", "");
+                String value = auth.optString("value", "");
+                if (!name.isEmpty() && !value.isEmpty()) {
+                    cdnCookie = name + "=" + value;
+                }
+            }
+            if (cdnCookie.isEmpty() && cookie != null) cdnCookie = cookie;
+            Log.i(TAG, "app downurl resolved size=" + info.optString("file_size", "?")
+                    + " authCookie=" + (cdnCookie.isEmpty() ? "NO" : "yes"));
+            return new ResolvedLink(durl, cdnCookie);
+        }
+        throw new IllegalStateException("app downurl response has no url");
     }
 
     public static void clearDirectUrlCache() {
@@ -394,6 +423,95 @@ public final class Manga115Api {
      *  pickcode we fall back to the file_id. Both parameter forms are tried so
      *  a folder of loose images works regardless of which schema 115 returned.
      *  Large files (whole zip/cbz) are NOT supported here (errno 50028). */
+    /** Streams one file to dest with byte progress; avoids holding a 40 MB
+     *  image fully in memory and lets the reader show a real per-file bar. */
+    public static void downloadToFile(String cookie, String id, File dest,
+                                      RemoteManga.ProgressListener listener) throws Exception {
+        ResolvedLink link = resolveLink(cookie, id);
+        if (link == null) {
+            throw new IllegalStateException("115 取直链失败 id=" + id);
+        }
+        String cdnCookie = !link.cdnCookie.isEmpty() ? link.cdnCookie : cookie;
+        HttpURLConnection conn = (HttpURLConnection) new URL(link.url).openConnection();
+        conn.setInstanceFollowRedirects(false);
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("User-Agent", UA_115);
+        conn.setRequestProperty("Referer", REFERER);
+        if (cdnCookie != null && !cdnCookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", cdnCookie);
+        }
+        File parent = dest.getParentFile();
+        if (parent != null) parent.mkdirs();
+        File tmp = new File(dest.getAbsolutePath() + ".tmp");
+        try {
+            int code = conn.getResponseCode();
+            if (code >= 300 && code < 400) {
+                String loc = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (loc != null && !loc.isEmpty()) {
+                    downloadToFile(new URL(new URL(link.url), loc).toString(),
+                            cdnCookie, tmp, listener);
+                    if (dest.exists()) dest.delete();
+                    if (!tmp.renameTo(dest)) throw new IllegalStateException("重命名失败 " + id);
+                    return;
+                }
+            }
+            if (code < 200 || code >= 300) {
+                throw new IllegalStateException("HTTP " + code + " 下载失败 " + hostOf(link.url));
+            }
+            long total = conn.getContentLengthLong();
+            long[] done = {0L};
+            try (InputStream in = conn.getInputStream();
+                 java.io.OutputStream out = new java.io.BufferedOutputStream(
+                         new java.io.FileOutputStream(tmp), 16384)) {
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                    done[0] += n;
+                    if (listener != null) listener.onProgress(done[0], total);
+                }
+            }
+            if (tmp.length() == 0L) throw new IllegalStateException("115 下载为空 " + id);
+            if (dest.exists() && !dest.delete()) { /* best effort */ }
+            if (!tmp.renameTo(dest)) throw new IllegalStateException("重命名失败 " + id);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
+    /** Internal redirect helper: download a fully-resolved URL with an explicit
+     *  cookie (no further resolve). */
+    private static void downloadToFile(String directUrl, String cdnCookie, File dest,
+                                       RemoteManga.ProgressListener listener) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(directUrl).openConnection();
+        conn.setInstanceFollowRedirects(true);
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("User-Agent", UA_115);
+        conn.setRequestProperty("Referer", REFERER);
+        if (cdnCookie != null && !cdnCookie.isEmpty()) conn.setRequestProperty("Cookie", cdnCookie);
+        File parent = dest.getParentFile();
+        if (parent != null) parent.mkdirs();
+        try (InputStream in = conn.getInputStream();
+             java.io.OutputStream out = new java.io.BufferedOutputStream(
+                     new java.io.FileOutputStream(dest), 16384)) {
+            byte[] buf = new byte[16384];
+            int n;
+            long done = 0L, total = conn.getContentLengthLong();
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                done += n;
+                if (listener != null) listener.onProgress(done, total);
+            }
+        } finally {
+            conn.disconnect();
+        }
+    }
+
     public static byte[] imageBytes(String cookie, String id) throws Exception {
         ResolvedLink link = resolveLink(cookie, id);
         if (link == null) {
