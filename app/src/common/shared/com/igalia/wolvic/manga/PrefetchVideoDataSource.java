@@ -56,9 +56,16 @@ public final class PrefetchVideoDataSource extends MediaDataSource {
     private Thread feeder;
     private final Object startLock = new Object();
 
+    /** Hard safety cap per slot. Wolvic runs with a 256 MB app heap; two slots
+     *  of 64+ MB (or a stale 256 MB setting) caused an instant OutOfMemoryError
+     *  on the decoder thread the moment a video was opened. Keep total slot
+     *  memory well under the heap so images + decoder still have room. */
+    private static final int MAX_SLOT_BYTES = 20 * 1024 * 1024;
+
     public PrefetchVideoDataSource(Reader reader, int slotBytes) {
         this.reader = reader;
-        int n = Math.max(256 * 1024, slotBytes);
+        int n = Math.max(256 * 1024, Math.min(slotBytes, MAX_SLOT_BYTES));
+        Log.i(TAG, "slot request=" + slotBytes + " clamped=" + n);
         this.slots = new Slot[]{new Slot(n), new Slot(n)};
     }
 

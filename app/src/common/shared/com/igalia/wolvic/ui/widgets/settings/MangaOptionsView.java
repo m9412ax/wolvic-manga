@@ -165,8 +165,6 @@ public class MangaOptionsView extends SettingsView
         switchRow("自动裁切白边", MangaSettings.READER_CROP_BORDERS);
         switchRow("显示页码", MangaSettings.READER_SHOW_PAGE_NUMBER);
         switchRow("保持屏幕常亮", MangaSettings.READER_KEEP_AWAKE);
-        radio("预加载页数", MangaSettings.READER_PRELOAD,
-                new String[]{"不预载", "1 页", "2 页", "4 页"}, new int[]{0, 1, 2, 4});
 
         section("视频与媒体");
         switchRow("视频自动播放", MangaSettings.READER_VIDEO_AUTOPLAY);
@@ -249,10 +247,19 @@ public class MangaOptionsView extends SettingsView
                 MangaSettings.IMAGE_CACHE_MB,
                 new String[]{"256 MB", "512 MB", "1 GB", "2 GB", "4 GB", "8 GB"},
                 new int[]{256, 512, 1024, 2048, 4096, 8192});
-        radio("视频预读缓冲 · 内存（在线播放，不占硬盘图片缓存）",
+        radio("视频预读缓冲 · 内存（在线播放，不占硬盘图片缓存；上限 20 MB）",
                 MangaSettings.VIDEO_BUFFER_MB,
-                new String[]{"16 MB", "32 MB", "64 MB", "128 MB", "256 MB"},
-                new int[]{16, 32, 64, 128, 256});
+                new String[]{"4 MB", "8 MB", "12 MB", "16 MB", "20 MB"},
+                new int[]{4, 8, 12, 16, 20});
+        // Image preloading = decoding the current page's neighbours into an
+        // in-memory Bitmap cache, so the next page opens instantly. Kept here
+        // (not under "display") because it is a memory/cache behaviour.
+        radio("图片预加载页数 · 内存（提前解码前后 N 页，翻页不黑屏）",
+                MangaSettings.READER_PRELOAD,
+                new String[]{"不预载", "1 页", "2 页", "4 页"}, new int[]{0, 1, 2, 4});
+        radio("图片预加载线程 · 内存（越多翻页越快，占用内存越高）",
+                MangaSettings.READER_PRELOAD_THREADS,
+                new String[]{"1 线程", "2 线程", "3 线程", "4 线程"}, new int[]{1, 2, 3, 4});
         button("当前图片缓存占用（硬盘）· 点击查看数值 / 清除",
                 com.igalia.wolvic.manga.MangaCacheManager.imageCacheLabel(getContext()),
                 () -> {
@@ -358,11 +365,20 @@ public class MangaOptionsView extends SettingsView
         control.setOptions(labels);
         int checked = 0;
         int current = mSettings.integer(key);
+        boolean found = false;
         for (int i = 0; i < values.length; i++) {
             if (values[i] == current) {
                 checked = i;
+                found = true;
                 break;
             }
+        }
+        // A value saved by an older build may no longer be a valid option
+        // (e.g. the old 64 MB video buffer). Normalise it so the displayed
+        // choice matches what is actually stored.
+        if (!found) {
+            current = values[0];
+            mSettings.put(key, current);
         }
         control.setChecked(checked, false);
         control.setOnCheckedChangeListener((group, checkedId, apply) -> {

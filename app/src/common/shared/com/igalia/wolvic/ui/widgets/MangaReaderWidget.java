@@ -316,6 +316,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void initialize() {
         mSettings = MangaSettings.get(getContext());
+        // Parallel decode threads for the preload window are user-tunable.
+        // More threads = flipped-to pages are already decoded (less black
+        // screen) at the cost of more memory; 1 = serial / lowest memory.
+        int preloadThreads = Math.max(1, Math.min(4,
+                mSettings.integer(MangaSettings.READER_PRELOAD_THREADS)));
+        mPreloadExecutor.setCorePoolSize(preloadThreads);
+        mPreloadExecutor.setMaximumPoolSize(preloadThreads);
         // Canvas size is persistent across pages and restarts; image zoom is not.
         mUserScale = clamp(mSettings.getFloat(MangaSettings.READER_CANVAS_SCALE, 1.0f),
                 0.4f, 3.0f);

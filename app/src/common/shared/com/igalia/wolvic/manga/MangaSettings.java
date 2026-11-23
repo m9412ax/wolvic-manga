@@ -43,6 +43,8 @@ public final class MangaSettings {
     public static final String READER_SHOW_PAGE_NUMBER = "reader_show_page_number";
     public static final String READER_CROP_BORDERS = "reader_crop_borders";
     public static final String READER_PRELOAD = "reader_preload";
+    /** Number of background threads that decode the preload window in parallel. */
+    public static final String READER_PRELOAD_THREADS = "reader_preload_threads";
     public static final String READER_VIDEO_AUTOPLAY = "reader_video_autoplay";
     public static final String READER_VIDEO_NEXT_ON_END = "reader_video_next_on_end";
     public static final String READER_VIDEO_RESUME = "reader_video_resume";
@@ -270,6 +272,8 @@ public final class MangaSettings {
                 return 8;
             case READER_PRELOAD:
                 return 2;
+            case READER_PRELOAD_THREADS:
+                return 3;
             case SOURCE_SPAN_COUNT:
                 return 4;
             case SOURCE_THUMB_PX:
@@ -285,7 +289,7 @@ public final class MangaSettings {
             case REMOTE_CACHE_MB:
                 return 512;
             case VIDEO_BUFFER_MB:
-                return 64;
+                return 12;
             case SOURCE_CACHE_MB:
                 return 1024;
             case LIBRARY_SIZE:

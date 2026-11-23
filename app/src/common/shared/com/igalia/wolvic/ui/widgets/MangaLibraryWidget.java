@@ -967,6 +967,14 @@ public class MangaLibraryWidget extends UIWidget {
         return String.format(java.util.Locale.ROOT, "%08x", h);
     }
 
+    /** Video prefetch buffer in bytes, clamped to the app-heap-safe range.
+     *  Old builds allowed up to 256 MB which OOM-crashed on open. */
+    private int videoBufferBytes() {
+        int mb = mSettings.integer(MangaSettings.VIDEO_BUFFER_MB);
+        mb = Math.max(4, Math.min(20, mb));
+        return mb * 1024 * 1024;
+    }
+
     /** Builds a remote source with the SAME sort config the file browser uses,
      *  so the reader's page order == the folder listing order. */
     private RemoteManga smbManga(MangaSmb.Auth auth, String path) {
@@ -975,7 +983,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mSettings.videoExtensions(),
                 mSettings.integer(MangaSettings.SORT_MODE),
                 mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
-                mSettings.integer(MangaSettings.VIDEO_BUFFER_MB) * 1024 * 1024);
+                videoBufferBytes());
     }
 
     private RemoteManga p115Manga(String cookie, String cid, String title) {
@@ -984,7 +992,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mSettings.videoExtensions(),
                 mSettings.integer(MangaSettings.SORT_MODE),
                 mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
-                mSettings.integer(MangaSettings.VIDEO_BUFFER_MB) * 1024 * 1024);
+                videoBufferBytes());
     }
 
     /** Opens a remote manga ONLINE: chapters are listed first (no image
