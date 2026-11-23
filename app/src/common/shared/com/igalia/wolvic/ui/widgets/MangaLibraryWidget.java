@@ -983,7 +983,8 @@ public class MangaLibraryWidget extends UIWidget {
                 concat(mSettings.imageExtensions(), mSettings.videoExtensions()),
                 mSettings.videoExtensions(),
                 mSettings.integer(MangaSettings.SORT_MODE),
-                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
+                mSettings.integer(MangaSettings.VIDEO_BUFFER_MB) * 1024 * 1024);
     }
 
     /** Opens a remote manga ONLINE: chapters are listed first (no image

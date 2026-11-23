@@ -251,8 +251,8 @@ public class MangaOptionsView extends SettingsView
                 new int[]{256, 512, 1024, 2048, 4096, 8192});
         radio("视频预读缓冲 · 内存（在线播放，不占硬盘图片缓存）",
                 MangaSettings.VIDEO_BUFFER_MB,
-                new String[]{"8 MB", "16 MB", "32 MB", "64 MB", "128 MB"},
-                new int[]{8, 16, 32, 64, 128});
+                new String[]{"16 MB", "32 MB", "64 MB", "128 MB", "256 MB"},
+                new int[]{16, 32, 64, 128, 256});
         button("当前图片缓存占用（硬盘）· 点击查看数值 / 清除",
                 com.igalia.wolvic.manga.MangaCacheManager.imageCacheLabel(getContext()),
                 () -> {

@@ -9,42 +9,48 @@ import android.media.MediaDataSource;
 import android.util.Log;
 
 /**
- * Two-slot background prefetch wrapper around a blocking remote byte Reader.
+ * Two-slot incrementally-filled prefetch wrapper around a blocking remote byte
+ * Reader.
  *
- * Why: MediaPlayer calls readAt() synchronously from its decoder thread with
- * tiny chunks. If readAt() touches the network, the decoder buffer drains and
- * playback stutters every few seconds. This class moves ALL network I/O to a
- * dedicated feeder thread which keeps a slot filled ahead of the read cursor;
- * readAt() only does System.arraycopy from a ready in-memory slot.
+ * All network I/O happens on a dedicated feeder thread; the MediaPlayer decoder
+ * thread only does System.arraycopy from a ready in-memory region.
  *
- * Seeking lands in the other slot (or forces one synchronous fill) so fast
- * forward stays smooth after the first seek.
+ * IMPORTANT (root cause of "SMB video never prepared"): a slot is readable as
+ * soon as its FIRST bytes land, not only when fully filled. An earlier version
+ * required a full slot and did a synchronous whole-slot (64 MB) read on a cache
+ * miss - with smbj's 256 KB chunks that is 256 network round-trips on the
+ * decoder thread, so prepare() timed out. Now the feeder fills in small chunks
+ * and a miss only synchronously reads the bytes actually requested (plus a
+ * small read-ahead), so prepare() and seeking return immediately.
  */
 public final class PrefetchVideoDataSource extends MediaDataSource {
 
     private static final String TAG = "PrefetchVideoDS";
+    private static final int FEED_CHUNK = 512 * 1024;   // one network read in feeder
+    private static final int SYNC_CHUNK = 256 * 1024;   // read-ahead on a decoder miss
 
     /** A blocking byte source (SMB random read or HTTP Range). */
     public interface Reader {
         long size() throws Exception;
-        /** Fill buf[off..off+len) from absolute position; return bytes read (<=0 = EOF/error). */
         int readAt(long position, byte[] buf, int off, int len) throws Exception;
         void close();
     }
 
+    /** A slot is valid over [start, start+len) even while still filling. */
     private static final class Slot {
         final byte[] data;
-        volatile long start = -1L;
-        volatile int len = 0;
-        volatile boolean ready = false;
+        long start = -1L;
+        int len = 0;
+        boolean filled = false;
         Slot(int n) { data = new byte[n]; }
-        boolean contains(long p) { return ready && p >= start && p < start + len; }
-        void reset() { ready = false; len = 0; }
+        boolean contains(long p) { return start >= 0 && p >= start && p < start + len; }
+        void reset() { start = -1L; len = 0; filled = false; }
+        int room() { return data.length - len; }
     }
 
     private final Reader reader;
     private final Slot[] slots;
-    private volatile int active = 0;
+    private int active = 0;                 // guarded by this
     private volatile long size = -1L;
     private volatile boolean closed = false;
     private Thread feeder;
@@ -68,38 +74,54 @@ public final class PrefetchVideoDataSource extends MediaDataSource {
         }
     }
 
-    /** Fills the INACTIVE slot ahead of the active slot's end, forever. */
+    /**
+     * Keeps the inactive slot filled ahead of the active slot's end. Fills in
+     * FEED_CHUNK-sized pieces and publishes partial progress (len) after each
+     * piece, so readAt can consume a slot before it is completely filled.
+     */
     private void feed() {
         while (!closed) {
             try {
-                int inactive = 1 - active;
-                Slot s = slots[inactive];
-                if (!s.ready && size > 0) {
-                    long from;
+                synchronized (this) {
+                    int inactive = 1 - active;
+                    Slot s = slots[inactive];
                     Slot a = slots[active];
-                    if (a.ready && a.len > 0) from = a.start + a.len;
-                    else if (a.start >= 0) from = a.start;
-                    else from = 0L;
-                    if (from >= size) {
-                        sleep(80);
-                        continue;
+                    if (!s.filled) {
+                        long from;
+                        if (s.len > 0) {
+                            from = s.start + s.len;          // continue this slot
+                        } else if (a.start >= 0 && a.len > 0) {
+                            from = a.start + a.len;          // just past active
+                        } else if (a.start >= 0) {
+                            from = a.start;
+                        } else {
+                            from = 0L;
+                        }
+                        if (size > 0 && from >= size) {
+                            if (s.len == 0) s.start = from;
+                            s.filled = true;
+                        } else {
+                            int want = Math.min(FEED_CHUNK, s.room());
+                            if (size > 0) want = (int) Math.min(want, size - from);
+                            if (want > 0) {
+                                int n = reader.readAt(from, s.data, s.len, want);
+                                if (n > 0) {
+                                    if (s.len == 0) s.start = from;
+                                    s.len += n;
+                                    if (s.room() <= 0 || (size > 0 && s.start + s.len >= size)) {
+                                        s.filled = true;
+                                    }
+                                }
+                            } else {
+                                s.filled = true;
+                            }
+                        }
                     }
-                    int want = (int) Math.min(s.data.length, size - from);
-                    int n = reader.readAt(from, s.data, 0, want);
-                    if (n > 0) {
-                        s.start = from;
-                        s.len = n;
-                        s.ready = true;
-                    } else {
-                        sleep(80);
-                    }
-                } else {
-                    sleep(20);
                 }
             } catch (Throwable t) {
                 if (!closed) Log.w(TAG, "feed: " + t.getMessage());
-                sleep(80);
             }
+            sleep(12);
         }
     }
 
@@ -107,21 +129,25 @@ public final class PrefetchVideoDataSource extends MediaDataSource {
         try { Thread.sleep(ms); } catch (InterruptedException ignored) { }
     }
 
-    /** Fill a slot synchronously (only on a seek that misses both slots). */
-    private boolean fillNow(int idx, long pos) {
+    /** Synchronously fill [idx] from [pos] with ONLY what is needed. Caller
+     *  holds synchronized(this). */
+    private boolean fillAt(int idx, long pos, int want) {
         Slot s = slots[idx];
         s.reset();
         if (size > 0 && pos >= size) return false;
-        long cap = (size > 0) ? Math.min(s.data.length, size - pos) : s.data.length;
+        int cap = Math.max(want, SYNC_CHUNK);
+        if (size > 0) cap = (int) Math.min(cap, size - pos);
+        cap = Math.min(cap, s.data.length);
+        if (cap <= 0) return false;
         try {
-            int n = reader.readAt(pos, s.data, 0, (int) cap);
+            int n = reader.readAt(pos, s.data, 0, cap);
             if (n <= 0) return false;
             s.start = pos;
             s.len = n;
-            s.ready = true;
+            if (s.room() <= 0 || (size > 0 && pos + n >= size)) s.filled = true;
             return true;
         } catch (Throwable e) {
-            Log.w(TAG, "fillNow pos=" + pos + ": " + e.getMessage());
+            Log.w(TAG, "fillAt pos=" + pos + ": " + e.getMessage());
             return false;
         }
     }
@@ -136,13 +162,15 @@ public final class PrefetchVideoDataSource extends MediaDataSource {
         if (!a.contains(position)) {
             int other = 1 - active;
             if (slots[other].contains(position)) {
-                a.reset();                 // consumed slot is behind; let feeder refill it
                 active = other;
                 a = slots[other];
             } else {
-                // Seek outside both slots: one synchronous fill, then prefetch resumes.
-                a.reset();
-                if (!fillNow(active, position)) return -1;
+                // Outside both slots: read only the requested bytes (+small
+                // read-ahead) instead of a whole slot. This is what keeps
+                // prepare() and seek fast on high-latency SMB.
+                if (!fillAt(other, position, length)) return -1;
+                active = other;
+                a = slots[other];
             }
         }
         int avail = (int) (a.start + a.len - position);

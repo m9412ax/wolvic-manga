@@ -285,7 +285,7 @@ public final class MangaSettings {
             case REMOTE_CACHE_MB:
                 return 512;
             case VIDEO_BUFFER_MB:
-                return 16;
+                return 64;
             case SOURCE_CACHE_MB:
                 return 1024;
             case LIBRARY_SIZE:

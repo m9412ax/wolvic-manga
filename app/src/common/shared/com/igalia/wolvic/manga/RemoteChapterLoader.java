@@ -77,36 +77,53 @@ public final class RemoteChapterLoader {
                     final String curName = p.nameHint == null ? out.getName() : p.nameHint;
                     final long[] curBytes = {0L, p.size > 0 ? p.size : -1L};
                     final int pageIdx = i;
-                    try {
-                        if (!isValidCached(out)) {
+                    boolean landed = isValidCached(out);
+                    if (!landed) {
+                        try {
                             if (isVideoName(p.nameHint)) {
                                 // Marker instead of the full video: reader will
                                 // stream it lazily through MediaDataSource.
                                 RemoteManga.writeVideoMarker(out, p);
+                                landed = out.exists() && out.length() > 0;
                                 Log.i(TAG, "video marker " + out.getName()
                                         + " for " + p.nameHint);
                             } else {
-                                // Report this file's own byte progress while it
-                                // downloads (SMB/115 write to their own .tmp).
-                                manga.fetchPage(p, out, (d0, t0) -> {
-                                    curBytes[0] = d0;
-                                    if (t0 > 0) curBytes[1] = t0;
-                                    MAIN.post(() -> {
-                                        if (progress != null) {
-                                            progress.onProgress(done[0], total,
-                                                    curName, curBytes[0], curBytes[1]);
-                                        }
-                                    });
-                                });
-                                if (!out.exists() || out.length() == 0L) {
-                                    throw new IllegalStateException("第 " + (pageIdx + 1) + " 页为空");
+                                // Retry once: a transient SMB "下载为空" (server
+                                // hiccup / connection rush) is common. Without a
+                                // retry the page is a permanent black hole while
+                                // the progress bar still counts it as done.
+                                for (int attempt = 0; attempt < 2 && !landed; attempt++) {
+                                    try {
+                                        manga.fetchPage(p, out, (d0, t0) -> {
+                                            curBytes[0] = d0;
+                                            if (t0 > 0) curBytes[1] = t0;
+                                            MAIN.post(() -> {
+                                                if (progress != null) {
+                                                    progress.onProgress(done[0], total,
+                                                            curName, curBytes[0], curBytes[1]);
+                                                }
+                                            });
+                                        });
+                                        landed = out.exists() && out.length() > 0;
+                                    } catch (Throwable e) {
+                                        Log.w(TAG, "page " + pageIdx + " attempt " + attempt
+                                                + " failed: " + e.getMessage());
+                                        // A failed attempt may leave an empty .tmp/target;
+                                        // remove it so the next attempt starts clean.
+                                        File tmp = new File(out.getAbsolutePath() + ".tmp");
+                                        if (tmp.exists()) tmp.delete();
+                                        if (out.exists() && out.length() == 0) out.delete();
+                                    }
                                 }
                             }
+                        } catch (Throwable e) {
+                            Log.w(TAG, "page " + pageIdx + " failed: " + e.getMessage());
                         }
-                    } catch (Throwable e) {
-                        Log.w(TAG, "page " + pageIdx + " failed: " + e.getMessage());
                     }
-                    final int d = ++done[0];
+                    // Only pages that really landed count as done. Failed pages
+                    // stay out of the counter, so the bar matches what is readable.
+                    if (landed) done[0]++;
+                    final int d = done[0];
                     MAIN.post(() -> {
                         if (progress != null) {
                             progress.onProgress(d, total, curName, curBytes[0], curBytes[1]);
@@ -165,11 +182,12 @@ public final class RemoteChapterLoader {
             if (!root.isDirectory()) return;
             long cap = MangaSettings.get(context).integer(MangaSettings.IMAGE_CACHE_MB)
                     * 1024L * 1024L;
-            // A single chapter of full-resolution scans can be several GB.
-            // Never evict below one chapter worth of headroom, otherwise the
-            // cap logic deletes pages out of the chapter being read/written
-            // (seen as "SMB 下载为空" with a 1.7 GB folder full of holes).
-            long floor = Math.max(cap, 6L * 1024L * 1024L * 1024L);
+            // Evict down to the user's configured cap. The ONLY hard protection
+            // is the current chapter (skipped by absolute path below); a fixed
+            // multi-GB floor made the setting meaningless - users saw 3.6 GB
+            // cached with a 512 MB limit ("1g+3g"). Keep a small 256 MB slack
+            // so we don't thrash on every page, but honour the setting.
+            long floor = Math.max(256L * 1024L * 1024L, cap * 4L / 5L);
             List<File> chapters = new ArrayList<>();
             File[] mangas = root.listFiles();
             if (mangas != null) {

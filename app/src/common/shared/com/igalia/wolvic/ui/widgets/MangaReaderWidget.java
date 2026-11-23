@@ -254,7 +254,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 return thread;
             });
     private final ThreadPoolExecutor mPreloadExecutor = new ThreadPoolExecutor(
-            1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
+            3, 3, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), runnable -> {
                 Thread thread = new Thread(() -> {
                     android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
                     runnable.run();
@@ -3151,6 +3151,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private void updateChapterDownloadProgress(File dir, int done, int total,
                                                String curName, long curDone, long curTotal) {
         if (hasVisibleContent()) {
+            return;
+        }
+        // A video page buffers via MediaDataSource, NOT via the chapter image
+        // downloader. Showing "downloading <image>.jpg" over a black video
+        // screen is misleading - the user thinks the video is being downloaded
+        // when it is actually streaming. Let the video's own overlay own this.
+        if (isVideoPage()) {
+            if (!mVideoPrepared) {
+                showLoading("正在缓冲视频…", -1, -1, -1, -1);
+            }
             return;
         }
         if (mLoadBytesStartMs <= 0L) {

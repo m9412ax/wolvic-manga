@@ -26,13 +26,20 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     private final String[] videoExt;
     private final int sortMode;
     private final boolean videoFirst;
+    private final int videoBufferBytes;
 
     public Netdisk115RemoteManga(String cookie, String cid, String title, String[] media) {
-        this(cookie, cid, title, media, new String[0], 0, true);
+        this(cookie, cid, title, media, new String[0], 0, true, 64 * 1024 * 1024);
     }
 
     public Netdisk115RemoteManga(String cookie, String cid, String title, String[] media,
                                  String[] videoExt, int sortMode, boolean videoFirst) {
+        this(cookie, cid, title, media, videoExt, sortMode, videoFirst, 64 * 1024 * 1024);
+    }
+
+    public Netdisk115RemoteManga(String cookie, String cid, String title, String[] media,
+                                 String[] videoExt, int sortMode, boolean videoFirst,
+                                 int videoBufferBytes) {
         this.cookie = cookie;
         this.cid = (cid == null || cid.isEmpty()) ? "0" : cid;
         this.title = (title == null || title.isEmpty()) ? "115 网盘" : title;
@@ -40,6 +47,7 @@ public final class Netdisk115RemoteManga implements RemoteManga {
         this.videoExt = videoExt == null ? new String[0] : videoExt;
         this.sortMode = sortMode;
         this.videoFirst = videoFirst;
+        this.videoBufferBytes = videoBufferBytes;
     }
 
     @Override
@@ -120,10 +128,12 @@ public final class Netdisk115RemoteManga implements RemoteManga {
 
     @Override
     public MediaDataSource openVideo(PageInfo page) {
-        // 8 MB x2 prefetch slots: the feeder issues large Range GETs in the
-        // background, the decoder reads from memory (no per-read HTTP request).
+        // Two prefetch slots from the shared video-buffer setting (same as
+        // SMB). 8 MB was far too small for a ~3 GB / high-bitrate video: the
+        // feeder could not refill before the decoder drained a slot, producing
+        // a stall every few seconds.
         return new PrefetchVideoDataSource(
-                new HttpVideoDataSource(cookie, page.id), 8 * 1024 * 1024);
+                new HttpVideoDataSource(cookie, page.id), videoBufferBytes);
     }
 
     private boolean isMedia(String name) {
