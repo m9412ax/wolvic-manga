@@ -452,7 +452,7 @@ public final class Manga115Api {
                 String loc = conn.getHeaderField("Location");
                 conn.disconnect();
                 if (loc != null && !loc.isEmpty()) {
-                    downloadToFile(new URL(new URL(link.url), loc).toString(),
+                    downloadDirectUrl(new URL(new URL(link.url), loc).toString(),
                             cdnCookie, tmp, listener);
                     if (dest.exists()) dest.delete();
                     if (!tmp.renameTo(dest)) throw new IllegalStateException("重命名失败 " + id);
@@ -485,8 +485,8 @@ public final class Manga115Api {
 
     /** Internal redirect helper: download a fully-resolved URL with an explicit
      *  cookie (no further resolve). */
-    private static void downloadToFile(String directUrl, String cdnCookie, File dest,
-                                       RemoteManga.ProgressListener listener) throws Exception {
+    private static void downloadDirectUrl(String directUrl, String cdnCookie, File dest,
+                                          RemoteManga.ProgressListener listener) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(directUrl).openConnection();
         conn.setInstanceFollowRedirects(true);
         conn.setRequestMethod("GET");
