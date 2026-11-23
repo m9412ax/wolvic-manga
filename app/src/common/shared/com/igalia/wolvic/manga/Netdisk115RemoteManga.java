@@ -136,6 +136,11 @@ public final class Netdisk115RemoteManga implements RemoteManga {
                 new HttpVideoDataSource(cookie, page.id), videoBufferBytes);
     }
 
+    @Override
+    public PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) {
+        return new HttpVideoDataSource(cookie, page.id);
+    }
+
     private boolean isMedia(String name) {
         if (name == null) return false;
         int dot = name.lastIndexOf('.');

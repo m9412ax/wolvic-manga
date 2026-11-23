@@ -70,8 +70,23 @@ public final class RemoteChapterLoader {
                 Log.i(TAG, "download " + manga.key() + "/" + chapter.name
                         + " pages=" + total + " (sequential)");
 
+                // Download order: the page the user actually tapped first, then
+                // outward neighbours, then the rest. Previously it always began
+                // at page 0, so tapping image #99 meant waiting for 98 pages
+                // (~6 min of 4K downloads) before that image appeared.
+                java.util.List<Integer> order = new java.util.ArrayList<>(total);
+                int anchor = Math.max(0, Math.min(startPage, total - 1));
+                order.add(anchor);
+                for (int distance = 1; distance < total; distance++) {
+                    int lo = anchor - distance;
+                    int hi = anchor + distance;
+                    if (lo >= 0) order.add(lo);
+                    if (hi < total) order.add(hi);
+                }
+
                 boolean opened = false;
-                for (int i = 0; i < total; i++) {
+                for (int idx : order) {
+                    final int i = idx;
                     RemoteManga.PageInfo p = pages.get(i);
                     final File out = cachedFile(dir, i, p.nameHint);
                     final String curName = p.nameHint == null ? out.getName() : p.nameHint;

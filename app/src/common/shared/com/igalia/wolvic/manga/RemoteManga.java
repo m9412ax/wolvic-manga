@@ -57,6 +57,10 @@ public interface RemoteManga {
      *  null when this source cannot stream (reader then plays the cached file). */
     default MediaDataSource openVideo(PageInfo page) { return null; }
 
+    /** Opens a raw byte Reader for the video, used by VideoFileCache to download
+     *  it into a LOCAL file for smooth playback. Lazy like openVideo. */
+    default PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) { return null; }
+
     final class ChapterInfo {
         public final String id;     // stable remote id/path
         public final String name;   // display name

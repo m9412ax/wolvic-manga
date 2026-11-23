@@ -125,4 +125,9 @@ public final class SmbRemoteManga implements RemoteManga {
         return new PrefetchVideoDataSource(
                 new SmbVideoDataSource(auth, page.id), videoBufferBytes);
     }
+
+    @Override
+    public PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) {
+        return new SmbVideoDataSource(auth, page.id);
+    }
 }

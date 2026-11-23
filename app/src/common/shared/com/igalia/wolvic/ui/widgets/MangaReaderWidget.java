@@ -46,6 +46,7 @@ import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.manga.RemoteManga;
+import com.igalia.wolvic.manga.PrefetchVideoDataSource;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
@@ -106,8 +107,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private volatile long mLoadBytesStartMs;
     /** Delayed show of the page-decode loading overlay, so a fast cache-hit
      *  decode never flashes it. Cancelled as soon as the bitmap lands. */
-    private final Runnable mShowDecodeLoading = () ->
+    private volatile boolean mDecodePending = false;
+    private final Runnable mShowDecodeLoading = () -> {
+        if (mDecodePending) {
             showLoading("正在加载图片…", -1, -1, -1, -1);
+        }
+    };
     private EditText mGotoInput;
 
     private final List<File> mPages = new ArrayList<>();
@@ -149,6 +154,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private SurfaceTexture mVideoSurfaceTexture;
     /** Streaming source for a remote video; closed when playback stops. */
     private android.media.MediaDataSource mVideoDataSource;
+    /** Downloads a remote video to a local file for smooth playback (plan A). */
+    private com.igalia.wolvic.manga.VideoFileCache mVideoFileCache;
 
     private boolean mVideoPrepared;
     private File mVideoPage;
@@ -1083,6 +1090,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final int stripGeneration = ++mStripGeneration;
         mIndex = index;
         mRequestedPageKey = null;
+        mDecodePending = false;
         mVideoCompleted = false;
         mZoom = 1.0f;
         mPanX = 0f;
@@ -1122,6 +1130,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // No synthetic texture, no path tricks, no extra layout work.
             mPageImage.setVisibility(GONE);
             mVideoTexture.setVisibility(VISIBLE);
+            // Keep key/joystick events flowing to the reader: a TextureView or
+            // the video bar's SeekBar/Buttons can steal focus, which made the
+            // whole video page ignore stick, buttons and Back in VR.
+            mVideoTexture.setFocusable(false);
+            post(this::requestFocus);
             setStripVisible(false);
             mVideoFitMode = 0;
             mVideoZoom = 1.0f;
@@ -1250,6 +1263,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         // Only show the overlay if decoding actually takes a while (large
         // image / AVIF). Fast decodes cancel it in displayLoadedPage().
+        mDecodePending = true;
         mMainHandler.removeCallbacks(mShowDecodeLoading);
         mMainHandler.postDelayed(mShowDecodeLoading, 250L);
         mRequestedPageKey = cacheKey;
@@ -1257,6 +1271,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void displayLoadedPage(Bitmap bitmap) {
         mRequestedPageKey = null;
+        mDecodePending = false;
         mMainHandler.removeCallbacks(mShowDecodeLoading);
         hideLoading();
         mCurrent = bitmap;
@@ -3119,9 +3134,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         }
         // Second line: overall count + live speed. Never a grand total size.
-        String overall = (total > 0)
-                ? "已下载 " + done + " / " + total + " 个文件"
-                : "";
+        // For video buffering the "page counts" are actually byte percentages,
+        // so show buffered bytes instead of "N files".
+        boolean videoBuffering = labelText != null && labelText.startsWith("正在缓冲视频");
+        String overall;
+        if (videoBuffering) {
+            overall = (bytesTotal > 0)
+                    ? formatMiB(bytesDone) + " / " + formatMiB(bytesTotal)
+                    : "";
+        } else {
+            overall = (total > 0)
+                    ? "已下载 " + done + " / " + total + " 个文件"
+                    : "";
+        }
         String speed = "";
         if (bytesDone > 0 && mLoadBytesStartMs > 0L) {
             long elapsed = System.currentTimeMillis() - mLoadBytesStartMs;
@@ -3158,6 +3183,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private void updateChapterDownloadProgress(File dir, int done, int total,
                                                String curName, long curDone, long curTotal) {
         if (hasVisibleContent()) {
+            return;
+        }
+        // A page is decoding (cache miss) - the overlay must say "正在加载图片",
+        // NOT the chapter's background download progress. Those are different
+        // things; showing download numbers over a decoding page is misleading.
+        if (mDecodePending) {
             return;
         }
         // A video page buffers via MediaDataSource, NOT via the chapter image
@@ -3284,6 +3315,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
         mVideoSeek = new SeekBar(getContext());
         mVideoSeek.setMax(1000);
+        // Keep focus on the reader root so controller input is never swallowed.
+        mVideoSeek.setFocusable(false);
+        mVideoSeek.setFocusableInTouchMode(false);
         mVideoSeek.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
         mVideoSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -3444,6 +3478,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         b.setMinHeight(dp(40));
         b.setMinimumHeight(dp(40));
         b.setPadding(dp(2), 0, dp(2), 0);
+        // Do not let video controls steal focus from the reader: when a Button
+        // or SeekBar holds focus, controller stick/keys and Back stop working.
+        b.setFocusable(false);
+        b.setFocusableInTouchMode(false);
         b.setLayoutParams(new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         return b;
@@ -3580,6 +3618,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSeeking = true;
             mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
             mMainHandler.removeCallbacks(mClearVideoSeekLock);
+            // If the video is still downloading to a local file, re-anchor the
+            // background download to the seek target so it fills first.
+            if (mVideoFileCache != null && duration > 0) {
+                long bytePos = (long) position * mVideoFileCache.size() / duration;
+                mVideoFileCache.seekTo(bytePos);
+            }
             player.seekTo(position);
             mVideoCompleted = false;
             // Paint the target immediately; the tick honours the lock.
@@ -3792,25 +3836,101 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             return true;
         });
-        try {
-            boolean streamed = false;
-            // SMB/115 videos are stored as tiny marker files: stream the real
-            // bytes on demand through MediaDataSource so playback starts
-            // immediately (no full download) and seeking/fast-forward works.
-            if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
-                RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
-                android.media.MediaDataSource ds = (pi == null) ? null : mRemoteManga.openVideo(pi);
+        // Remote videos (SMB/115) are tiny marker files. Download the real
+        // bytes to a LOCAL file in the background, then play that local path.
+        // A local file gives MediaPlayer its full (OS-cached, large) buffer and
+        // removes all network jitter from the decoder - the only reliable fix
+        // for the every-few-seconds stutter of MediaDataSource streaming.
+        if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
+            startLocalVideoCache(player, page, generation);
+            return;
+        }
+        prepareLocalPathVideo(player, page);
+    }
+
+    /** Starts a background download of a remote video into the local cache,
+     *  then plays the local file once the head is ready. */
+    private void startLocalVideoCache(final MediaPlayer player, final File page,
+                                      final int generation) {
+        RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
+        if (pi == null) {
+            hideLoading();
+            showHint("视频信息读取失败：" + page.getName());
+            return;
+        }
+        PrefetchVideoDataSource.Reader reader = mRemoteManga.openVideoReader(pi);
+        if (reader == null) {
+            // Fallback: lazy MediaDataSource streaming if this source has no
+            // reader implementation.
+            try {
+                android.media.MediaDataSource ds = mRemoteManga.openVideo(pi);
                 if (ds != null) {
                     mVideoDataSource = ds;
                     player.setDataSource(ds);
-                    streamed = true;
-                    Log.i(TAG, "streaming video via MediaDataSource: " + page.getName());
+                    player.setSurface(mVideoSurface);
+                    player.prepareAsync();
+                    return;
                 }
+            } catch (Exception e) {
+                Log.w(TAG, "video stream fallback failed: " + e.getMessage());
             }
-            if (!streamed) {
-                // Original, proven path-based setup for local/extension videos.
-                player.setDataSource(page.getAbsolutePath());
-            }
+            hideLoading();
+            showHint("该网盘暂不支持在线视频");
+            return;
+        }
+        long size = pi.size > 0 ? pi.size : -1L;
+        File cacheDir = new File(getContext().getExternalCacheDir(), "video-cache");
+        String name = Integer.toHexString((mRemoteManga.key() + "|" + pi.id).hashCode()) + ".mp4";
+        final File local = new File(cacheDir, name);
+        com.igalia.wolvic.manga.VideoFileCache cache =
+                new com.igalia.wolvic.manga.VideoFileCache(reader, local, size,
+                        new com.igalia.wolvic.manga.VideoFileCache.Callback() {
+                            @Override public void onReady(File f) {
+                                mMainHandler.post(() -> {
+                                    if (player != mMediaPlayer || generation != mLoadGeneration
+                                            || mDestroyed) return;
+                                    try {
+                                        player.setDataSource(f.getAbsolutePath());
+                                        player.setSurface(mVideoSurface);
+                                        player.prepareAsync();
+                                        Log.i(TAG, "playing local cached video " + f.getName());
+                                    } catch (Exception e) {
+                                        Log.e(TAG, "local video setDataSource failed: " + e.getMessage());
+                                        hideLoading();
+                                        showHint("视频打开失败：" + e.getMessage());
+                                    }
+                                });
+                            }
+                            @Override public void onProgress(long done, long total) {
+                                mMainHandler.post(() -> {
+                                    if (player != mMediaPlayer || generation != mLoadGeneration
+                                            || mDestroyed || mVideoPrepared) return;
+                                    if (mLoadBytesStartMs <= 0L) {
+                                        mLoadBytesStartMs = System.currentTimeMillis();
+                                    }
+                                    int pct = total > 0 ? (int) (done * 100 / total) : -1;
+                                    showLoading(pct >= 0 ? "正在缓冲视频 " + pct + "%" : "正在缓冲视频…",
+                                            pct >= 0 ? pct : -1, pct >= 0 ? 100 : -1,
+                                            done, total);
+                                });
+                            }
+                            @Override public void onError(String msg) {
+                                mMainHandler.post(() -> {
+                                    if (player != mMediaPlayer || generation != mLoadGeneration
+                                            || mDestroyed) return;
+                                    hideLoading();
+                                    showHint("视频缓冲失败：" + msg);
+                                });
+                            }
+                        });
+        mVideoFileCache = cache;
+        cache.start();
+    }
+
+    /** Plays a local / extension-source video directly from its path. */
+    private void prepareLocalPathVideo(MediaPlayer player, File page) {
+        try {
+            player.setDataSource(page.getAbsolutePath());
             player.setSurface(mVideoSurface);
             player.prepareAsync();
         } catch (Exception e) {
@@ -3857,6 +3977,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mVideoDataSource != null) {
             try { mVideoDataSource.close(); } catch (Exception ignored) { }
             mVideoDataSource = null;
+        }
+        // Stop any background local-cache download for this video. A fully
+        // downloaded file is kept for instant replay next time.
+        if (mVideoFileCache != null) {
+            mVideoFileCache.cancel();
+            mVideoFileCache = null;
         }
     }
 
