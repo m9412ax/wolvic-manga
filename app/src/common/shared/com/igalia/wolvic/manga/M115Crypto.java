@@ -31,7 +31,7 @@ final class M115Crypto {
           + "8c3bb6ac6227502d010993ac967d1aef00f0c8e038de2e4d3bc2ec368af2e9f1"
           + "0a6f1eda4f7262f136420c07c331b871bf139f74f3010e3c4fe57df3afb71683", 16);
     private static final BigInteger E = new BigInteger("10001", 16);
-    private static final int KEY_LEN = (N.bitLength() + 7) / 8; // 256
+    private static final int KEY_LEN = (N.bitLength() + 7) / 8; // 128 (1024-bit N)
 
     private static final byte[] XOR_KEY_SEED = {
             (byte)0xf0, (byte)0xe5, (byte)0x69, (byte)0xae, (byte)0xbf, (byte)0xdc, (byte)0xbf, (byte)0x8a,
@@ -130,7 +130,12 @@ final class M115Crypto {
             int padSize = KEY_LEN - slice - 3;
             byte[] pad = new byte[padSize];
             RNG.nextBytes(pad);
-            for (int i = 0; i < padSize; i++) block[2 + i] = (byte) ((pad[i] % 0xff) + 0x01);
+            // Go uses unsigned bytes: b % 0xff + 1 is always 1..255 (never 0).
+            // Java bytes are signed, so mask with 0xff first or a rare negative
+            // pad byte would produce 0 and corrupt the PKCS#1 v1.5 padding.
+            for (int i = 0; i < padSize; i++) {
+                block[2 + i] = (byte) (((pad[i] & 0xff) % 0xff) + 0x01);
+            }
             block[padSize + 2] = 0;
             System.arraycopy(input, pos, block, padSize + 3, slice);
 
