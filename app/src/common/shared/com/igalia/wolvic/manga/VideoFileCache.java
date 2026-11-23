@@ -51,13 +51,24 @@ public final class VideoFileCache {
     private final java.util.BitSet filled = new java.util.BitSet();
     private static final int READY_AHEAD_CHUNKS = 3; // ~768 KB must be present
     private volatile long totalBytes = -1L;
+    private final long prefetchBytes;
 
     public VideoFileCache(PrefetchVideoDataSource.Reader reader, File dest,
                           long size, Callback callback) {
+        this(reader, dest, size, callback, 12L * 1024 * 1024);
+    }
+
+    /** [prefetchBytes] = how many bytes of the head to have on disk before
+     *  playback starts (user setting "视频预缓冲"). Bigger = smoother start but
+     *  longer wait; smaller = faster start but more likely to stall. */
+    public VideoFileCache(PrefetchVideoDataSource.Reader reader, File dest,
+                          long size, Callback callback, long prefetchBytes) {
         this.reader = reader;
         this.dest = dest;
         this.size = size;
         this.callback = callback;
+        this.prefetchBytes = Math.max(2L * 1024 * 1024,
+                Math.min(64L * 1024 * 1024, prefetchBytes));
     }
 
     public long downloaded() { return downloaded; }
@@ -90,7 +101,7 @@ public final class VideoFileCache {
 
     /** Head threshold: enough to prepare() and play a few seconds. */
     private long headBytes(long total) {
-        long h = Math.min(12L * 1024 * 1024, total / 10);
+        long h = Math.min(prefetchBytes, total / 10);
         return Math.max(h, 512L * 1024);
     }
 

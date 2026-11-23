@@ -3831,7 +3831,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             });
         });
         player.setOnPreparedListener(mp -> {
-            if (player != mMediaPlayer || generation != mLoadGeneration || mDestroyed) {
+            // Do NOT gate on mLoadGeneration: while a large remote video buffers,
+            // the chapter's images keep landing and refreshChapterPageList bumps
+            // the generation, which made prepare get silently ignored (stuck on
+            // "正在缓冲", playable only after a stick nudge). Player + page
+            // identity is the stable guard for this long-lived async operation.
+            if (player != mMediaPlayer || mDestroyed
+                    || mVideoPage == null || !mVideoPage.equals(page)) {
                 return;
             }
             // Must precede transforms: size/layout can update progress immediately.
@@ -3862,7 +3868,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             updateVideoControls();
         });
         player.setOnVideoSizeChangedListener((mp, width, height) -> {
-            if (player == mMediaPlayer && generation == mLoadGeneration
+            if (player == mMediaPlayer && mVideoPage != null && mVideoPage.equals(page)
                     && !mDestroyed && width > 0 && height > 0) {
                 mVideoWidth = width;
                 mVideoHeight = height;
@@ -3870,7 +3876,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         });
         player.setOnCompletionListener(mp -> {
-            if (player != mMediaPlayer || generation != mLoadGeneration
+            if (player != mMediaPlayer || mVideoPage == null || !mVideoPage.equals(page)
                     || !mVideoPrepared || mDestroyed) {
                 return;
             }
@@ -3882,7 +3888,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         });
         player.setOnErrorListener((mp, what, extra) -> {
-            if (player == mMediaPlayer && generation == mLoadGeneration && !mDestroyed) {
+            if (player == mMediaPlayer && mVideoPage != null && mVideoPage.equals(page)
+                    && !mDestroyed) {
                 mVideoPrepared = false;
                 mVideoPlayFailed = true;  // keep buffering overlay from returning
                 // Do NOT auto-advance on error. The next page is often a huge
@@ -3943,6 +3950,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         File cacheDir = new File(getContext().getExternalCacheDir(), "video-cache");
         String name = Integer.toHexString((mRemoteManga.key() + "|" + pi.id).hashCode()) + ".mp4";
         final File local = new File(cacheDir, name);
+        // "视频预缓冲" setting: how much of the head to download before play.
+        int preMb = mSettings.integer(MangaSettings.VIDEO_BUFFER_MB);
+        if (preMb < 8 || preMb > 64) preMb = 12; // migrate old 4/12/20 values
+        final long prefetchBytes = preMb * 1024L * 1024L;
         com.igalia.wolvic.manga.VideoFileCache cache =
                 new com.igalia.wolvic.manga.VideoFileCache(reader, local, size,
                         new com.igalia.wolvic.manga.VideoFileCache.Callback() {
@@ -3956,7 +3967,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                     // "正在缓冲" forever. Identity of the player
                                     // and the video page is the right guard.
                                     if (player != mMediaPlayer || mDestroyed
-                                            || !isVideoPage()
                                             || mVideoPage == null
                                             || !mVideoPage.equals(page)) return;
                                     try {
@@ -3993,7 +4003,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                     showHint("视频缓冲失败：" + msg);
                                 });
                             }
-                        });
+                        }, prefetchBytes);
         mVideoFileCache = cache;
         cache.start();
     }

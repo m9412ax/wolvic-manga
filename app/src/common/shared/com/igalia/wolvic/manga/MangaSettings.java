@@ -151,8 +151,9 @@ public final class MangaSettings {
     /** Single user-facing image DISK cap (MB). Governs extension-source
      *  chapters, SMB/115 on-demand chapters and the AVIF page cache. */
     public static final String IMAGE_CACHE_MB = "image_cache_mb";
-    /** In-memory RAM read-ahead buffer (MB) for ONLINE video streaming.
-     *  Not on disk, never counted against the image cache. */
+    /** Local-file pre-buffer (MB): how much of a remote video's head is
+     *  downloaded to disk before playback starts. Bigger = smoother start but
+     *  longer wait. (Was the old in-RAM MediaDataSource slot size; key reused.) */
     public static final String VIDEO_BUFFER_MB = "video_buffer_mb";
     // Legacy keys kept only so old saved preferences still load; the UI no
     // longer exposes them and all code reads IMAGE_CACHE_MB instead.

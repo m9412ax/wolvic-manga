@@ -247,10 +247,13 @@ public class MangaOptionsView extends SettingsView
                 MangaSettings.IMAGE_CACHE_MB,
                 new String[]{"256 MB", "512 MB", "1 GB", "2 GB", "4 GB", "8 GB"},
                 new int[]{256, 512, 1024, 2048, 4096, 8192});
-        radio("视频预读缓冲 · 内存（在线播放，不占硬盘图片缓存；上限 20 MB）",
+        // Now controls the LOCAL-FILE pre-buffer: how many MB of the video head
+        // are downloaded before playback starts. Bigger = smoother but slower
+        // to start. Replaces the old useless in-RAM MediaDataSource slot size.
+        radio("视频预缓冲 · 硬盘（开播前先下载到本地，越大越稳但开播越慢）",
                 MangaSettings.VIDEO_BUFFER_MB,
-                new String[]{"4 MB", "8 MB", "12 MB", "16 MB", "20 MB"},
-                new int[]{4, 8, 12, 16, 20});
+                new String[]{"8 MB", "12 MB", "16 MB", "24 MB", "32 MB", "48 MB", "64 MB"},
+                new int[]{8, 12, 16, 24, 32, 48, 64});
         // Image preloading = decoding the current page's neighbours into an
         // in-memory Bitmap cache, so the next page opens instantly. Kept here
         // (not under "display") because it is a memory/cache behaviour.
