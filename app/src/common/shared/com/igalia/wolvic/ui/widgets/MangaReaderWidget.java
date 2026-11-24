@@ -3341,34 +3341,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (!fromUser) {
-                    return;
-                }
+                if (!fromUser) return;
                 MediaPlayer player = mMediaPlayer;
-                if (mVideoPrepared && player != null) {
-                    try {
-                        mVideoCompleted = false;
-                        int target = (int) (player.getDuration() * (long) progress / 1000L);
-                        mVideoSeekGeneration++;
-                        mVideoSeekTargetMs = target;
-                        mVideoSeeking = true;
-                        mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
-                        // Re-anchor the background local-file download to the
-                        // seek target. Without this (the stick path already
-                        // does it) dragging the bar to an undownloaded region
-                        // reads pre-allocated ZERO bytes -> black screen with
-                        // audio only / decoder stall.
-                        if (mVideoFileCache != null && player.getDuration() > 0) {
-                            long bytePos = (long) target * mVideoFileCache.size()
-                                    / player.getDuration();
-                            mVideoFileCache.seekTo(bytePos);
-                            seekWhenReady(player, target, mVideoFileCache, bytePos);
-                        } else {
-                            player.seekTo(target);
-                        }
-                    } catch (Exception ignored) {
-                    }
-                }
+                if (!mVideoPrepared || player == null) return;
+                // While DRAGGING only paint the target. Do NOT re-anchor the
+                // download or call player.seekTo on every increment: a fast drag
+                // fires dozens of changes, each re-anchoring the cursor to a new
+                // byte offset, so no region ever finishes downloading -> stall.
+                int target = (int) (player.getDuration() * (long) progress / 1000L);
+                mVideoSeekTargetMs = target;
+                mVideoSeeking = true;
+                paintVideoPosition(target, player.getDuration());
             }
 
             @Override
@@ -3381,8 +3364,22 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = false;
+                MediaPlayer player = mMediaPlayer;
+                int target = mVideoSeekTargetMs;
+                if (mVideoPrepared && player != null && target >= 0) {
+                    int duration = player.getDuration();
+                    mVideoSeekGeneration++;
+                    mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
+                    if (mVideoFileCache != null && duration > 0) {
+                        long bytePos = (long) target * mVideoFileCache.size() / duration;
+                        mVideoFileCache.seekTo(bytePos);
+                        seekWhenReady(player, target, mVideoFileCache, bytePos);
+                    } else {
+                        player.seekTo(target);
+                    }
+                }
                 mMainHandler.removeCallbacks(mClearVideoSeekLock);
-                mMainHandler.postDelayed(mClearVideoSeekLock, 150L);
+                mMainHandler.postDelayed(mClearVideoSeekLock, 300L);
                 scheduleVideoBarHide();
             }
         });
@@ -3638,7 +3635,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     /** Seeks a local-cached video only after the target byte region has been
      *  downloaded. Seeking into the pre-allocated zero area yields black screen
-     *  with audio (or a decoder stall). Polls up to ~8 s, then seeks anyway. */
+     *  with audio (or a decoder stall). Polls while the region fills (up to 30 s). */
     private void seekWhenReady(final MediaPlayer player, final int targetMs,
                                final com.igalia.wolvic.manga.VideoFileCache cache,
                                final long bytePos) {
@@ -3649,10 +3646,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 if (player != mMediaPlayer || mDestroyed || !mVideoPrepared
                         || gen != mVideoSeekGeneration) return;
                 boolean ready = cache.regionReady(bytePos);
-                if (!ready && tries++ < 40) {
+                if (!ready && tries++ < 150) {
+                    // Show real feedback while the target region downloads.
+                    long done = cache.downloaded(), total = cache.size();
+                    int pct = total > 0 ? (int) (done * 100 / total) : -1;
+                    showLoading(pct >= 0 ? "正在缓冲视频 " + pct + "%" : "正在缓冲视频…",
+                            pct >= 0 ? pct : -1, pct >= 0 ? 100 : -1, done, total);
                     mMainHandler.postDelayed(this, 200L);
                     return;
                 }
+                hideLoading();  // clear any buffering overlay we showed
                 try {
                     player.seekTo(targetMs);
                     Log.i(TAG, "seek executed target=" + targetMs
@@ -3958,40 +3961,48 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         int preMb = mSettings.integer(MangaSettings.VIDEO_BUFFER_MB);
         if (preMb < 8 || preMb > 64) preMb = 12; // migrate old 4/12/20 values
         final long prefetchBytes = preMb * 1024L * 1024L;
+        // Both onReady and onProgress run on the CACHE WORKER thread. Guard the
+        // one-shot setDataSource/prepareAsync with an atomic flag so it fires on
+        // EITHER callback - a dropped onReady can no longer strand the player.
+        final java.util.concurrent.atomic.AtomicBoolean prepareStarted =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        final Runnable doPrepare = () -> {
+            if (!prepareStarted.compareAndSet(false, true)) return;
+            if (player != mMediaPlayer || mDestroyed) {
+                Log.w(TAG, "doPrepare skipped: identity="
+                        + (player == mMediaPlayer) + " destroyed=" + mDestroyed);
+                return;
+            }
+            long len = local.length();
+            Log.i(TAG, "doPrepare setDataSource(direct) " + local.getName() + " len=" + len);
+            try {
+                if (len <= 0) throw new IllegalStateException("缓存文件为空");
+                player.setDataSource(local.getAbsolutePath());
+                player.setSurface(mVideoSurface);
+                player.prepareAsync();
+                Log.i(TAG, "playing local cached video " + local.getName());
+            } catch (Exception e) {
+                Log.e(TAG, "local video setDataSource failed: " + e.getMessage());
+                mMainHandler.post(() -> {
+                    hideLoading();
+                    showHint("视频打开失败：" + e.getMessage());
+                });
+            }
+        };
         com.igalia.wolvic.manga.VideoFileCache cache =
                 new com.igalia.wolvic.manga.VideoFileCache(reader, local, size,
                         new com.igalia.wolvic.manga.VideoFileCache.Callback() {
                             @Override public void onReady(File f) {
-                                mMainHandler.post(() -> {
-                                    // Only the player identity matters. During a long
-                                    // buffer the page list can grow and mVideoPage can
-                                    // be cleared transiently; gating on those made the
-                                    // ready callback get dropped -> stuck buffering.
-                                    // stopVideo() is the only thing that nulls
-                                    // mMediaPlayer, i.e. the user really left.
-                                    if (player != mMediaPlayer || mDestroyed) {
-                                        Log.w(TAG, "onReady dropped: playerIdentity="
-                                                + (player == mMediaPlayer) + " destroyed=" + mDestroyed);
-                                        return;
-                                    }
-                                    long len = f.length();
-                                    Log.i(TAG, "onReady setDataSource " + f.getName()
-                                            + " len=" + len + " gen=" + generation
-                                            + " nowGen=" + mLoadGeneration);
-                                    try {
-                                        if (len <= 0) throw new IllegalStateException("缓存文件为空");
-                                        player.setDataSource(f.getAbsolutePath());
-                                        player.setSurface(mVideoSurface);
-                                        player.prepareAsync();
-                                        Log.i(TAG, "playing local cached video " + f.getName());
-                                    } catch (Exception e) {
-                                        Log.e(TAG, "local video setDataSource failed: " + e.getMessage());
-                                        hideLoading();
-                                        showHint("视频打开失败：" + e.getMessage());
-                                    }
-                                });
+                                // Direct call on the worker thread: never post to the
+                                // main thread here, it can stall during Activity pause.
+                                doPrepare.run();
                             }
                             @Override public void onProgress(long done, long total) {
+                                // Fallback trigger: if onReady was lost, start playback
+                                // as soon as the head is actually on disk.
+                                if (done >= prefetchBytes / 2 && !mVideoPrepared && !mVideoPlayFailed) {
+                                    doPrepare.run();
+                                }
                                 mMainHandler.post(() -> {
                                     if (player != mMediaPlayer || mDestroyed
                                             || mVideoPrepared || mVideoPlayFailed

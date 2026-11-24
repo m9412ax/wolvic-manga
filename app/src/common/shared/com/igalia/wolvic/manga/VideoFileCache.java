@@ -81,15 +81,22 @@ public final class VideoFileCache {
         worker.start();
     }
 
+    private long lastAnchorMs = 0L;
+
     /** Re-anchor sequential download to [position] so a seek target fills first. */
     public void seekTo(long position) {
         if (position < 0 || size <= 0) return;
         long p = Math.min(position, size - 1);
+        // Throttle: rapid stick nudges must not keep yanking the cursor to new
+        // offsets (no region ever finishes). One anchor per 600 ms is plenty.
+        long now = System.currentTimeMillis();
+        if (now - lastAnchorMs < 600L) return;
         // Re-anchor whenever the target is past the downloaded frontier, so the
         // zero hole at the seek point gets filled first. Backward seeks into
         // already-downloaded bytes need no action.
         if (p > downloaded - CHUNK) {
             seekAnchor = Math.max(0, p - CHUNK);
+            lastAnchorMs = now;
         }
     }
 
