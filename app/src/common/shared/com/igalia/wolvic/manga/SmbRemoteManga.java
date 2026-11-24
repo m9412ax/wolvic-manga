@@ -6,6 +6,7 @@
 package com.igalia.wolvic.manga;
 
 import android.media.MediaDataSource;
+import android.net.Uri;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -129,5 +130,30 @@ public final class SmbRemoteManga implements RemoteManga {
     @Override
     public PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) {
         return new SmbVideoDataSource(auth, page.id);
+    }
+
+    @Override
+    public String openVideoMrl(PageInfo page) {
+        // LibVLC has its own SMB access module. Give it the native smb:// MRL
+        // so it owns authentication, Range reads, buffering and seeking.
+        String user = auth.user == null ? "" : auth.user;
+        String pass = auth.pass == null ? "" : auth.pass;
+        String domain = auth.domain == null ? "" : auth.domain;
+        String login = domain.isEmpty() ? user : (domain + ";" + user);
+        String authPart = user.isEmpty() ? ""
+                : Uri.encode(login) + ":" + Uri.encode(pass) + "@";
+        return "smb://" + authPart + auth.host + "/" + encodePath(auth.share)
+                + (page.id == null || page.id.isEmpty() ? "" : "/" + encodePath(page.id));
+    }
+
+    private static String encodePath(String path) {
+        if (path == null) return "";
+        String[] parts = path.split("/");
+        StringBuilder out = new StringBuilder();
+        for (String part : parts) {
+            if (out.length() > 0) out.append('/');
+            out.append(Uri.encode(part));
+        }
+        return out.toString();
     }
 }

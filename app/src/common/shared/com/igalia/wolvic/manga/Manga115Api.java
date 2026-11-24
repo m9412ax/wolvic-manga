@@ -268,6 +268,18 @@ public final class Manga115Api {
      *  exact string. */
     private static final String UA_115 = "Mozilla/5.0 115Browser/27.0.5.7";
 
+    /** Header pairs for embedding a resolved 115 CDN link in another HTTP
+     *  client (LibVLC). The CDN rejects Range requests without the one-time
+     *  cookie captured by resolveLink(). */
+    public static String[] videoHeaders(ResolvedLink link) {
+        if (link == null) return null;
+        return new String[] {
+                "Cookie", link.cdnCookie == null ? "" : link.cdnCookie,
+                "Referer", REFERER,
+                "User-Agent", UA_115
+        };
+    }
+
     /** Resolves a downloadable direct URL for a file id (pickcode or fid).
      *  Uses the web /files/download endpoint (verified working with a valid
      *  cookie) and CAPTURES the Set-Cookie it returns - the CDN requires that

@@ -61,6 +61,13 @@ public interface RemoteManga {
      *  it into a LOCAL file for smooth playback. Lazy like openVideo. */
     default PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) { return null; }
 
+    /** MRL for the mature LibVLC backend. When non-null the reader delegates
+     *  the whole decoder/network/seek stack to LibVLC instead of MediaPlayer. */
+    default String openVideoMrl(PageInfo page) { return null; }
+
+    /** Optional header pairs (name, value, name, value...) for the LibVLC MRL. */
+    default String[] openVideoHeaders(PageInfo page) { return null; }
+
     final class ChapterInfo {
         public final String id;     // stable remote id/path
         public final String name;   // display name

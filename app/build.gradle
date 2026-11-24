@@ -737,6 +737,11 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
     implementation libs.zxing.core
 
+    // Mature open-source backend for SMB/115 video. LibVLC owns network
+    // access, buffering, decoding and seek instead of the old hand-written
+    // MediaPlayer + sparse-file cache path.
+    implementation 'org.videolan.android:libvlc-all:4.0.0-eap29'
+
     // AOSP
     aospImplementation libs.games.activity
 

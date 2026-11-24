@@ -150,6 +150,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mVideoCompleted;
 
     private MediaPlayer mMediaPlayer;
+    /** LibVLC backend for SMB/115 online video. This replaces the hand-written
+     *  local cache + MediaPlayer seek path for remote media. */
+    private org.videolan.libvlc.LibVLC mVlcLib;
+    private org.videolan.libvlc.Media mVlcMedia;
+    private org.videolan.libvlc.MediaPlayer mVlcPlayer;
     private Surface mVideoSurface;
     private SurfaceTexture mVideoSurfaceTexture;
     /** Streaming source for a remote video; closed when playback stops. */
@@ -219,16 +224,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private final Runnable mClearVideoSeekLock = new Runnable() {
         @Override
         public void run() {
-            MediaPlayer p = mMediaPlayer;
             if (!mVideoSeeking) return;
-            boolean reached = false;
-            if (p != null) {
-                try {
-                    reached = Math.abs(p.getCurrentPosition() - mVideoSeekTargetMs)
-                            <= SEEK_TOLERANCE_MS;
-                } catch (Exception ignored) {
-                }
-            }
+            boolean reached = hasVideoEngine()
+                    && Math.abs(videoPositionMs() - mVideoSeekTargetMs) <= SEEK_TOLERANCE_MS;
             long waited = android.os.SystemClock.uptimeMillis() - mVideoSeekStartedAt;
             if (reached || waited > SEEK_MAX_WAIT_MS) {
                 mVideoSeeking = false;
@@ -1125,6 +1123,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 showHint("加载第 " + (index + 1) + " 张…");
             }
             return;
+        }
+        // If a saved progress / scrubber lands on the second page of a
+        // portrait spread, display the whole spread from its anchor instead.
+        if (mDoublePage && !isContinuous() && !isVideoIndex(index)) {
+            index = pageGroupAnchorFor(index, pageGroupAnchors());
         }
         mPendingTargetPage = -1;
         stopVideo(true);
@@ -2279,6 +2282,69 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mSettings.videoExtensions());
     }
 
+    private boolean usingVlc() {
+        return mVlcPlayer != null;
+    }
+
+    private boolean hasVideoEngine() {
+        return mVlcPlayer != null || mMediaPlayer != null;
+    }
+
+    private int videoPositionMs() {
+        try {
+            if (mVlcPlayer != null) return (int) mVlcPlayer.getTime();
+            if (mMediaPlayer != null) return mMediaPlayer.getCurrentPosition();
+        } catch (Exception ignored) { }
+        return 0;
+    }
+
+    private int videoDurationMs() {
+        try {
+            if (mVlcPlayer != null) return (int) mVlcPlayer.getLength();
+            if (mMediaPlayer != null) return mMediaPlayer.getDuration();
+        } catch (Exception ignored) { }
+        return -1;
+    }
+
+    private boolean videoEnginePlaying() {
+        try {
+            if (mVlcPlayer != null) return mVlcPlayer.isPlaying();
+            return mMediaPlayer != null && mMediaPlayer.isPlaying();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void videoSeekTo(int positionMs) {
+        try {
+            if (mVlcPlayer != null) {
+                mVlcPlayer.setTime(positionMs);
+            } else if (mMediaPlayer != null) {
+                mMediaPlayer.seekTo(positionMs);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void videoPause() {
+        try {
+            if (mVlcPlayer != null) {
+                mVlcPlayer.pause();
+            } else if (mMediaPlayer != null) {
+                mMediaPlayer.pause();
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void videoStart() {
+        try {
+            if (mVlcPlayer != null) {
+                mVlcPlayer.play();
+            } else if (mMediaPlayer != null) {
+                startPreparedVideo(mMediaPlayer);
+            }
+        } catch (Exception ignored) { }
+    }
+
     private boolean isPortraitPage(File file) {
         if (file == null) {
             return false;
@@ -2295,14 +2361,56 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return bounds.outHeight >= bounds.outWidth;
     }
 
-    /** Mirrors decodeDisplay(): a spread is shown only when BOTH neighbours are
-     *  portrait. A landscape page is always a single page, so paging must not
-     *  use a 2-page stride there. */
-    private boolean showsTwoPagesAt(int index) {
-        return mDoublePage && !isContinuous() && !isVideoIndex(index)
-                && index + 1 < mPages.size() && !isVideoIndex(index + 1)
-                && isPortraitPage(mPages.get(index))
-                && isPortraitPage(mPages.get(index + 1));
+    private boolean isPortraitIndex(int index) {
+        return index >= 0 && index < mPages.size() && !isVideoIndex(index)
+                && isPortraitPage(mPages.get(index));
+    }
+
+    /** Mirrors decodeDisplay(): only two consecutive portrait stills form a
+     *  two-page spread. Landscape pages and videos are always single pages. */
+    private boolean startsTwoPageSpread(int index) {
+        return mDoublePage && !isContinuous()
+                && isPortraitIndex(index) && isPortraitIndex(index + 1);
+    }
+
+    /** Anchors of the ACTUAL displayed page groups. Example:
+     *  P,P,L,P,P,P -> anchors 0(P+P),2(L),3(P+P),5(P single).
+     *  Paging must move between anchors, never to the second page of a spread:
+     *  going back from the landscape page at 2 returns to anchor 0, not 1. */
+    private int[] pageGroupAnchors() {
+        ArrayList<Integer> list = new ArrayList<>();
+        if (mPages.isEmpty()) {
+            return new int[0];
+        }
+        int index = 0;
+        while (index < mPages.size()) {
+            list.add(index);
+            index += startsTwoPageSpread(index) ? 2 : 1;
+        }
+        int[] anchors = new int[list.size()];
+        for (int i = 0; i < anchors.length; i++) {
+            anchors[i] = list.get(i);
+        }
+        return anchors;
+    }
+
+    private int pageGroupAnchorFor(int index, int[] anchors) {
+        if (anchors == null || anchors.length == 0) {
+            return index;
+        }
+        int anchor = anchors[0];
+        for (int a : anchors) {
+            if (a > index) break;
+            anchor = a;
+        }
+        return anchor;
+    }
+
+    private int pageGroupPosition(int anchor, int[] anchors) {
+        for (int i = 0; i < anchors.length; i++) {
+            if (anchors[i] == anchor) return i;
+        }
+        return -1;
     }
 
     // ------------------------------------------------------------ controls
@@ -2312,12 +2420,26 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (direction == 1) {
             delta = -delta;
         }
-        // Double-page mode is orientation-aware: two PORTRAIT pages are merged
-        // side by side and must advance by two, but a LANDSCAPE page is shown
-        // alone. Using a fixed +/-2 stride made landscape pages skip one page,
-        // so only use two when the current screen really is a portrait spread.
-        if (delta != 0 && showsTwoPagesAt(mIndex)) {
-            delta = delta > 0 ? 2 : -2;
+        // Double-page mode is GROUP-based, not stride-based. Two consecutive
+        // portrait pages are one displayed group; a landscape page is its own
+        // group. Turning pages moves to the previous/next GROUP anchor, so a
+        // backward turn from a landscape page returns to the whole portrait
+        // spread before it instead of landing on its second page.
+        if (delta != 0 && mDoublePage && !isContinuous() && !isVideoPage()
+                && !mPages.isEmpty()) {
+            int[] anchors = pageGroupAnchors();
+            int currentAnchor = pageGroupAnchorFor(mIndex, anchors);
+            int pos = pageGroupPosition(currentAnchor, anchors);
+            int targetAnchor;
+            if (pos >= 0 && delta > 0) {
+                targetAnchor = pos + 1 < anchors.length
+                        ? anchors[pos + 1] : pageTotal();
+            } else if (pos > 0) {
+                targetAnchor = anchors[pos - 1];
+            } else {
+                targetAnchor = -1;
+            }
+            delta = targetAnchor - mIndex;
         }
         int target = mIndex + delta;
         chapterLoadingGuard();
@@ -2482,11 +2604,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private boolean isVideoPlaying() {
-        try {
-            return mVideoPrepared && mMediaPlayer != null && mMediaPlayer.isPlaying();
-        } catch (Exception e) {
-            return false;
-        }
+        return mVideoPrepared && videoEnginePlaying();
     }
 
     // ----------------------------------------------------- double page / joystick
@@ -3214,14 +3332,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     public void persistState() {
-        MediaPlayer player = mMediaPlayer;
-        if (mVideoPrepared && player != null && !mVideoCompleted
+        if (mVideoPrepared && hasVideoEngine() && !mVideoCompleted
                 && mSettings.bool(MangaSettings.PROGRESS_ENABLED)
                 && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
                 && mIndex >= 0 && mIndex < mPages.size()) {
             try {
                 progressPrefs().edit()
-                        .putInt(videoProgressKey(mPages.get(mIndex)), player.getCurrentPosition())
+                        .putInt(videoProgressKey(mPages.get(mIndex)), videoPositionMs())
                         .apply();
             } catch (Exception ignored) {
             }
@@ -3348,7 +3465,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** True when the reader is currently showing an image page or a prepared
      *  video - i.e. the screen is NOT a blank "nothing loaded yet" state. */
     private boolean hasVisibleContent() {
-        if (mVideoPrepared && mMediaPlayer != null) return true;
+        if (mVideoPrepared && hasVideoEngine()) return true;
         // mCurrent is assigned in every image display path (single, tiled,
         // continuous strip) and cleared when a new session/page starts.
         return mCurrent != null;
@@ -3449,16 +3566,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (!fromUser) return;
-                MediaPlayer player = mMediaPlayer;
-                if (!mVideoPrepared || player == null) return;
-                // While DRAGGING only paint the target. Do NOT re-anchor the
-                // download or call player.seekTo on every increment: a fast drag
-                // fires dozens of changes, each re-anchoring the cursor to a new
-                // byte offset, so no region ever finishes downloading -> stall.
-                int target = (int) (player.getDuration() * (long) progress / 1000L);
+                if (!mVideoPrepared || !hasVideoEngine()) return;
+                // While dragging only paint the target; seek once on release.
+                int duration = videoDurationMs();
+                int target = (int) (duration * (long) progress / 1000L);
                 mVideoSeekTargetMs = target;
                 mVideoSeeking = true;
-                paintVideoPosition(target, player.getDuration());
+                paintVideoPosition(target, duration);
             }
 
             @Override
@@ -3471,16 +3585,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             @Override
             public void onStopTrackingTouch(SeekBar seekBar) {
                 mVideoSeekDragging = false;
-                MediaPlayer player = mMediaPlayer;
                 int target = mVideoSeekTargetMs;
-                if (mVideoPrepared && player != null && target >= 0) {
-                    int duration = player.getDuration();
+                if (mVideoPrepared && hasVideoEngine() && target >= 0) {
+                    int duration = videoDurationMs();
                     mVideoSeekGeneration++;
                     mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
-                    if (mVideoFileCache != null && duration > 0) {
-                        requestCachedSeek(player, target);
+                    mVideoSeekWaitingFinal = false;
+                    if (usingVlc()) {
+                        videoSeekTo(target);
+                    } else if (mVideoFileCache != null && duration > 0) {
+                        requestCachedSeek(mMediaPlayer, target);
                     } else {
-                        player.seekTo(target);
+                        videoSeekTo(target);
                     }
                 }
                 mMainHandler.removeCallbacks(mClearVideoSeekLock);
@@ -3577,12 +3693,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 (FrameLayout.LayoutParams) mVideoProgressTrack.getLayoutParams();
         int total = Math.max(1, tlp.width);
         float fraction = 0f;
-        MediaPlayer player = mMediaPlayer;
-        if (mVideoPrepared && player != null) {
+        if (mVideoPrepared && hasVideoEngine()) {
             try {
-                int duration = player.getDuration();
+                int duration = videoDurationMs();
                 if (duration > 0) {
-                    int position = mVideoSeeking ? mVideoSeekTargetMs : player.getCurrentPosition();
+                    int position = mVideoSeeking ? mVideoSeekTargetMs : videoPositionMs();
                     fraction = Math.max(0f, Math.min(1f,
                             (float) position / (float) duration));
                 }
@@ -3640,11 +3755,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mVideoPlayButton != null) {
-            mVideoPlayButton.setEnabled(mMediaPlayer == null || mVideoPrepared);
+            mVideoPlayButton.setEnabled(!hasVideoEngine() || mVideoPrepared);
             mVideoPlayButton.setText(isVideoPlaying() ? "⏸ 暂停" : "▶ 播放");
         }
         if (mVideoSeek != null) {
-            mVideoSeek.setEnabled(mVideoPrepared && mMediaPlayer != null);
+            mVideoSeek.setEnabled(mVideoPrepared && hasVideoEngine());
         }
         if (mVideoFitButton != null) {
             mVideoFitButton.setText(VIDEO_FIT_LABELS[mVideoFitMode]);
@@ -3658,12 +3773,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  hover control strip is showing. */
     private void updateVideoProgress() {
         updateVideoProgressTrackFill();
-        MediaPlayer player = mMediaPlayer;
         boolean barVisible = mVideoBar != null && mVideoBar.getVisibility() == VISIBLE;
-        if (barVisible && mVideoPrepared && player != null && !mVideoSeekDragging) {
+        if (barVisible && mVideoPrepared && hasVideoEngine() && !mVideoSeekDragging) {
             try {
-                int duration = player.getDuration();
-                int position = displayVideoPosition(player);
+                int duration = videoDurationMs();
+                int position = displayVideoPosition();
                 if (duration > 0 && mVideoSeek != null) {
                     mVideoSeek.setProgress((int) (position * 1000L / duration));
                 }
@@ -3681,12 +3795,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // the latest TextureView frame periodically so the VR surface never
         // freezes black. The per-frame bridge handles smoothness; this is the
         // safety net. postInvalidate on a drawn widget is cheap.
-        if (mVideoPrepared && player != null) {
+        if (mVideoPrepared && hasVideoEngine()) {
             postInvalidate();
         }
         // Keep a single chained tick; startVideoTick() removes any pending one.
         mMainHandler.removeCallbacks(mVideoTick);
-        if (isVideoPage() && mVideoPrepared && player != null && !mDestroyed) {
+        if (isVideoPage() && mVideoPrepared && hasVideoEngine() && !mDestroyed) {
             mMainHandler.postDelayed(mVideoTick, 400L);
         }
     }
@@ -3706,8 +3820,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void toggleVideoPlay() {
-        MediaPlayer player = mMediaPlayer;
-        if (player == null) {
+        if (!hasVideoEngine()) {
             if (isVideoPage()) {
                 playVideo(mPages.get(mIndex));
             }
@@ -3717,10 +3830,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         try {
-            if (player.isPlaying()) {
-                player.pause();
+            if (videoEnginePlaying()) {
+                videoPause();
             } else {
-                startPreparedVideo(player);
+                videoStart();
             }
         } catch (Exception ignored) {
         }
@@ -3843,30 +3956,30 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void seekVideo(int deltaMs) {
-        MediaPlayer player = mMediaPlayer;
-        if (!mVideoPrepared || player == null) {
+        if (!mVideoPrepared || !hasVideoEngine()) {
             return;
         }
         try {
-            int duration = player.getDuration();
+            int duration = videoDurationMs();
             // Accumulate from the pending TARGET, not the lagging playback
             // position, so repeated stick nudges (350ms cooldown) add up.
-            int base = mVideoSeeking ? mVideoSeekTargetMs : player.getCurrentPosition();
+            int base = mVideoSeeking ? mVideoSeekTargetMs : videoPositionMs();
             int position = Math.max(0, Math.min(duration, base + deltaMs));
             mVideoSeekGeneration++;
             mVideoSeekTargetMs = position;
             mVideoSeeking = true;
+            mVideoSeekWaitingFinal = false;
             mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
             mMainHandler.removeCallbacks(mClearVideoSeekLock);
-            // If the video is still downloading to a local file, re-anchor the
-            // background download to the seek target so it fills first.
-            if (mVideoFileCache != null && duration > 0) {
-                requestCachedSeek(player, position);
+            if (usingVlc()) {
+                // LibVLC owns the full seek/buffer/decode path.
+                videoSeekTo(position);
+            } else if (mVideoFileCache != null && duration > 0) {
+                requestCachedSeek(mMediaPlayer, position);
             } else {
-                player.seekTo(position);
+                videoSeekTo(position);
             }
             mVideoCompleted = false;
-            // Paint the target immediately; the tick honours the lock.
             paintVideoPosition(position, duration);
         } catch (Exception ignored) {
         }
@@ -3877,11 +3990,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  instead of player.getCurrentPosition() (which lags during a seek). */
     /** Position the UI should show: while a seek is in flight, the decoder's
      *  getCurrentPosition() still lags behind, so use the locked target. */
-    private int displayVideoPosition(MediaPlayer p) {
+    private int displayVideoPosition() {
         if (mVideoSeeking) {
             return mVideoSeekTargetMs;
         }
-        return p != null ? p.getCurrentPosition() : 0;
+        return videoPositionMs();
     }
 
     private void paintVideoPosition(int position, int duration) {
@@ -3974,7 +4087,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         // Page opening and surface availability can request the same player concurrently.
-        if (mMediaPlayer != null && page.equals(mVideoPage)) {
+        if (hasVideoEngine() && page.equals(mVideoPage)) {
             return;
         }
         if (mVideoSurface == null || !mVideoSurface.isValid()) {
@@ -4108,10 +4221,147 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // removes all network jitter from the decoder - the only reliable fix
         // for the every-few-seconds stutter of MediaDataSource streaming.
         if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
+            RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
+            String mrl = pi == null ? null : mRemoteManga.openVideoMrl(pi);
+            if (mrl != null && !mrl.isEmpty()) {
+                // LibVLC takes over. Release the unused Android MediaPlayer.
+                try { player.reset(); player.release(); } catch (Throwable ignored) { }
+                mMediaPlayer = null;
+                startVlcVideo(page, pi, mrl);
+                return;
+            }
             startLocalVideoCache(player, page, generation);
             return;
         }
         prepareLocalPathVideo(player, page);
+    }
+
+    /** Opens SMB/115 video through LibVLC, the mature open-source playback
+     *  backend. VLC owns network Range reads, buffering, decoder/renderer and
+     *  seek - no sparse local file, no post-seek nudge. */
+    private void startVlcVideo(final File page, final RemoteManga.PageInfo pi,
+                               final String mrl) {
+        stopVideo(false);
+        mVideoPrepared = false;
+        mVideoPlayFailed = false;
+        mVideoCompleted = false;
+        mVideoKickstartDone = true;   // VLC does not need the MediaPlayer kick
+        mVideoPaused = false;
+        mVideoPage = page;
+        mVideoSeeking = false;
+        mVideoSeekWaitingFinal = false;
+        showLoading("正在准备视频…", -1, -1, -1, -1);
+        updateVideoControls();
+        try {
+            ArrayList<String> options = new ArrayList<>();
+            options.add("--no-video-title-show");
+            options.add("--network-caching=1500");
+            options.add("--file-caching=1500");
+            options.add("--avcodec-hw=any");
+            mVlcLib = new org.videolan.libvlc.LibVLC(getContext(), options);
+            mVlcLib.setUserAgent("115Browser/27.0.5.7",
+                    "Mozilla/5.0 115Browser/27.0.5.7");
+            mVlcMedia = new org.videolan.libvlc.Media(mVlcLib, mrl);
+            String[] headers = mRemoteManga.openVideoHeaders(pi);
+            if (headers != null) {
+                StringBuilder h = new StringBuilder();
+                for (int i = 0; i + 1 < headers.length; i += 2) {
+                    if (i > 0) h.append("\r\n");
+                    h.append(headers[i]).append(": ").append(headers[i + 1]);
+                }
+                if (h.length() > 0) {
+                    mVlcMedia.addOption(":http-headers=" + h.toString());
+                }
+            }
+            mVlcMedia.addOption(":network-caching=1500");
+            mVlcPlayer = new org.videolan.libvlc.MediaPlayer(mVlcMedia);
+            final org.videolan.libvlc.MediaPlayer player = mVlcPlayer;
+            player.setEventListener(event -> {
+                if (event == null) return;
+                final int type = event.type;
+                final float buffering = type == org.videolan.libvlc.MediaPlayer.Event.Buffering
+                        ? event.getBuffering() : 0f;
+                mMainHandler.post(() -> {
+                    if (player != mVlcPlayer || mDestroyed) return;
+                    switch (type) {
+                        case org.videolan.libvlc.MediaPlayer.Event.Buffering:
+                            int pct = Math.max(0, Math.min(100, (int) buffering));
+                            showLoading("正在缓冲视频…", pct, 100, -1, -1);
+                            break;
+                        case org.videolan.libvlc.MediaPlayer.Event.Playing:
+                            mVideoPrepared = true;
+                            mVideoPlayFailed = false;
+                            hideLoading();
+                            startVideoTick();
+                            updateVideoControls();
+                            postInvalidate();
+                            if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)
+                                    && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
+                                    && mSettings.bool(MangaSettings.READER_VIDEO_RESUME)) {
+                                int saved = progressPrefs().getInt(videoProgressKey(page), 0);
+                                if (saved > 0 && saved < player.getLength()) {
+                                    player.setTime(saved);
+                                    Log.i(TAG, "VLC resume " + saved + "ms");
+                                }
+                            }
+                            break;
+                        case org.videolan.libvlc.MediaPlayer.Event.Vout:
+                        case org.videolan.libvlc.MediaPlayer.Event.ESAdded:
+                            applyVideoTransform();
+                            postInvalidate();
+                            break;
+                        case org.videolan.libvlc.MediaPlayer.Event.EndReached:
+                            mVideoCompleted = true;
+                            progressPrefs().edit().putInt(videoProgressKey(page), 0).apply();
+                            if (mSettings.bool(MangaSettings.READER_VIDEO_NEXT_ON_END)
+                                    && mIndex + 1 < mPages.size()) {
+                                showPage(mIndex + 1);
+                            }
+                            break;
+                        case org.videolan.libvlc.MediaPlayer.Event.EncounteredError:
+                            mVideoPlayFailed = true;
+                            mVideoPrepared = false;
+                            hideLoading();
+                            showHint("视频无法播放：" + page.getName());
+                            break;
+                        default:
+                            break;
+                    }
+                });
+            });
+            if (mVideoSurfaceTexture == null) {
+                mPendingVideoPage = page;
+                return;
+            }
+            player.getVLCVout().setVideoSurface(mVideoSurfaceTexture);
+            player.getVLCVout().attachViews();
+            player.play();
+            Log.i(TAG, "VLC play " + mrl);
+        } catch (Throwable e) {
+            Log.e(TAG, "VLC open failed: " + e.getMessage(), e);
+            releaseVlc();
+            mVideoPlayFailed = true;
+            hideLoading();
+            showHint("视频打开失败：" + e.getMessage());
+        }
+    }
+
+    private void releaseVlc() {
+        try {
+            if (mVlcPlayer != null) {
+                mVlcPlayer.setEventListener(null);
+                if (mVlcPlayer.getVLCVout().areViewsAttached()) {
+                    mVlcPlayer.getVLCVout().detachViews();
+                }
+                mVlcPlayer.stop();
+                mVlcPlayer.release();
+            }
+        } catch (Throwable ignored) { }
+        try { if (mVlcMedia != null) mVlcMedia.release(); } catch (Throwable ignored) { }
+        try { if (mVlcLib != null) mVlcLib.release(); } catch (Throwable ignored) { }
+        mVlcPlayer = null;
+        mVlcMedia = null;
+        mVlcLib = null;
     }
 
     /** Starts a background download of a remote video into the local cache,
@@ -4246,6 +4496,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (savePosition) {
             persistState();
         }
+        releaseVlc();
         mVideoPrepared = false;
         mMediaPlayer = null;
         mVideoPage = null;
@@ -4296,12 +4547,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     public void onPause() {
         mVideoPaused = true;
         persistState();
-        MediaPlayer player = mMediaPlayer;
-        if (mVideoPrepared && player != null && isVideoPlaying()) {
-            try {
-                player.pause();
-            } catch (Exception ignored) {
-            }
+        if (mVideoPrepared && isVideoPlaying()) {
+            videoPause();
         }
         cancelAuto();
     }
@@ -4310,9 +4557,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     public void onResume() {
         mVideoPaused = false;
         updateWidget();
-        MediaPlayer player = mMediaPlayer;
-        if (isVisible() && mVideoPrepared && player != null && !mVideoCompleted) {
-            startPreparedVideo(player);
+        if (isVisible() && mVideoPrepared && hasVideoEngine() && !mVideoCompleted) {
+            videoStart();
         }
         if (isVisible() && mSettings.bool(MangaSettings.READER_AUTO_ADVANCE)) {
             scheduleAuto();
@@ -4325,12 +4571,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (!aVisible) {
             persistState();
             cancelAuto();
-            MediaPlayer player = mMediaPlayer;
-            if (mVideoPrepared && player != null && isVideoPlaying()) {
-                try {
-                    player.pause();
-                } catch (Exception ignored) {
-                }
+            if (mVideoPrepared && isVideoPlaying()) {
+                videoPause();
             }
         }
     }

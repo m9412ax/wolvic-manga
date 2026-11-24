@@ -141,6 +141,18 @@ public final class Netdisk115RemoteManga implements RemoteManga {
         return new HttpVideoDataSource(cookie, page.id);
     }
 
+    @Override
+    public String openVideoMrl(PageInfo page) {
+        Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, page.id);
+        return link == null ? null : link.url;
+    }
+
+    @Override
+    public String[] openVideoHeaders(PageInfo page) {
+        Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, page.id);
+        return Manga115Api.videoHeaders(link);
+    }
+
     private boolean isMedia(String name) {
         if (name == null) return false;
         int dot = name.lastIndexOf('.');
