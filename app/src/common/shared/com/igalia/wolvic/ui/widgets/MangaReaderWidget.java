@@ -2280,6 +2280,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (direction == 1) {
             delta = -delta;
         }
+        // In double-page mode the viewer shows TWO pages at once (mIndex and
+        // mIndex+1). A single-page step leaves one of them on screen as a stale
+        // page after every turn. Step by 2 so a turn replaces both pages: from
+        // pages (0,1) to (2,3), etc. Works for portrait pairs and for a wide
+        // spread alike; both directions use the same 2-page stride.
+        if (mDoublePage && !isContinuous() && !isVideoPage() && delta != 0) {
+            delta = delta > 0 ? 2 : -2;
+        }
         int target = mIndex + delta;
         chapterLoadingGuard();
         Log.i(TAG, "pageDelta target=" + target + " pages=" + mPages.size()
@@ -3747,11 +3755,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         || gen != mVideoSeekGeneration) return;
                 boolean ready = cache.regionReady(bytePos);
                 if (!ready && tries++ < 150) {
-                    // Show real feedback while the target region downloads.
-                    long done = cache.downloaded(), total = cache.size();
-                    int pct = total > 0 ? (int) (done * 100 / total) : -1;
-                    showLoading(pct >= 0 ? "正在缓冲视频 " + pct + "%" : "正在缓冲视频…",
-                            pct >= 0 ? pct : -1, pct >= 0 ? 100 : -1, done, total);
+                    // Only the target region is being fetched. NEVER show
+                    // cache.downloaded()/size() here: on a sparse cached file
+                    // those report whole-file backfill progress and produce a
+                    // scary "downloading the full 3 GB from 0%" bar on every seek.
+                    showLoading("正在缓冲跳转位置…", -1, -1, -1, -1);
                     mMainHandler.postDelayed(this, 200L);
                     return;
                 }

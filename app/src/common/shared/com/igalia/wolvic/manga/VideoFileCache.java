@@ -83,21 +83,23 @@ public final class VideoFileCache {
 
     private long lastAnchorMs = 0L;
 
-    /** Re-anchor sequential download to [position] so a seek target fills first. */
+    /** Re-anchor download to [position] and force the target region to be
+     *  really downloaded. A sparse/legacy cache can have chunks mis-marked as
+     *  filled (scanFilled sees a stray non-zero byte in compressed data), so a
+     *  plain seek would jump into a mostly-zero region and the decoder would
+     *  stall -- "seek needs a stick nudge to show picture". Clearing the bits
+     *  guarantees the target bytes are freshly fetched before we report ready. */
     public void seekTo(long position) {
         if (position < 0 || size <= 0) return;
         long p = Math.min(position, size - 1);
-        // Throttle: rapid stick nudges must not keep yanking the cursor to new
-        // offsets (no region ever finishes). One anchor per 600 ms is plenty.
-        long now = System.currentTimeMillis();
-        if (now - lastAnchorMs < 600L) return;
-        // Re-anchor whenever the target is past the downloaded frontier, so the
-        // zero hole at the seek point gets filled first. Backward seeks into
-        // already-downloaded bytes need no action.
-        if (p > downloaded - CHUNK) {
-            seekAnchor = Math.max(0, p - CHUNK);
-            lastAnchorMs = now;
+        long anchor = Math.max(0, p - CHUNK);
+        synchronized (this) {
+            int from = (int) (anchor / CHUNK);
+            int to = (int) (Math.min(size - 1, p + (long) (READY_AHEAD_CHUNKS + 2) * CHUNK) / CHUNK);
+            for (int c = from; c <= to; c++) filled.clear(c);
         }
+        seekAnchor = anchor;
+        lastAnchorMs = System.currentTimeMillis();
     }
 
     public void cancel() {
@@ -315,12 +317,14 @@ public final class VideoFileCache {
                 writeAt(raf, cursor, buf, n);
                 cursor += n;
                 downloaded = Math.max(downloaded, cursor);
-                safeProgress(downloaded, total);
+                // Do NOT report this as overall buffering progress: backfilling
+                // a sparse cache walks the whole file and would show a scary
+                // "0% -> 100% full download" bar every time the user seeks.
+                // The reader shows a local "buffering target" indicator instead.
             }
             if (!cancelled) {
                 downloaded = total;
                 signalReady();
-                safeProgress(total, total);
                 Log.i(TAG, "cache complete " + dest.getName());
             }
         } catch (Throwable e) {
