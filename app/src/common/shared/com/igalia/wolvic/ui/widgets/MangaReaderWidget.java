@@ -165,6 +165,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  after start forces a keyframe (= visible picture). Automatic version of
      *  the user's stick-nudge workaround. */
     private boolean mVideoKickstartDone;
+    /** VR widget compositing pulls the view tree into the VR surface ONLY on
+     *  invalidate(). TextureView video frames arrive via a separate BufferQueue
+     *  and do NOT invalidate the view, so without an explicit bridge the VR
+     *  surface freezes on a black frame while the decoder runs fine. We throttle
+     *  onSurfaceTextureUpdated() -> postInvalidate() to ~30 fps. */
+    private long mLastVideoFramePushMs = 0L;
+    private static final long VIDEO_FRAME_PUSH_INTERVAL_MS = 33L;
     private File mVideoPage;
     private File mPendingVideoPage;
     private boolean mVideoPaused;
@@ -3575,6 +3582,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (barVisible) {
             updateVideoControls();
         }
+        // Fallback frame bridge: even if onSurfaceTextureUpdated() is not
+        // delivered by this VR/system build, force the widget to re-composite
+        // the latest TextureView frame periodically so the VR surface never
+        // freezes black. The per-frame bridge handles smoothness; this is the
+        // safety net. postInvalidate on a drawn widget is cheap.
+        if (mVideoPrepared && player != null) {
+            postInvalidate();
+        }
         // Keep a single chained tick; startVideoTick() removes any pending one.
         mMainHandler.removeCallbacks(mVideoTick);
         if (isVideoPage() && mVideoPrepared && player != null && !mDestroyed) {
@@ -3645,7 +3660,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     try {
                         int dur = player.getDuration();
                         int pos = player.getCurrentPosition();
-                        int kick = Math.min(dur > 1 ? dur - 1 : 1, pos + 1);
+                        // Seek far enough to cross a GOP boundary so the decoder
+                        // emits a fresh keyframe; a +1 ms nudge was optimized away.
+                        int kick = pos + 2000;
+                        if (dur > 1 && kick >= dur) kick = Math.max(0, dur - 500);
                         if (kick > pos) {
                             player.seekTo(kick);
                             Log.i(TAG, "kickstart seek to " + kick + "ms (from " + pos + ")");
@@ -4248,6 +4266,22 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     @Override
     public void onSurfaceTextureUpdated(SurfaceTexture surface) {
+        // CRITICAL for VR: UIWidget only captures the view tree into the VR
+        // surface when the view invalidates. TextureView video frames bypass
+        // invalidate(), so the VR surface would freeze black while the decoder
+        // runs normally -- the exact "black until a stick nudge" symptom. A
+        // seek happened to invalidate via setProgress(), which is why nudging
+        // fixed it. Bridge every decoded frame to a throttled invalidate so the
+        // VR layer keeps showing live video. Throttled to ~30 fps to avoid
+        // re-compositing the whole widget tree on every decoded frame.
+        if (mDestroyed || surface != mVideoSurfaceTexture || !mVideoPrepared) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - mLastVideoFramePushMs >= VIDEO_FRAME_PUSH_INTERVAL_MS) {
+            mLastVideoFramePushMs = now;
+            postInvalidate();
+        }
     }
 
     private SharedPreferences progressPrefs() {
