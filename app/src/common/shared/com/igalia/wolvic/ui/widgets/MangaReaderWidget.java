@@ -885,6 +885,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 || mChapterIndex >= mChapterDirs.size()) {
             return;
         }
+        // While a video is on screen the user is NOT watching the growing image
+        // list. Rebuilding it here re-scans the whole chapter folder (collectFiles
+        // + sort) ON THE MAIN THREAD for every page that lands -- with a 4K video
+        // downloading alongside, that starved the main thread, triggered
+        // Activity pause/stop timeouts and froze all input ("cannot return").
+        // Skip it entirely for video pages; the video marker page is already in
+        // mPages, so nothing is lost.
+        if (isVideoPage() || mVideoPage != null) {
+            return;
+        }
         File current = mPages.isEmpty() ? null : mPages.get(Math.min(mIndex, mPages.size() - 1));
         List<File> videos = new ArrayList<>();
         List<File> images = new ArrayList<>();

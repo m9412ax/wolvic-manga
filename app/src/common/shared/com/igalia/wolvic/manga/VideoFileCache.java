@@ -135,6 +135,53 @@ public final class VideoFileCache {
         }
     }
 
+    /** MP4 playability gate. A valid ftyp alone is NOT enough: non-faststart
+     *  movies keep `moov` at the END. A half-downloaded cache can have a perfect
+     *  ftyp head but NO moov anywhere -> MediaPlayer fails with what=1 forever.
+     *  Scan the head and tail for the `moov` atom; reject the cache if missing
+     *  so it gets re-downloaded (the tail download will then fetch moov). */
+    private boolean hasMoov(RandomAccessFile raf, long total) {
+        byte[] probe = new byte[256 * 1024];
+        byte[] needle = {'m', 'o', 'o', 'v'};
+        // head
+        try {
+            raf.seek(0);
+            int n = raf.read(probe);
+            if (contains(probe, n, needle)) return true;
+        } catch (Throwable ignored) { }
+        // tail
+        try {
+            long tailStart = Math.max(0, total - probe.length);
+            raf.seek(tailStart);
+            int n = raf.read(probe);
+            if (contains(probe, n, needle)) return true;
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    private boolean isMp4(RandomAccessFile raf) {
+        try {
+            byte[] h = new byte[8];
+            raf.seek(0);
+            if (raf.read(h) < 8) return false;
+            return h[4] == 'f' && h[5] == 't' && h[6] == 'y' && h[7] == 'p';
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    private static boolean contains(byte[] hay, int len, byte[] needle) {
+        if (len < needle.length) return false;
+        for (int i = 0; i <= len - needle.length; i++) {
+            boolean ok = true;
+            for (int j = 0; j < needle.length; j++) {
+                if (hay[i + j] != needle[j]) { ok = false; break; }
+            }
+            if (ok) return true;
+        }
+        return false;
+    }
+
     private void run() {
         RandomAccessFile raf = null;
         try {
@@ -150,7 +197,16 @@ public final class VideoFileCache {
             // dest.length() AFTER setLength(total), so it always saw "complete"
             // and skipped the loop -> full-size ALL-ZERO file -> error what=1.
             long existing = dest.length();
-            if (existing == total && hasValidHeader(raf)) {
+            boolean fullSizeValid = existing == total && hasValidHeader(raf);
+            // A full-size MP4 with a valid ftyp can STILL be unplayable when its
+            // `moov` atom was never downloaded (non-faststart file, head is just
+            // ftyp+free+mdat). Require moov before reusing, otherwise MediaPlayer
+            // fails with what=1 and the video can never start.
+            if (fullSizeValid && isMp4(raf) && !hasMoov(raf, total)) {
+                Log.w(TAG, "discard cache without moov " + dest.getName());
+                fullSizeValid = false;
+            }
+            if (fullSizeValid) {
                 downloaded = total;
                 filled.set(0, (int) ((total - 1) / CHUNK) + 1); // all chunks real
                 signalReady();
@@ -161,7 +217,7 @@ public final class VideoFileCache {
             // Anything else (short / corrupt / all-zero full-size) -> fresh copy.
             if (existing > 0) {
                 Log.w(TAG, "discard cache " + dest.getName() + " (" + existing
-                        + " bytes, total=" + total + ", valid=" + (existing == total && hasValidHeader(raf)) + ")");
+                        + " bytes, total=" + total + ", valid=" + fullSizeValid + ")");
             }
             raf.setLength(0L);
             // Pre-allocate to the full size: MediaPlayer needs to seek within a
