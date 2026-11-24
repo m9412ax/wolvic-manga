@@ -90,12 +90,21 @@ public final class VideoFileCache {
      *  stall -- "seek needs a stick nudge to show picture". Clearing the bits
      *  guarantees the target bytes are freshly fetched before we report ready. */
     public void seekTo(long position) {
+        seekTo(position, 0L);
+    }
+
+    /** Re-anchor and invalidate a longer forward window. Two-phase seeks need
+     *  both the preroll point AND the exact target to be freshly downloaded;
+     *  clearing only the first 1 MB let the final seek read a stale/zero hole. */
+    public void seekTo(long position, long aheadBytes) {
         if (position < 0 || size <= 0) return;
         long p = Math.min(position, size - 1);
         long anchor = Math.max(0, p - CHUNK);
+        long defaultAhead = (long) (READY_AHEAD_CHUNKS + 2) * CHUNK;
+        long ahead = Math.max(defaultAhead, Math.max(0L, aheadBytes));
         synchronized (this) {
             int from = (int) (anchor / CHUNK);
-            int to = (int) (Math.min(size - 1, p + (long) (READY_AHEAD_CHUNKS + 2) * CHUNK) / CHUNK);
+            int to = (int) (Math.min(size - 1, p + ahead) / CHUNK);
             for (int c = from; c <= to; c++) filled.clear(c);
         }
         seekAnchor = anchor;

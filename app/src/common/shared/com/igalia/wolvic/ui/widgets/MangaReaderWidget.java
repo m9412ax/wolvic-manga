@@ -202,8 +202,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private volatile boolean mVideoSeeking = false;
     private volatile int mVideoSeekTargetMs = 0;
     private volatile int mVideoSeekGeneration = 0;
+    /** For cached remote videos: first seek to a point ~2 s BEFORE the target
+     *  so the decoder has decoded a keyframe, then seek to the exact target.
+     *  The old "+2 s kick after target" often landed in a region that had not
+     *  been downloaded yet and produced a black frame / wrong progress. */
+    private volatile boolean mVideoSeekWaitingFinal = false;
     private static final int SEEK_TOLERANCE_MS = 300;
-    private static final long SEEK_MAX_WAIT_MS = 5000L;
+    private static final long SEEK_MAX_WAIT_MS = 30000L;
+    private static final int VIDEO_SEEK_PREROLL_MS = 2000;
     private volatile long mVideoSeekStartedAt = 0L;
     /** Releases the lock ONLY once the decoder has actually reached the target
      *  (or after a hard timeout). A plain 1500ms timer used to drop the lock
@@ -3472,9 +3478,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mVideoSeekGeneration++;
                     mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
                     if (mVideoFileCache != null && duration > 0) {
-                        long bytePos = (long) target * mVideoFileCache.size() / duration;
-                        mVideoFileCache.seekTo(bytePos);
-                        seekWhenReady(player, target, mVideoFileCache, bytePos);
+                        requestCachedSeek(player, target);
                     } else {
                         player.seekTo(target);
                     }
@@ -3766,19 +3770,50 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /** Seeks a local-cached video only after the target byte region has been
-     *  downloaded. Seeking into the pre-allocated zero area yields black screen
-     *  with audio (or a decoder stall). Polls while the region fills (up to 30 s). */
+    /** Routes a user seek through the local file cache. Cached remote videos
+     *  are sparse files; seeking into an unfilled region gives black/stall. */
+    private void requestCachedSeek(final MediaPlayer player, final int positionMs) {
+        com.igalia.wolvic.manga.VideoFileCache cache = mVideoFileCache;
+        if (cache == null) {
+            mVideoSeekWaitingFinal = false;
+            try { player.seekTo(positionMs); } catch (Exception ignored) { }
+            return;
+        }
+        int duration;
+        try { duration = player.getDuration(); } catch (Exception e) { duration = -1; }
+        if (duration <= 0 || cache.size() <= 0) {
+            mVideoSeekWaitingFinal = false;
+            try { player.seekTo(positionMs); } catch (Exception ignored) { }
+            return;
+        }
+        long size = cache.size();
+        long targetByte = (long) positionMs * size / duration;
+        int preroll = Math.max(0, positionMs - VIDEO_SEEK_PREROLL_MS);
+        long prerollByte = (long) preroll * size / duration;
+        // Freshly fetch the preroll point through the final target. The old
+        // code only invalidated +/-1 MB around the final target, so after a
+        // "+2 s kick" the decoder could land in a hole and stay black.
+        cache.seekTo(prerollByte, Math.max(4L * 1024 * 1024,
+                targetByte - prerollByte + 4L * 1024 * 1024));
+        mVideoSeekWaitingFinal = preroll < positionMs;
+        seekWhenReady(player, positionMs, cache, prerollByte, targetByte, preroll);
+    }
+
+    /** Seeks a local-cached video only after the relevant byte regions have
+     *  been downloaded. Seeking into the pre-allocated zero area yields black
+     *  screen with audio (or a decoder stall). Polls while the region fills. */
     private void seekWhenReady(final MediaPlayer player, final int targetMs,
                                final com.igalia.wolvic.manga.VideoFileCache cache,
-                               final long bytePos) {
+                               final long prerollBytePos, final long targetBytePos,
+                               final int prerollMs) {
         final int gen = mVideoSeekGeneration;
         final Runnable attempt = new Runnable() {
             int tries = 0;
             @Override public void run() {
                 if (player != mMediaPlayer || mDestroyed || !mVideoPrepared
                         || gen != mVideoSeekGeneration) return;
-                boolean ready = cache.regionReady(bytePos);
+                boolean ready = cache.regionReady(prerollBytePos)
+                        && (targetBytePos <= prerollBytePos || cache.regionReady(targetBytePos));
                 if (!ready && tries++ < 150) {
                     // Only the target region is being fetched. NEVER show
                     // cache.downloaded()/size() here: on a sparse cached file
@@ -3789,29 +3824,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     return;
                 }
                 hideLoading();  // clear any buffering overlay we showed
-                try {
+                if (ready && prerollMs < targetMs) {
+                    // Two-phase seek: preroll first, then the exact target in
+                    // OnSeekCompleteListener. This is the automatic version of
+                    // the stick nudge, but it never overshoots the target.
+                    player.seekTo(prerollMs);
+                    Log.i(TAG, "two-phase seek preroll=" + prerollMs
+                            + "ms target=" + targetMs + "ms tries=" + tries);
+                } else {
+                    mVideoSeekWaitingFinal = false;
                     player.seekTo(targetMs);
                     Log.i(TAG, "seek executed target=" + targetMs
                             + "ms ready=" + ready + " tries=" + tries);
-                    // Force a keyframe so the frame at the new position becomes
-                    // visible on the VR surface (otherwise black until a nudge).
-                    final int settledTarget = targetMs;
-                    mMainHandler.postDelayed(() -> {
-                        if (player != mMediaPlayer || !mVideoPrepared || mDestroyed
-                                || gen != mVideoSeekGeneration || mVideoSeekDragging) return;
-                        try {
-                            int dur = player.getDuration();
-                            // A +1 ms nudge stays inside the same GOP and the
-                            // decoder emits no new frame -> VR surface stays
-                            // black. Jump ~2 s (crosses a keyframe) so a fresh
-                            // frame is decoded and pushed into the VR surface.
-                            int kick = settledTarget + 2000;
-                            if (dur > 1 && kick >= dur) kick = Math.max(0, dur - 500);
-                            player.seekTo(kick);
-                            Log.i(TAG, "post-seek keyframe kick " + kick + "ms");
-                        } catch (Exception ignored) { }
-                    }, 250L);
-                } catch (Exception ignored) { }
+                }
             }
         };
         mMainHandler.post(attempt);
@@ -3836,9 +3861,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // If the video is still downloading to a local file, re-anchor the
             // background download to the seek target so it fills first.
             if (mVideoFileCache != null && duration > 0) {
-                long bytePos = (long) position * mVideoFileCache.size() / duration;
-                mVideoFileCache.seekTo(bytePos);
-                seekWhenReady(player, position, mVideoFileCache, bytePos);
+                requestCachedSeek(player, position);
             } else {
                 player.seekTo(position);
             }
@@ -3969,6 +3992,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mMediaPlayer = player;
         mVideoPage = page;
         mVideoSeeking = false;
+        mVideoSeekWaitingFinal = false;
         mMainHandler.removeCallbacks(mClearVideoSeekLock);
         showLoading("正在准备视频…", -1, -1, -1, -1);
         showHint("正在准备视频…");
@@ -3980,6 +4004,20 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mMainHandler.post(() -> {
                 if (player != mMediaPlayer || mDestroyed) return;
                 final int gen = mVideoSeekGeneration;
+                // Drop stale completions BEFORE touching the two-phase flag;
+                // otherwise an old seek can consume the new seek's preroll state.
+                if (gen != mVideoSeekGeneration) return;
+                // Two-phase cached seek: the first completion is the preroll
+                // point. Move to the exact target now that a keyframe has been
+                // decoded, and keep the UI lock until the FINAL seek completes.
+                if (mVideoSeekWaitingFinal) {
+                    mVideoSeekWaitingFinal = false;
+                    try {
+                        mp.seekTo(mVideoSeekTargetMs);
+                        Log.i(TAG, "two-phase seek final target=" + mVideoSeekTargetMs + "ms");
+                    } catch (Exception ignored) { }
+                    return;
+                }
                 // Paint our target, NOT getCurrentPosition(): at this instant
                 // the decoder may still report the pre-seek position.
                 paintVideoPosition(mVideoSeekTargetMs, mp.getDuration());
@@ -4017,6 +4055,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mVideoSeekGeneration++;
                     mVideoSeekTargetMs = saved;
                     mVideoSeeking = true;
+                    mVideoSeekWaitingFinal = false;
                     mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
                     mMainHandler.removeCallbacks(mClearVideoSeekLock);
                     mMainHandler.postDelayed(mClearVideoSeekLock, 150L);
@@ -4213,6 +4252,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPendingVideoPage = null;
         mVideoSeekDragging = false;
         mVideoSeeking = false;
+        mVideoSeekWaitingFinal = false;
         mMainHandler.removeCallbacks(mClearVideoSeekLock);
         showVideoBar(false);
         updateVideoControls();
