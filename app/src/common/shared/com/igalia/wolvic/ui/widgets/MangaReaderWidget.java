@@ -161,6 +161,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Set when MediaPlayer reports an unrecoverable error, so the后台 cache
      *  downloader's onProgress cannot re-show the buffering overlay afterwards. */
     private volatile boolean mVideoPlayFailed;
+    /** VR surfaces often miss the first decoded frame; a one-shot tiny seek
+     *  after start forces a keyframe (= visible picture). Automatic version of
+     *  the user's stick-nudge workaround. */
+    private boolean mVideoKickstartDone;
     private File mVideoPage;
     private File mPendingVideoPage;
     private boolean mVideoPaused;
@@ -3628,6 +3632,27 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             Log.i(TAG, "video start called");
             mMainHandler.removeCallbacks(mHideHint);
             mHideHint.run();
+            // One-shot kick: on Pico VR the first frame after prepare() often
+            // never reaches the surface (black screen). A tiny forward seek
+            // flushes the decoder and emits a keyframe, which makes the picture
+            // appear -- exactly what the manual stick-nudge did. Do it once,
+            // shortly after start, and never disturb a real user seek.
+            if (!mVideoKickstartDone) {
+                mVideoKickstartDone = true;
+                mMainHandler.postDelayed(() -> {
+                    if (player != mMediaPlayer || !mVideoPrepared || mDestroyed
+                            || mVideoSeekDragging || mVideoSeeking) return;
+                    try {
+                        int dur = player.getDuration();
+                        int pos = player.getCurrentPosition();
+                        int kick = Math.min(dur > 1 ? dur - 1 : 1, pos + 1);
+                        if (kick > pos) {
+                            player.seekTo(kick);
+                            Log.i(TAG, "kickstart seek to " + kick + "ms (from " + pos + ")");
+                        }
+                    } catch (Exception ignored) { }
+                }, 350L);
+            }
         } catch (Exception e) {
             Log.w(TAG, "video start failed", e);
         }
@@ -3660,6 +3685,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     player.seekTo(targetMs);
                     Log.i(TAG, "seek executed target=" + targetMs
                             + "ms ready=" + ready + " tries=" + tries);
+                    // Force a keyframe so the frame at the new position becomes
+                    // visible on the VR surface (otherwise black until a nudge).
+                    final int settledTarget = targetMs;
+                    mMainHandler.postDelayed(() -> {
+                        if (player != mMediaPlayer || !mVideoPrepared || mDestroyed
+                                || gen != mVideoSeekGeneration || mVideoSeekDragging) return;
+                        try {
+                            int dur = player.getDuration();
+                            int kick = Math.min(dur > 1 ? dur - 1 : 1, settledTarget + 1);
+                            if (kick > player.getCurrentPosition() - 2000) {
+                                player.seekTo(kick);
+                                Log.i(TAG, "post-seek keyframe kick " + kick + "ms");
+                            }
+                        } catch (Exception ignored) { }
+                    }, 250L);
                 } catch (Exception ignored) { }
             }
         };
@@ -3813,6 +3853,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final MediaPlayer player = new MediaPlayer();
         mVideoPrepared = false;
         mVideoPlayFailed = false;
+        mVideoKickstartDone = false;
         mVideoPaused = false;  // a fresh player must not inherit a stale pause
         mMediaPlayer = player;
         mVideoPage = page;
