@@ -159,6 +159,47 @@ public final class VideoFileCache {
         return false;
     }
 
+    /** Scans an existing full-size cache and marks only the chunks that hold
+     *  real (non-zero) bytes. Sequential read with a modest buffer so a 3 GB
+     *  file takes a few seconds on the worker thread, not a seek per chunk.
+     *  Returns the number of real chunks. */
+    private int scanFilled(RandomAccessFile raf, long total) {
+        filled.clear();
+        final int BUF = 64 * 1024;
+        byte[] b = new byte[BUF];
+        int realChunks = 0;
+        try {
+            raf.seek(0);
+            long pos = 0;
+            int chunk = 0;
+            while (pos < total && !cancelled) {
+                int want = (int) Math.min(BUF, total - pos);
+                int n = raf.read(b, 0, want);
+                if (n <= 0) break;
+                boolean anyNonZero = false;
+                for (int i = 0; i < n; i++) {
+                    if (b[i] != 0) { anyNonZero = true; break; }
+                }
+                // A chunk spans many buffer reads; remember if any was non-zero.
+                // We finalise a chunk when pos crosses its end.
+                if (anyNonZero) {
+                    // mark every chunk touched by this buffer (conservative:
+                    // better to trust a chunk with one stray byte than to
+                    // re-download it needlessly).
+                    int first = (int) (pos / CHUNK);
+                    int last = (int) ((pos + n - 1) / CHUNK);
+                    for (int c = first; c <= last; c++) {
+                        if (!filled.get(c)) { filled.set(c); realChunks++; }
+                    }
+                }
+                pos += n;
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "scanFilled failed: " + e.getMessage());
+        }
+        return realChunks;
+    }
+
     private boolean isMp4(RandomAccessFile raf) {
         try {
             byte[] h = new byte[8];
@@ -206,63 +247,69 @@ public final class VideoFileCache {
                 Log.w(TAG, "discard cache without moov " + dest.getName());
                 fullSizeValid = false;
             }
-            if (fullSizeValid) {
-                downloaded = total;
-                filled.set(0, (int) ((total - 1) / CHUNK) + 1); // all chunks real
-                signalReady();
-                safeProgress(total, total);
-                Log.i(TAG, "reuse complete cache " + dest.getName());
-                return;
-            }
-            // Anything else (short / corrupt / all-zero full-size) -> fresh copy.
-            if (existing > 0) {
-                Log.w(TAG, "discard cache " + dest.getName() + " (" + existing
-                        + " bytes, total=" + total + ", valid=" + fullSizeValid + ")");
-            }
-            raf.setLength(0L);
-            // Pre-allocate to the full size: MediaPlayer needs to seek within a
-            // file whose length already equals the real movie duration. Unwritten
-            // regions stay zero until the sequential fill reaches them.
-            raf.setLength(total);
-            downloaded = 0L;
-            Log.i(TAG, "cache start " + dest.getName() + " total=" + total);
-
             byte[] buf = new byte[CHUNK];
             long headTarget = headBytes(total);
             long tailBytes = Math.min(4L * 1024 * 1024, total / 10);
             long tailStart = Math.max(headTarget, total - tailBytes);
 
-            // Phase 1: the HEAD. This is where ftyp/moov normally lives; a real
-            // container header must be on disk before prepare() can succeed.
-            long headDone = fillRange(raf, reader, buf, 0L, headTarget, total);
-            if (cancelled) return;
+            if (fullSizeValid) {
+                // A full-size cache may be a SPARSE shell: an earlier build wrote
+                // only scattered chunks and left the rest as zeros. Marking all
+                // chunks ready made seek() jump into a zero hole -> decoder stall
+                // ("cannot seek / black"). Scan the real data, then backfill the
+                // holes below. signalReady() now because header+moov are present.
+                int realChunks = scanFilled(raf, total);
+                int allChunks = (int) ((total - 1) / CHUNK) + 1;
+                downloaded = 0L;
+                signalReady();
+                Log.i(TAG, "reuse cache " + dest.getName() + " realChunks="
+                        + realChunks + "/" + allChunks);
+                if (realChunks >= allChunks) {
+                    safeProgress(total, total);
+                    return; // genuinely complete
+                }
+            } else {
+                // Fresh download: discard old + pre-allocate full size.
+                if (existing > 0) {
+                    Log.w(TAG, "discard cache " + dest.getName() + " (" + existing
+                            + " bytes, total=" + total + ", valid=" + fullSizeValid + ")");
+                }
+                raf.setLength(0L);
+                raf.setLength(total);
+                downloaded = 0L;
+                Log.i(TAG, "cache start " + dest.getName() + " total=" + total);
 
-            // Phase 2: the TAIL. Some records put moov at the END (non-faststart);
-            // downloading only the head would make prepare() fail with what=1.
-            if (tailStart < total) {
-                fillRange(raf, reader, buf, tailStart, total, total);
+                // Phase 1: HEAD (ftyp/moov normally here).
+                fillRange(raf, reader, buf, 0L, headTarget, total);
                 if (cancelled) return;
+                // Phase 2: TAIL (non-faststart moov).
+                if (tailStart < total) {
+                    fillRange(raf, reader, buf, tailStart, total, total);
+                    if (cancelled) return;
+                }
+                Log.i(TAG, "head+tail ready " + dest.getName()
+                        + " head=" + headTarget + " tailStart=" + tailStart);
+                signalReady();
             }
 
-            // Head + tail are now real bytes -> safe to hand to MediaPlayer.
-            downloaded = headDone;
-            Log.i(TAG, "head+tail ready " + dest.getName()
-                    + " head=" + headDone + " tailStart=" + tailStart);
-            signalReady();
-
-            // Phase 3: fill the middle sequentially. A seek re-anchors the cursor
-            // so the requested region is downloaded first.
-            long cursor = headTarget;
-            while (!cancelled && cursor < tailStart) {
+            // Phase 3: backfill every chunk that is still a zero hole. A seek
+            // re-anchors the cursor so the requested region downloads first.
+            long cursor = 0L;
+            while (!cancelled && cursor < total) {
+                if (filled.get((int) (cursor / CHUNK))) {
+                    cursor += CHUNK;
+                    continue;
+                }
                 Long anchor = seekAnchor;
                 if (anchor != null && anchor >= 0 && anchor < total) {
                     seekAnchor = -1L;
-                    if (anchor > cursor + CHUNK && anchor < tailStart) {
-                        cursor = anchor;
+                    long a = (anchor / CHUNK) * CHUNK; // align to chunk
+                    if (a > cursor && !filled.get((int) (a / CHUNK))) {
+                        cursor = a;
                         Log.i(TAG, "seek re-anchor to " + cursor);
                     }
                 }
-                int want = (int) Math.min(CHUNK, tailStart - cursor);
+                int want = (int) Math.min(CHUNK, total - cursor);
                 int n = readInto(reader, cursor, buf, want);
                 if (n <= 0) { sleep(200); continue; }
                 writeAt(raf, cursor, buf, n);

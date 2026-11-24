@@ -172,6 +172,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  onSurfaceTextureUpdated() -> postInvalidate() to ~30 fps. */
     private long mLastVideoFramePushMs = 0L;
     private static final long VIDEO_FRAME_PUSH_INTERVAL_MS = 33L;
+    private long mLastChapterListRefreshMs = 0L;
     private File mVideoPage;
     private File mPendingVideoPage;
     private boolean mVideoPaused;
@@ -895,6 +896,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (isVideoPage() || mVideoPage != null) {
             return;
         }
+        // Throttle: each landed image otherwise re-scans + re-sorts the whole
+        // folder on the main thread; with many files that starves input and
+        // decode ("pages after the video won't load"). One refresh per 1.5 s is
+        // plenty for progressive download.
+        long now = System.currentTimeMillis();
+        if (now - mLastChapterListRefreshMs < 1500L) {
+            return;
+        }
+        mLastChapterListRefreshMs = now;
         File current = mPages.isEmpty() ? null : mPages.get(Math.min(mIndex, mPages.size() - 1));
         List<File> videos = new ArrayList<>();
         List<File> images = new ArrayList<>();
@@ -3758,11 +3768,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 || gen != mVideoSeekGeneration || mVideoSeekDragging) return;
                         try {
                             int dur = player.getDuration();
-                            int kick = Math.min(dur > 1 ? dur - 1 : 1, settledTarget + 1);
-                            if (kick > player.getCurrentPosition() - 2000) {
-                                player.seekTo(kick);
-                                Log.i(TAG, "post-seek keyframe kick " + kick + "ms");
-                            }
+                            // A +1 ms nudge stays inside the same GOP and the
+                            // decoder emits no new frame -> VR surface stays
+                            // black. Jump ~2 s (crosses a keyframe) so a fresh
+                            // frame is decoded and pushed into the VR surface.
+                            int kick = settledTarget + 2000;
+                            if (dur > 1 && kick >= dur) kick = Math.max(0, dur - 500);
+                            player.seekTo(kick);
+                            Log.i(TAG, "post-seek keyframe kick " + kick + "ms");
                         } catch (Exception ignored) { }
                     }, 250L);
                 } catch (Exception ignored) { }
