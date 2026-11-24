@@ -3619,12 +3619,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void startPreparedVideo(MediaPlayer player) {
         if (!mVideoPrepared || player == null || player != mMediaPlayer
-                || mDestroyed || mVideoPaused || !isVisible()) {
+                || mDestroyed || mVideoPaused) {
+            Log.w(TAG, "startPreparedVideo skip: prepared=" + mVideoPrepared
+                    + " identity=" + (player == mMediaPlayer) + " paused=" + mVideoPaused
+                    + " visible=" + isVisible());
             return;
         }
         try {
             player.start();
             mVideoCompleted = false;
+            Log.i(TAG, "video start called");
             mMainHandler.removeCallbacks(mHideHint);
             mHideHint.run();
         } catch (Exception e) {
@@ -3832,17 +3836,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             });
         });
         player.setOnPreparedListener(mp -> {
-            // Do NOT gate on mLoadGeneration: while a large remote video buffers,
-            // the chapter's images keep landing and refreshChapterPageList bumps
-            // the generation, which made prepare get silently ignored (stuck on
-            // "正在缓冲", playable only after a stick nudge). Player + page
-            // identity is the stable guard for this long-lived async operation.
-            if (player != mMediaPlayer || mDestroyed
-                    || mVideoPage == null || !mVideoPage.equals(page)) {
+            // Player identity is the ONLY stable guard. Page-list growth during a
+            // long buffer bumps mLoadGeneration and can clear mVideoPage briefly;
+            // gating on either made prepare get dropped (stuck buffering).
+            if (player != mMediaPlayer || mDestroyed) {
+                Log.w(TAG, "onPrepared dropped: identity=" + (player == mMediaPlayer));
                 return;
             }
             // Must precede transforms: size/layout can update progress immediately.
             mVideoPrepared = true;
+            mVideoPlayFailed = false;
             hideLoading();
             mVideoWidth = mp.getVideoWidth();
             mVideoHeight = mp.getVideoHeight();
@@ -3960,17 +3963,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         new com.igalia.wolvic.manga.VideoFileCache.Callback() {
                             @Override public void onReady(File f) {
                                 mMainHandler.post(() -> {
-                                    // A 3 GB video can take >10 s to buffer its
-                                    // head+tail. During that time the chapter's
-                                    // page list keeps growing (mLoadGeneration
-                                    // bumps), so checking generation here made
-                                    // onReady get silently dropped -> stuck on
-                                    // "正在缓冲" forever. Identity of the player
-                                    // and the video page is the right guard.
-                                    if (player != mMediaPlayer || mDestroyed
-                                            || mVideoPage == null
-                                            || !mVideoPage.equals(page)) return;
+                                    // Only the player identity matters. During a long
+                                    // buffer the page list can grow and mVideoPage can
+                                    // be cleared transiently; gating on those made the
+                                    // ready callback get dropped -> stuck buffering.
+                                    // stopVideo() is the only thing that nulls
+                                    // mMediaPlayer, i.e. the user really left.
+                                    if (player != mMediaPlayer || mDestroyed) {
+                                        Log.w(TAG, "onReady dropped: playerIdentity="
+                                                + (player == mMediaPlayer) + " destroyed=" + mDestroyed);
+                                        return;
+                                    }
+                                    long len = f.length();
+                                    Log.i(TAG, "onReady setDataSource " + f.getName()
+                                            + " len=" + len + " gen=" + generation
+                                            + " nowGen=" + mLoadGeneration);
                                     try {
+                                        if (len <= 0) throw new IllegalStateException("缓存文件为空");
                                         player.setDataSource(f.getAbsolutePath());
                                         player.setSurface(mVideoSurface);
                                         player.prepareAsync();

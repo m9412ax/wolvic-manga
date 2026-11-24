@@ -283,6 +283,14 @@ public final class RemoteChapterLoader {
                     for (File ch : chs) if (ch.isDirectory()) chapters.add(ch);
                 }
             }
+            // Single-file viewer cache lives in a SIBLING directory and used to
+            // be ignored entirely (piled up 500+ MB, breaking the user's cap).
+            // Include its folders as eviction candidates now.
+            File singleRoot = new File(root.getParentFile(), "remote-single");
+            File[] singles = singleRoot.listFiles();
+            if (singles != null) {
+                for (File s : singles) if (s.isDirectory()) chapters.add(s);
+            }
             // Clean .tmp leftovers first (never readable, always count against cap).
             for (File ch : chapters) {
                 File[] fs = ch.listFiles();

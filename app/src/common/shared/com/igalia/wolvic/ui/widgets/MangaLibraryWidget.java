@@ -1908,10 +1908,17 @@ public class MangaLibraryWidget extends UIWidget {
     private interface SingleFileFetcher { void fetch(File dest) throws Exception; }
 
     private void openSingleRemoteFile(final String displayName, final SingleFileFetcher fetcher) {
+        openSingleRemoteFile(displayName, displayName, fetcher);
+    }
+
+    private void openSingleRemoteFile(final String displayName, final String cacheKey,
+                                      final SingleFileFetcher fetcher) {
         File base = getContext().getExternalCacheDir();
         if (base == null) base = getContext().getCacheDir();
+        // Hash the stable path (not a timestamp): reopening the same file reuses
+        // its cached copy instead of piling up a fresh folder every time.
         final File singleDir = new File(new File(base, "remote-single"),
-                stableHash(displayName + System.currentTimeMillis()));
+                stableHash(cacheKey));
         Toast.makeText(getContext(), "正在打开 " + displayName, Toast.LENGTH_SHORT).show();
         mIoExecutor.execute(() -> {
             try {
@@ -1967,7 +1974,7 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void downloadSingleSmb(MangaSmb.Entry entry) {
         final MangaSmb.Auth auth = smbAuth();
-        openSingleRemoteFile(entry.name, dest ->
+        openSingleRemoteFile(entry.name, "smb:" + entry.path, dest ->
                 MangaSmb.download(auth, entry.path, dest, null));
     }
 

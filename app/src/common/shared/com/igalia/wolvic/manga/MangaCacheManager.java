@@ -23,12 +23,25 @@ public final class MangaCacheManager {
     }
 
     /** All image caches on disk: extension-source chapters + SMB/115 chapters
-     *  + decoded AVIF page cache. */
+     *  + single-file viewer cache + decoded AVIF page cache. */
     public static long imageCacheBytes(Context c) {
         File b = base(c);
         return dirSize(new File(b, "manga-sources"))
                 + dirSize(new File(b, "remote-manga"))
+                + dirSize(new File(b, "remote-single"))
                 + dirSize(new File(b, "avif-cache"));
+    }
+
+    /** Downloaded video bytes on disk (local-file streaming cache). */
+    public static long videoCacheBytes(Context c) {
+        return dirSize(new File(base(c), "video-cache"));
+    }
+
+    public static String videoCacheLabel(Context c) {
+        long n = videoCacheBytes(c);
+        if (n < 1024L) return n + " B";
+        if (n < 1024L * 1024L) return String.format(java.util.Locale.ROOT, "%.1f KB", n / 1024.0);
+        return String.format(java.util.Locale.ROOT, "%.2f MB", n / (1024.0 * 1024.0));
     }
 
     public static String imageCacheLabel(Context c) {
@@ -44,9 +57,11 @@ public final class MangaCacheManager {
         File b = base(c);
         long freed = dirSize(new File(b, "manga-sources"))
                 + dirSize(new File(b, "remote-manga"))
+                + dirSize(new File(b, "remote-single"))
                 + dirSize(new File(b, "avif-cache"));
         deleteRecursively(new File(b, "manga-sources"));
         deleteRecursively(new File(b, "remote-manga"));
+        deleteRecursively(new File(b, "remote-single"));
         deleteRecursively(new File(b, "avif-cache"));
         return freed;
     }
