@@ -2273,6 +2273,32 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mSettings.videoExtensions());
     }
 
+    private boolean isPortraitPage(File file) {
+        if (file == null) {
+            return false;
+        }
+        int[] cached = MangaImageDecoder.cachedDimensions(file);
+        if (cached != null && cached.length >= 2 && cached[0] > 0 && cached[1] > 0) {
+            return cached[1] >= cached[0];
+        }
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        if (!MangaImageDecoder.decodeBounds(file, bounds) || bounds.outWidth <= 0
+                || bounds.outHeight <= 0) {
+            return false;
+        }
+        return bounds.outHeight >= bounds.outWidth;
+    }
+
+    /** Mirrors decodeDisplay(): a spread is shown only when BOTH neighbours are
+     *  portrait. A landscape page is always a single page, so paging must not
+     *  use a 2-page stride there. */
+    private boolean showsTwoPagesAt(int index) {
+        return mDoublePage && !isContinuous() && !isVideoIndex(index)
+                && index + 1 < mPages.size() && !isVideoIndex(index + 1)
+                && isPortraitPage(mPages.get(index))
+                && isPortraitPage(mPages.get(index + 1));
+    }
+
     // ------------------------------------------------------------ controls
 
     public void pageDelta(int delta) {
@@ -2280,12 +2306,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (direction == 1) {
             delta = -delta;
         }
-        // In double-page mode the viewer shows TWO pages at once (mIndex and
-        // mIndex+1). A single-page step leaves one of them on screen as a stale
-        // page after every turn. Step by 2 so a turn replaces both pages: from
-        // pages (0,1) to (2,3), etc. Works for portrait pairs and for a wide
-        // spread alike; both directions use the same 2-page stride.
-        if (mDoublePage && !isContinuous() && !isVideoPage() && delta != 0) {
+        // Double-page mode is orientation-aware: two PORTRAIT pages are merged
+        // side by side and must advance by two, but a LANDSCAPE page is shown
+        // alone. Using a fixed +/-2 stride made landscape pages skip one page,
+        // so only use two when the current screen really is a portrait spread.
+        if (delta != 0 && showsTwoPagesAt(mIndex)) {
             delta = delta > 0 ? 2 : -2;
         }
         int target = mIndex + delta;
