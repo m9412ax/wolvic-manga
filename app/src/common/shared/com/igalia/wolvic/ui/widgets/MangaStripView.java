@@ -36,6 +36,13 @@ public class MangaStripView extends View {
     private float mScale = 1.0f;
     private float mZoom = 1.0f;
     private float mOffset = 0.0f;   // distance scrolled down from the top of the current page
+    /** When true, EVERY segment is scaled by its OWN width to fill the canvas
+     *  width, instead of sharing one scale anchored on the current page. This
+     *  makes a small page fill the canvas the moment it appears (no "small at
+     *  the top, suddenly big in the middle"). */
+    private boolean mFillWidth = false;
+    private float mPanX = 0f;
+    private float mPanY = 0f;
     /** Single oversized page split into full-resolution vertical tiles. */
     private Bitmap[] mTiles;
     private boolean mTileMode = false;
@@ -74,8 +81,38 @@ public class MangaStripView extends View {
         mScale = scale > 0 ? scale : 1.0f;
         mZoom = zoom > 0 ? zoom : 1.0f;
         mOffset = offset;
+        if (mFillWidth) {
+            mFillWidth = false;
+            changed = true;
+            mPanX = 0f;
+            mPanY = 0f;
+        }
         // Decode completions call setStrip several times with identical content;
         // skip redundant invalidates that compete with the scroll frames.
+        if (changed) {
+            postInvalidateOnAnimation();
+        }
+    }
+
+    /** Fill-width mode: each page fills the canvas width using its OWN width,
+     *  so a small page is full-width from the moment it appears. Also carries
+     *  a pan offset for pointer-anchored / trigger-drag zoom in continuous mode. */
+    public void setStripFill(Bitmap[] segments, float zoom, float offset,
+                             float panX, float panY) {
+        boolean changed = !mFillWidth || mZoom != (zoom > 0 ? zoom : 1.0f)
+                || mPanX != panX || mPanY != panY;
+        mFillWidth = true;
+        for (int i = 0; i < 5; i++) {
+            Bitmap b = segments != null && i < segments.length ? segments[i] : null;
+            if (mSegments[i] != b) {
+                changed = true;
+                mSegments[i] = b;
+            }
+        }
+        mZoom = zoom > 0 ? zoom : 1.0f;
+        mOffset = offset;
+        mPanX = panX;
+        mPanY = panY;
         if (changed) {
             postInvalidateOnAnimation();
         }
@@ -134,7 +171,13 @@ public class MangaStripView extends View {
 
     public float scaledHeight(int segment) {
         Bitmap b = segment >= 0 && segment < 5 ? mSegments[segment] : null;
-        return b == null || b.isRecycled() ? 0f : b.getHeight() * mScale * mZoom;
+        if (b == null || b.isRecycled()) return 0f;
+        if (mFillWidth) {
+            float vw = getWidth() > 0 ? getWidth() : 1000f;
+            float sw = vw / (float) b.getWidth();
+            return b.getHeight() * sw * mZoom;
+        }
+        return b.getHeight() * mScale * mZoom;
     }
 
     @Override
@@ -206,25 +249,31 @@ public class MangaStripView extends View {
             if (b == null || b.isRecycled()) {
                 continue;
             }
-            float h = b.getHeight() * s;
+            // In fill-width mode each page uses its OWN width scale, so every
+            // page is full-canvas-width from the first pixel (small pages no
+            // longer appear narrow and jump big near the middle). Otherwise
+            // all pages share the current-page scale.
+            final float si = mFillWidth ? (vw / (float) b.getWidth()) * mZoom : s;
+            float h = b.getHeight() * si;
             if (tops[i] >= vh || tops[i] + h <= 0) {
                 continue;
             }
-            float w = b.getWidth() * s;
-            float left = (vw - w) / 2.0f;
-            float visibleTop = Math.max(0f, -tops[i]);
-            float visibleBottom = Math.min(h, vh - tops[i]);
+            float w = b.getWidth() * si;
+            float left = (vw - w) / 2.0f + (mFillWidth ? mPanX : 0f);
+            float topShift = mFillWidth ? mPanY : 0f;
+            float visibleTop = Math.max(0f, -tops[i] - topShift);
+            float visibleBottom = Math.min(h, vh - tops[i] - topShift);
             if (visibleBottom <= visibleTop) {
                 continue;
             }
             try {
                 Rect src = new Rect(0,
-                        (int) Math.max(0f, visibleTop / s),
+                        (int) Math.max(0f, visibleTop / si),
                         b.getWidth(),
-                        (int) Math.min(b.getHeight(), visibleBottom / s));
+                        (int) Math.min(b.getHeight(), visibleBottom / si));
                 if (src.bottom > src.top) {
-                    RectF dst = new RectF(left, tops[i] + visibleTop,
-                            left + w, tops[i] + visibleBottom);
+                    RectF dst = new RectF(left, tops[i] + visibleTop + topShift,
+                            left + w, tops[i] + visibleBottom + topShift);
                     canvas.drawBitmap(b, src, dst, mPaint);
                 }
             } catch (Throwable ignored) {

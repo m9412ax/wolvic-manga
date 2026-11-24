@@ -444,7 +444,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 // Pointer + trigger drag on a ZOOMED image pans the picture,
                 // just like dragging a photo on a phone. Clamped in
                 // applyImageTransform() so no empty area can be exposed.
-                if (mZoom > 1.01f && !isContinuous() && !mTiledPage) {
+                if (mZoom > 1.01f && !mTiledPage) {
+                    // Continuous mode now supports pan too (fill-width strip
+                    // carries mPanX/mPanY) so pointer+trigger can drag a zoomed
+                    // page. Single/double-page path is unchanged.
                     mPanX -= distanceX;
                     mPanY -= distanceY;
                     applyImageTransform();
@@ -1881,7 +1884,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (vw <= 0) {
             // Still push the pages so scrolling has segment heights to work
             // with; a layout callback will refine the scale right after.
-            mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+            mStripView.setStripFill(mStripSegments, mZoom, mStripOffset, mPanX, mPanY);
             return;
         }
         float newScale = vw / (float) cur.getWidth();
@@ -1919,7 +1922,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mPendingStripFrac = 0f;
             }
         }
-        mStripView.setStrip(mStripSegments, mStripScale, mZoom, mStripOffset);
+        // Fill-width mode: every page fills the canvas using its own width, so
+        // a small page is full-width the moment it scrolls into view instead of
+        // appearing narrow and jumping big near the middle. Pan is carried so
+        // pointer-anchored / trigger-drag zoom works in continuous mode too.
+        mStripView.setStripFill(mStripSegments, mZoom, mStripOffset, mPanX, mPanY);
     }
 
     /** Scrolls the long strip. Positive delta moves down the comic (content
@@ -2028,7 +2035,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  moves the same amount of comic (e.g. one line of dialogue) regardless of
      *  canvas or image zoom. scrollContinuous() itself takes VIEW pixels. */
     private void scrollContinuousStick(float deltaContent) {
-        float scale = mStripScale * mZoom;
+        float scale;
+        if (mStripSegments[2] != null && mStripView.getWidth() > 0) {
+            // Fill-width mode: content pixels map via this page's own fill scale.
+            scale = (mStripView.getWidth() / (float) mStripSegments[2].getWidth()) * mZoom;
+        } else {
+            scale = mStripScale * mZoom;
+        }
         if (scale <= 0.001f) {
             scale = 1f;
         }
@@ -2612,6 +2625,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return 1.0f + 5.0f * m;
     }
 
+    /** Drop any TEMPORARY picture zoom/pan immediately (used when the user
+     *  resumes normal thumbstick navigation, even before a page turn). The
+     *  persistent canvas scale is intentionally left alone. */
+    private void resetTempZoom() {
+        if (mZoom <= 1.001f && Math.abs(mPanX) < 0.5f && Math.abs(mPanY) < 0.5f) {
+            return;
+        }
+        mZoom = 1.0f;
+        mPanX = 0f;
+        mPanY = 0f;
+        if (isContinuous()) {
+            mStripLastZoom = 1.0f;
+            updateStripTransform();
+        } else {
+            applyImageTransform();
+        }
+    }
+
     /** PERSISTENT canvas zoom: resizes the widget itself (worldWidth / width /
      *  height). Saved to prefs, so it survives page changes and restarts. */
     public void scaleCanvasBy(float factor) {
@@ -2864,6 +2895,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 zoomByAt(1.0f - dy * rate, mPointerX, mPointerY);
             }
         } else {
+            // Normal controller navigation resumes: immediately drop any
+            // temporary zoom/pan even if this motion is not a page turn yet.
+            resetTempZoom();
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
                 // Seamless long-strip scroll: dy > 0 scrolls down into the
@@ -2994,6 +3028,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 zoomByAt(1.0f - mAxisY * rate, mPointerX, mPointerY);
             }
         } else {
+            // Normal thumbstick navigation resumes: drop any temporary picture
+            // zoom/pan at once, even if this nudge does not reach a page turn.
+            resetTempZoom();
             int direction = mSettings.integer(MangaSettings.READER_DIRECTION);
             if (direction == 2) {
                 // Vertical continuous scroll, like swiping a long image.
@@ -4057,11 +4094,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 doPrepare.run();
                             }
                             @Override public void onProgress(long done, long total) {
-                                // Fallback trigger: if onReady was lost, start playback
-                                // as soon as the head is actually on disk.
-                                if (done >= prefetchBytes / 2 && !mVideoPrepared && !mVideoPlayFailed) {
-                                    doPrepare.run();
-                                }
+                                // Do NOT trigger prepare from progress: fillRange()
+                                // reports head-download progress too, so reaching
+                                // prefetchBytes/2 happens BEFORE head+tail are both
+                                // written -> prepare reads a half-written moov and
+                                // fails with what=1 (the "SMB video won't play"
+                                // symptom). onReady() is the authoritative signal:
+                                // it fires only after head AND tail are real bytes.
                                 mMainHandler.post(() -> {
                                     if (player != mMediaPlayer || mDestroyed
                                             || mVideoPrepared || mVideoPlayFailed
