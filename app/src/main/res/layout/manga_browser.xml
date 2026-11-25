@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Unified file browser for local / SMB / 115.
+     Visual language follows NextPlayer's dark theme: near-black surface,
+     teal accent, rounded cards, oversized titles readable inside VR. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#FF0E1514">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="14dp"
+        android:paddingRight="14dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="6dp">
+
+        <TextView
+            android:id="@+id/browserBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="←"
+            android:textColor="#FF80D5D2"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:paddingRight="14dp"
+            android:paddingLeft="4dp"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/browserTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="文件"
+            android:textColor="#FFDDE4E3"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:singleLine="true"
+            android:ellipsize="middle" />
+
+        <TextView
+            android:id="@+id/browserSort"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="名称 ↑"
+            android:textColor="#FFBEC9C7"
+            android:textSize="15sp"
+            android:background="#FF1A2120"
+            android:paddingLeft="12dp"
+            android:paddingRight="12dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+            android:layout_marginRight="8dp"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/browserMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="▦"
+            android:textColor="#FF80D5D2"
+            android:textSize="17sp"
+            android:background="#FF1A2120"
+            android:paddingLeft="13dp"
+            android:paddingRight="13dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp"
+            android:clickable="true"
+            android:focusable="true" />
+    </LinearLayout>
+
+    <HorizontalScrollView
+        android:id="@+id/browserCrumbScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:scrollbars="none"
+        android:fillViewport="false">
+
+        <LinearLayout
+            android:id="@+id/browserCrumbs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical" />
+    </HorizontalScrollView>
+
+    <TextView
+        android:id="@+id/browserSummary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:textColor="#FF8FA19E"
+        android:textSize="13sp"
+        android:singleLine="true"
+        android:ellipsize="end" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/browserList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingBottom="12dp"
+        android:clipToPadding="false"
+        android:scrollbars="vertical" />
+
+    <TextView
+        android:id="@+id/browserStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="10dp"
+        android:textColor="#FFBEC9C7"
+        android:textSize="14sp"
+        android:background="#FF1A2120"
+        android:visibility="gone" />
+</LinearLayout>

@@ -4,7 +4,7 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#FF1C1C22"
+    android:background="@drawable/manga_card_bg"
     android:padding="10dp"
     android:layout_margin="8dp"
     android:clickable="true"

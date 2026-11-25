@@ -261,6 +261,10 @@ android {
         picoxr {
             dimension = "platform"
             minSdk = 29
+            // Standalone application identity: this fork is no longer Wolvic and
+            // must be installable NEXT TO the old com.igalia.wolvic(.dev) build
+            // so both can be used independently, with separate app data.
+            applicationId = "com.gzkj.mangahubvr"
             externalNativeBuild {
                 cmake {
                     cppFlags " -DPICOXR -DOPENXR -I" + file("src/openxr/cpp").absolutePath

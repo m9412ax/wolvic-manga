@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One browser tile: rounded thumbnail, badge (folder / video / page count),
+     two text lines. Big enough to read from a VR panel. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/manga_card_bg"
+    android:padding="8dp"
+    android:layout_margin="6dp"
+    android:clickable="true"
+    android:focusable="true">
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="118dp"
+        android:background="#FF252B2B">
+
+        <ImageView
+            android:id="@+id/itemThumb"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:contentDescription="缩略图" />
+
+        <TextView
+            android:id="@+id/itemGlyph"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:textColor="#FF80D5D2"
+            android:textSize="40sp"
+            android:text="▣" />
+
+        <TextView
+            android:id="@+id/itemBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="5dp"
+            android:background="#CC0E1514"
+            android:paddingLeft="7dp"
+            android:paddingRight="7dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="#FF80D5D2"
+            android:textSize="11sp"
+            android:visibility="gone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/itemName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:maxLines="2"
+        android:ellipsize="end"
+        android:textColor="#FFDDE4E3"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/itemMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#FF8FA19E"
+        android:textSize="11sp" />
+</LinearLayout>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- NextPlayer-style card: dark surface, rounded, hairline outline. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FF1A2120" />
+    <corners android:radius="12dp" />
+    <stroke android:width="1dp" android:color="#FF2F3A38" />
+</shape>

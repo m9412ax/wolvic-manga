@@ -62,6 +62,7 @@ import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.manga.SmbRemoteManga;
 import com.igalia.wolvic.manga.Netdisk115RemoteManga;
 import com.igalia.wolvic.manga.SortUtil;
+import com.igalia.wolvic.manga.browser.MangaFileBrowser;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.adapters.SourceCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
@@ -136,6 +137,8 @@ public class MangaLibraryWidget extends UIWidget {
     private MangaSettingsPanel mSettingsPanel;
 
     private final Map<MangaPage, View> mPageViews = new EnumMap<>(MangaPage.class);
+    /** Full-height browser host for LOCAL / SMB / 115 (below the header). */
+    private final Map<MangaPage, FrameLayout> mPageBrowsers = new EnumMap<>(MangaPage.class);
     private final Map<MangaPage, LinearLayout> mPageContents = new EnumMap<>(MangaPage.class);
 
     private MangaPage mCurrentPage = MangaPage.LIBRARY;
@@ -455,6 +458,39 @@ public class MangaLibraryWidget extends UIWidget {
             return content;
         }
 
+        // Local / SMB / 115 use the full-height unified browser: a compact
+        // scrollable header (connection state + actions) on top, the file grid
+        // below. A RecyclerView nested in a ScrollView fights it for scrolling,
+        // so these pages get their own two-part layout.
+        if (page == MangaPage.LOCAL || page == MangaPage.SMB
+                || page == MangaPage.WEBDAV) {
+            LinearLayout root = new LinearLayout(getContext());
+            root.setOrientation(LinearLayout.VERTICAL);
+            final ScrollView header = new ScrollView(getContext());
+            header.addView(content, new ScrollView.LayoutParams(
+                    ScrollView.LayoutParams.MATCH_PARENT,
+                    ScrollView.LayoutParams.WRAP_CONTENT));
+            FrameLayout host = new FrameLayout(getContext());
+            root.addView(header, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            root.addView(host, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+            mPageBrowsers.put(page, host);
+            mPageContents.put(page, content);
+            fillPage(page, content);
+            // Never let the header eat the browser: cap it at 40% of the page.
+            header.post(() -> {
+                int max = root.getHeight() * 2 / 5;
+                if (max > 0 && header.getHeight() > max) {
+                    ViewGroup.LayoutParams lp = header.getLayoutParams();
+                    lp.height = max;
+                    header.setLayoutParams(lp);
+                }
+            });
+            return root;
+        }
+
         ScrollView scroll = new ScrollView(getContext());
         scroll.addView(content, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT,
@@ -470,6 +506,10 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         content.removeAllViews();
+        FrameLayout browserHost = mPageBrowsers.get(page);
+        if (browserHost != null) {
+            browserHost.removeAllViews();
+        }
         fillPage(page, content);
     }
 
@@ -1550,33 +1590,73 @@ public class MangaLibraryWidget extends UIWidget {
         addInfo(content, "媒体文件", "当前目录图片/视频数量：" + media);
         addInfo(content, "子目录", dirs.isEmpty() ? "无子目录" : "共 " + dirs.size() + " 个");
 
-        int shown = 0;
+        // Unified browser: folders and media in one card grid with breadcrumb,
+        // sortable view modes and size/date metadata.
+        List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (File dir : dirs) {
-            if (shown++ >= MAX_LOCAL_ROWS) {
-                addInfo(content, "提示", "仅显示前 " + MAX_LOCAL_ROWS + " 个目录。");
-                break;
+            MangaFileBrowser.Entry e = new MangaFileBrowser.Entry(
+                    dir.getName(), dir.getAbsolutePath(), true);
+            int childMedia = 0;
+            File[] kids = dir.listFiles();
+            if (kids != null) {
+                for (File kid : kids) {
+                    if (kid.isFile() && isMedia(kid.getName())) {
+                        childMedia++;
+                    }
+                }
             }
-            Button row = new Button(getContext());
-            row.setText(dir.getName() + " /");
-            row.setAllCaps(false);
-            row.setTextSize(18f);
-            row.setTextColor(0xFFFFFFFF);
-            row.setBackgroundColor(0xFF23232C);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setMinHeight(dp(52));
-            row.setOnClickListener(v -> {
-                mLocalDir = dir;
-                mSettings.setLastDir(dir.getAbsolutePath());
-                // Entering a folder from the local browser always opens the
-                // thumbnail view (bookshelf entries show their detail card).
-                openFolderView(dir, false);
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, dp(3), 0, dp(3));
-            content.addView(row, lp);
+            e.meta = childMedia > 0 ? ("文件夹 · " + childMedia + " 个媒体") : "文件夹";
+            e.modifiedMs = dir.lastModified();
+            entries.add(e);
         }
+        File[] localFiles = mLocalDir != null ? mLocalDir.listFiles() : null;
+        if (localFiles != null) {
+            for (File f : localFiles) {
+                if (!f.isFile() || !isMedia(f.getName())) {
+                    continue;
+                }
+                MangaFileBrowser.Entry e = new MangaFileBrowser.Entry(
+                        f.getName(), f.getAbsolutePath(), false);
+                e.size = f.length();
+                e.modifiedMs = f.lastModified();
+                e.video = MangaSettings.hasExtension(f.getName(), mSettings.videoExtensions());
+                e.thumb = e.video ? null : f;
+                e.badge = e.video ? "▶" : null;
+                entries.add(e);
+            }
+        }
+        final MangaFileBrowser localBrowser = new MangaFileBrowser(getContext());
+        localBrowser.setData(entries,
+                mLocalDir == null ? "本地" : mLocalDir.getName(),
+                localCrumbs(mLocalDir), null);
+        localBrowser.setCanGoBack(mLocalDir != null && mRoot != null && !mLocalDir.equals(mRoot));
+        localBrowser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onOpen(MangaFileBrowser.Entry entry) {
+                openReaderAt(mLocalDir, new File(entry.path));
+            }
+
+            @Override
+            public void onNavigate(String path) {
+                File target = new File(path);
+                if (target.isDirectory()) {
+                    mLocalDir = target;
+                    mSettings.setLastDir(target.getAbsolutePath());
+                    refreshPage(MangaPage.LOCAL);
+                }
+            }
+
+            @Override
+            public void onBack() {
+                File parent = mLocalDir != null ? mLocalDir.getParentFile() : null;
+                if (parent != null) {
+                    mLocalDir = parent;
+                    mSettings.setLastDir(parent.getAbsolutePath());
+                    refreshPage(MangaPage.LOCAL);
+                }
+            }
+        });
+        attachBrowser(MangaPage.LOCAL, localBrowser);
     }
 
     // -------------------------------------------------------------- SMB
@@ -1724,35 +1804,104 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
         }
+        // Unified browser: identical cards / breadcrumb / sorting as local files.
+        List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (MangaSmb.Entry entry : mSmbEntries) {
-            Button row = newButton((entry.directory ? "▣ " : "▤ ") + entry.name
-                    + (entry.directory ? "" : "  " + (entry.size / 1024) + " KB"));
-            row.setTextColor(entry.directory ? 0xFF8EC5FF : 0xFFFFFFFF);
-            final String entryPath = entry.path;
-            row.setOnClickListener(v -> {
-                if (entry.directory) {
-                    mSmbPath = entryPath;
-                    connectSmb();
-                } else {
-                    // Open the WHOLE current folder as a manga, positioned at
-                    // this image - so up/down page turns work (not single-file).
-                    openRemoteManga(smbManga(smbAuth(), mSmbPath), entry.name);
-                }
-            });
-            content.addView(row, wrapParams());
+            MangaFileBrowser.Entry e = new MangaFileBrowser.Entry(
+                    entry.name, entry.path, entry.directory);
+            e.size = entry.size;
+            e.modifiedMs = entry.modifiedMs;
+            e.video = !entry.directory && MangaSettings.hasExtension(entry.name, smbVideoExt);
+            e.badge = e.video ? "▶" : null;
+            entries.add(e);
         }
+        List<MangaFileBrowser.Crumb> crumbs = new ArrayList<>();
+        crumbs.add(new MangaFileBrowser.Crumb("SMB", ""));
+        crumbs.add(new MangaFileBrowser.Crumb(share, ""));
+        if (!mSmbPath.isEmpty()) {
+            StringBuilder acc = new StringBuilder();
+            for (String part : mSmbPath.split("/")) {
+                if (part.isEmpty()) {
+                    continue;
+                }
+                if (acc.length() > 0) {
+                    acc.append('/');
+                }
+                acc.append(part);
+                crumbs.add(new MangaFileBrowser.Crumb(part, acc.toString()));
+            }
+        }
+        final MangaFileBrowser smbBrowser = new MangaFileBrowser(getContext());
+        smbBrowser.setData(entries,
+                mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
+                crumbs, null);
+        smbBrowser.setCanGoBack(!mSmbPath.isEmpty());
+        smbBrowser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onOpen(MangaFileBrowser.Entry entry) {
+                // Open the WHOLE current folder as a manga, positioned at this
+                // image, so up/down page turns keep working.
+                openRemoteManga(smbManga(smbAuth(), mSmbPath), entry.name);
+            }
+
+            @Override
+            public void onNavigate(String path) {
+                mSmbPath = path;
+                connectSmb();
+            }
+
+            @Override
+            public void onBack() {
+                int slash = mSmbPath.lastIndexOf('/');
+                mSmbPath = slash > 0 ? mSmbPath.substring(0, slash) : "";
+                connectSmb();
+            }
+        });
+        attachBrowser(MangaPage.SMB, smbBrowser);
     }
 
     private Button newButton(String text) {
         Button b = new Button(getContext());
         b.setText(text);
-        b.setAllCaps(false);
-        b.setTextSize(17f);
-        b.setTextColor(0xFFFFFFFF);
-        b.setBackgroundColor(0xFF23232C);
+        applyBrowserButtonStyle(b);
+        b.setTextSize(16f);
         b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         b.setMinHeight(dp(50));
         return b;
+    }
+
+    /** Attaches a finished browser to the reserved full-height slot. */
+    private void attachBrowser(MangaPage page, View browser) {
+        FrameLayout host = mPageBrowsers.get(page);
+        if (host == null) {
+            return;
+        }
+        host.removeAllViews();
+        host.addView(browser, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+    }
+
+    /** Breadcrumb trail from the manga root down to the current directory. */
+    private List<MangaFileBrowser.Crumb> localCrumbs(File dir) {
+        List<MangaFileBrowser.Crumb> crumbs = new ArrayList<>();
+        if (dir == null) {
+            return crumbs;
+        }
+        List<File> chain = new ArrayList<>();
+        File cur = dir;
+        int guard = 0;
+        while (cur != null && guard++ < 40) {
+            chain.add(0, cur);
+            if (mRoot != null && cur.equals(mRoot)) {
+                break;
+            }
+            cur = cur.getParentFile();
+        }
+        for (File f : chain) {
+            crumbs.add(new MangaFileBrowser.Crumb(f.getName(), f.getAbsolutePath()));
+        }
+        return crumbs;
     }
 
     private LinearLayout.LayoutParams wrapParams() {
@@ -2119,26 +2268,75 @@ public class MangaLibraryWidget extends UIWidget {
                             ? "空目录或尚未读取成功。" : mP115DirStatus);
             return;
         }
-        for (final Manga115Api.DirEntry e : mP115Entries) {
-            Button entryRow = newButton((e.isDir ? "▣ " : "▤ ") + e.name
-                    + (e.isDir ? "" : "  " + (e.size / 1024) + " KB"));
-            entryRow.setTextColor(e.isDir ? 0xFF8EC5FF : 0xFFFFFFFF);
-            entryRow.setOnClickListener(v -> {
-                if (e.isDir) {
-                    String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
-                    mP115ParentStack.push(new String[]{mP115Cid, mP115Title});
-                    mP115Cid = childId;
-                    mP115Title = e.name;
-                    mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
-                    mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
-                    listP115Dir(mP115Cid);
-                } else {
-                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
-                    openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), e.name);
-                }
-            });
-            content.addView(entryRow, wrapParams());
+        // Unified browser, same cards / breadcrumb / sorting as local and SMB.
+        List<MangaFileBrowser.Entry> entries = new ArrayList<>();
+        for (Manga115Api.DirEntry e : mP115Entries) {
+            String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
+            MangaFileBrowser.Entry item = new MangaFileBrowser.Entry(
+                    e.name, e.isDir ? childId : e.name, e.isDir);
+            item.size = e.size;
+            item.modifiedMs = e.modifiedMs;
+            item.video = !e.isDir && MangaSettings.hasExtension(e.name, videoExt);
+            item.badge = item.video ? "▶" : null;
+            item.tag = e;
+            entries.add(item);
         }
+        List<MangaFileBrowser.Crumb> crumbs = new ArrayList<>();
+        crumbs.add(new MangaFileBrowser.Crumb("115 网盘", "0"));
+        if (!"0".equals(mP115Cid)) {
+            crumbs.add(new MangaFileBrowser.Crumb(
+                    mP115Title == null ? mP115Cid : mP115Title, mP115Cid));
+        }
+        final MangaFileBrowser p115Browser = new MangaFileBrowser(getContext());
+        p115Browser.setData(entries,
+                mP115Title == null ? "115 网盘" : mP115Title, crumbs, mP115DirStatus);
+        p115Browser.setCanGoBack(!"0".equals(mP115Cid));
+        p115Browser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onOpen(MangaFileBrowser.Entry entry) {
+                String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), entry.name);
+            }
+
+            @Override
+            public void onNavigate(String path) {
+                if ("0".equals(path)) {
+                    mNetdiskAtRoot = true;
+                    refreshPage(MangaPage.WEBDAV);
+                    return;
+                }
+                String title = path;
+                for (Manga115Api.DirEntry e : mP115Entries) {
+                    String childId = !e.fileId.isEmpty() ? e.fileId : e.cid;
+                    if (path.equals(childId)) {
+                        title = e.name;
+                        break;
+                    }
+                }
+                mP115ParentStack.push(new String[]{mP115Cid, mP115Title});
+                mP115Cid = path;
+                mP115Title = title;
+                mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
+                mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
+                listP115Dir(mP115Cid);
+            }
+
+            @Override
+            public void onBack() {
+                if (!mP115ParentStack.isEmpty()) {
+                    String[] parent = mP115ParentStack.pop();
+                    mP115Cid = parent[0];
+                    mP115Title = parent[1];
+                } else {
+                    mP115Cid = "0";
+                    mP115Title = "115 网盘";
+                }
+                mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
+                mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
+                listP115Dir(mP115Cid);
+            }
+        });
+        attachBrowser(MangaPage.WEBDAV, p115Browser);
     }
 
     private void listP115Dir(final String cid) {
@@ -2357,43 +2555,63 @@ public class MangaLibraryWidget extends UIWidget {
         boolean hasWebdav = !mSettings.text(MangaSettings.WEBDAV_URL).trim().isEmpty();
 
         if (mNetdiskAtRoot) {
-            addInfo(content, "网盘", "点文件夹进入；登录与默认目录在 ⚙ 设置 中。");
-            if (has115) {
-                Button drive = newButton("▣ 115网盘");
-                drive.setTextColor(0xFF8EC5FF);
-                drive.setOnClickListener(v -> {
-                    mNetdiskMode = "115";
-                    mNetdiskAtRoot = false;
-                    String def = mSettings.text(MangaSettings.P115_DEFAULT_CID);
-                    mP115Cid = def.isEmpty() ? "0" : def;
-                    mP115Title = mSettings.text(MangaSettings.P115_DEFAULT_TITLE);
-                    if (mP115Title.isEmpty()) mP115Title = "115网盘";
-                    mP115ParentStack.clear();
-                    listP115Dir(mP115Cid);
-                });
-                content.addView(drive, wrapParams());
-            } else {
-                Button drive = newButton("▣ 115网盘（未登录 · 点 ⚙ 设置 扫码）");
-                drive.setOnClickListener(v -> {
-                    mNetdiskSettingsOpen = true;
-                    refreshPage(MangaPage.WEBDAV);
-                });
-                content.addView(drive, wrapParams());
-            }
+            // Drive picker as cards, not a stack of buttons: the browser is the
+            // one place where every source looks and behaves the same.
+            List<MangaFileBrowser.Entry> drives = new ArrayList<>();
+            MangaFileBrowser.Entry cloud = new MangaFileBrowser.Entry(
+                    has115 ? "115 网盘" : "115 网盘（未登录）",
+                    has115 ? "115" : "115-login", true);
+            cloud.meta = has115 ? "云端文件 · 已登录" : "点 ⚙ 设置 扫码登录";
+            cloud.glyph = "☁";
+            drives.add(cloud);
             if (hasWebdav) {
-                Button drive = newButton("▣ WebDAV 网盘");
-                drive.setTextColor(0xFF8EC5FF);
-                drive.setOnClickListener(v -> {
-                    mNetdiskMode = "webdav";
-                    mNetdiskAtRoot = false;
-                    mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
-                    connectWebDav();
-                });
-                content.addView(drive, wrapParams());
+                MangaFileBrowser.Entry dav = new MangaFileBrowser.Entry(
+                        "WebDAV 网盘", "webdav", true);
+                dav.meta = mSettings.text(MangaSettings.WEBDAV_URL);
+                dav.glyph = "☁";
+                drives.add(dav);
             }
-            if (!has115 && !hasWebdav) {
-                addInfo(content, "没有已配置的网盘", "在 ⚙ 设置 里扫码登录 115 或填写 WebDAV 地址。");
-            }
+            List<MangaFileBrowser.Crumb> crumbs = new ArrayList<>();
+            crumbs.add(new MangaFileBrowser.Crumb("网盘", ""));
+            final MangaFileBrowser driveBrowser = new MangaFileBrowser(getContext());
+            driveBrowser.setData(drives, "网盘", crumbs,
+                    has115 || hasWebdav ? null : "尚未配置网盘：在 ⚙ 设置 里扫码登录 115 或填写 WebDAV 地址。");
+            driveBrowser.setCanGoBack(false);
+            driveBrowser.setCallback(new MangaFileBrowser.Callback() {
+                @Override
+                public void onOpen(MangaFileBrowser.Entry entry) {
+                    onNavigate(entry.path);
+                }
+
+                @Override
+                public void onNavigate(String path) {
+                    if ("115-login".equals(path)) {
+                        mNetdiskSettingsOpen = true;
+                        refreshPage(MangaPage.WEBDAV);
+                        return;
+                    }
+                    if ("115".equals(path)) {
+                        mNetdiskMode = "115";
+                        mNetdiskAtRoot = false;
+                        String def = mSettings.text(MangaSettings.P115_DEFAULT_CID);
+                        mP115Cid = def.isEmpty() ? "0" : def;
+                        mP115Title = mSettings.text(MangaSettings.P115_DEFAULT_TITLE);
+                        if (mP115Title.isEmpty()) {
+                            mP115Title = "115网盘";
+                        }
+                        mP115ParentStack.clear();
+                        listP115Dir(mP115Cid);
+                        return;
+                    }
+                    if ("webdav".equals(path)) {
+                        mNetdiskMode = "webdav";
+                        mNetdiskAtRoot = false;
+                        mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
+                        connectWebDav();
+                    }
+                }
+            });
+            attachBrowser(MangaPage.WEBDAV, driveBrowser);
             return;
         }
 
@@ -2454,25 +2672,71 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
         }
+        List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (MangaWebDav.Entry entry : mWebDavEntries) {
-            Button row = newButton((entry.directory ? "▣ " : "▤ ") + entry.name
-                    + (entry.size > 0 ? "  " + (entry.size / 1024) + " KB" : ""));
-            row.setOnClickListener(v -> {
-                if (entry.directory) {
-                    try {
-                        mWebDavUrl = MangaWebDav.resolve(mWebDavUrl, entry.href);
-                        if (!mWebDavUrl.endsWith("/")) mWebDavUrl += "/";
-                        connectWebDav();
-                    } catch (Exception e) {
-                        mWebDavStatus = "路径解析失败：" + e.getMessage();
-                        refreshPage(MangaPage.WEBDAV);
-                    }
-                } else {
-                    downloadSingleWebDav(entry);
-                }
-            });
-            content.addView(row, wrapParams());
+            MangaFileBrowser.Entry e = new MangaFileBrowser.Entry(
+                    entry.name, entry.href, entry.directory);
+            e.size = entry.size;
+            e.video = !entry.directory
+                    && MangaSettings.hasExtension(entry.name, mSettings.videoExtensions());
+            e.badge = e.video ? "▶" : null;
+            e.tag = entry;
+            entries.add(e);
         }
+        List<MangaFileBrowser.Crumb> crumbs = new ArrayList<>();
+        crumbs.add(new MangaFileBrowser.Crumb("WebDAV", ""));
+        String trimmedUrl = mWebDavUrl.endsWith("/")
+                ? mWebDavUrl.substring(0, mWebDavUrl.length() - 1) : mWebDavUrl;
+        int lastSlash = trimmedUrl.lastIndexOf('/');
+        if (lastSlash > 8) {
+            crumbs.add(new MangaFileBrowser.Crumb(trimmedUrl.substring(lastSlash + 1), ""));
+        }
+        final MangaFileBrowser davBrowser = new MangaFileBrowser(getContext());
+        davBrowser.setData(entries, "WebDAV", crumbs, statusOrHint(null));
+        davBrowser.setCanGoBack(true);
+        davBrowser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onOpen(MangaFileBrowser.Entry entry) {
+                if (entry.tag instanceof MangaWebDav.Entry) {
+                    downloadSingleWebDav((MangaWebDav.Entry) entry.tag);
+                }
+            }
+
+            @Override
+            public void onNavigate(String href) {
+                // A folder tile carries its href; the root crumb carries "".
+                if (href == null || href.isEmpty()) {
+                    mNetdiskAtRoot = true;
+                    refreshPage(MangaPage.WEBDAV);
+                    return;
+                }
+                try {
+                    mWebDavUrl = MangaWebDav.resolve(mWebDavUrl, href);
+                    if (!mWebDavUrl.endsWith("/")) {
+                        mWebDavUrl += "/";
+                    }
+                    connectWebDav();
+                } catch (Exception e) {
+                    mWebDavStatus = "路径解析失败：" + e.getMessage();
+                    refreshPage(MangaPage.WEBDAV);
+                }
+            }
+
+            @Override
+            public void onBack() {
+                String trimmed = mWebDavUrl.endsWith("/")
+                        ? mWebDavUrl.substring(0, mWebDavUrl.length() - 1) : mWebDavUrl;
+                int parentSlash = trimmed.lastIndexOf('/');
+                if (parentSlash > 8) {
+                    mWebDavUrl = trimmed.substring(0, parentSlash + 1);
+                    connectWebDav();
+                } else {
+                    mNetdiskAtRoot = true;
+                    refreshPage(MangaPage.WEBDAV);
+                }
+            }
+        });
+        attachBrowser(MangaPage.WEBDAV, davBrowser);
     }
 
     private void connectWebDav() {
@@ -3584,13 +3848,25 @@ public class MangaLibraryWidget extends UIWidget {
         return row;
     }
 
+    /** NextPlayer dark surface: rounded, low-contrast, teal-on-hover. */
+    private void applyBrowserButtonStyle(Button button) {
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xFF1A2120);
+        bg.setCornerRadius(dp(10));
+        bg.setStroke(Math.max(1, dp(1)), 0xFF2F3A38);
+        button.setBackground(bg);
+        button.setAllCaps(false);
+        button.setTextColor(0xFFDDE4E3);
+        button.setPadding(dp(16), dp(8), dp(16), dp(8));
+        button.setStateListAnimator(null);
+    }
+
     private Button addButton(LinearLayout row, String text, View.OnClickListener listener) {
         Button button = new Button(getContext());
         button.setText(text);
-        button.setAllCaps(false);
-        button.setTextSize(17f);
-        button.setTextColor(0xFFFFFFFF);
-        button.setBackgroundColor(0xFF2A2A33);
+        applyBrowserButtonStyle(button);
+        button.setTextSize(16f);
         button.setMinWidth(dp(120));
         button.setMinHeight(dp(52));
         button.setOnClickListener(listener);
