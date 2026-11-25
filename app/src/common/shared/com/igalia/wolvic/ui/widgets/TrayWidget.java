@@ -122,8 +122,6 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private float mBaseTrayWorldWidth = -1f;
     private int mBaseTrayWidth = -1;
     private int mBaseTrayHeight = -1;
-    /** Pixel width shared by the status bar / scrubber / button rows. */
-    private int mBandWidth = -1;
     /** Untouched world width from initial placement; mode changes scale from it. */
     private float mOriginalWorldWidth = -1f;
     /** True only while parented to a manga surface, not to a browser window. */
@@ -691,6 +689,9 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
      *  because onMangaParentResized() re-pins to it during canvas zoom. */
     private void setTrayHeightForMode(boolean reader) {
         Context context = getContext();
+        // WidgetPlacement dimensions are DP values (the surface is created as
+        // dp * display density), while View layout params are PIXELS. Mixing
+        // the two was what made the bar both oversized and its rows unequal.
         int baseWidth = WidgetPlacement.dpDimension(context, R.dimen.tray_width);
         int height = WidgetPlacement.dpDimension(context,
                 reader ? R.dimen.tray_height_reader : R.dimen.tray_height);
@@ -699,7 +700,6 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         // nine 40dp buttons, which used to overflow the fixed 340dp quad and
         // had their outermost buttons clipped.
         int width = baseWidth;
-        int bandWidth = baseWidth - dp(context, 12);
         View row = null;
         if (mBinding != null) {
             row = mMangaMode == MODE_BROWSER ? mBinding.trayButtons
@@ -715,20 +715,15 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                 }
             }
             if (visible > 0) {
-                // Buttons themselves + the row's 8dp side padding. Every row of
-                // the tray (status bar, page scrubber, buttons) is forced to
-                // this ONE width below, otherwise the top half is wider than
-                // the bottom half and the whole bar looks crooked.
-                bandWidth = visible
-                        * WidgetPlacement.dpDimension(context, R.dimen.tray_button_size)
-                        + dp(context, 16);
-                // Same chrome as before (40dp of slack around the band) so the
-                // quad keeps the size the user already accepted.
-                width = Math.max(baseWidth, bandWidth + dp(context, 24));
+                // Every row (status bar / scrubber / buttons) is match_parent,
+                // so widening the quad widens the whole bar at once and the
+                // three rows stay exactly the same width - that is what keeps
+                // the control bar from looking crooked.
+                width = Math.max(baseWidth,
+                        visible * WidgetPlacement.dpDimension(context,
+                                R.dimen.tray_button_size) + 40);
             }
         }
-        mBandWidth = bandWidth;
-        applyRowBandWidths(bandWidth);
 
         if (mWidgetManager == null) {
             return;
@@ -750,62 +745,18 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         // two-row tray and the 98dp three-row (reader) tray used to push the
         // button row up/down by half the difference - the file manager bar and
         // the reader bar looked vertically staggered. Pin the BOTTOM edge
-        // instead: translationY is in "units" (1 m = 360), while worldWidth is
-        // in metres, so a pixel maps to (worldWidth / width) * 360 units.
+        // instead: translationY is in "units" (1 m = 360) while worldWidth is
+        // in metres, so one dp maps to (worldWidth / width) * 360 units.
         if (previousHeight > 0 && height != previousHeight && width > 0) {
-            float unitsPerPx = (p.worldWidth / (float) width) * 360.0f;
-            p.translationY += (height - previousHeight) * 0.5f * unitsPerPx;
+            float unitsPerDp = (p.worldWidth / (float) width) * 360.0f;
+            p.translationY += (height - previousHeight) * 0.5f * unitsPerDp;
         }
         mBaseTrayHeight = height;
         mBaseTrayWidth = width;
         mBaseTrayWorldWidth = p.worldWidth;
-        android.util.Log.i("MangaTray", "trayLayout mode=" + mMangaMode + " band=" + bandWidth
-                + " w=" + width + " h=" + height + " worldW=" + p.worldWidth
-                + " density=" + context.getResources().getDisplayMetrics().density);
+        android.util.Log.i("MangaTray", "trayLayout mode=" + mMangaMode
+                + " wDp=" + width + " hDp=" + height + " worldW=" + p.worldWidth);
         mWidgetManager.updateWidget(this);
-        post(() -> {
-            View rows = findViewById(R.id.tray_rows);
-            View band = mBinding == null ? null
-                    : (mMangaMode == MODE_MANGA ? mBinding.mangaButtons
-                    : mMangaMode == MODE_READER ? mBinding.readerButtons
-                    : mBinding.trayButtons);
-            android.util.Log.i("MangaTray", "traySizes self=" + getWidth() + "x" + getHeight()
-                    + " rows=" + (rows == null ? -1 : rows.getWidth())
-                    + "x" + (rows == null ? -1 : rows.getHeight())
-                    + " band=" + (band == null ? -1 : band.getWidth())
-                    + " status=" + (mBinding == null ? -1 : mBinding.statusBar.getWidth()));
-        });
-    }
-
-    private static int dp(Context context, int value) {
-        return Math.round(value * context.getResources().getDisplayMetrics().density);
-    }
-
-    /**
-     * Every tray row must share ONE width. The button row is wrap_content, but
-     * the status bar and the page scrubber are match_parent, so they used to
-     * fill the whole quad and hang out on both sides of the buttons - a wide
-     * top half over a narrow bottom half reads as a crooked control bar.
-     * They are now given the button band width explicitly and centred by the
-     * parent, so all three rows line up exactly while the quad itself keeps the
-     * width the user already accepted.
-     */
-    private void applyRowBandWidths(int bandPx) {
-        View rows = findViewById(R.id.tray_rows);
-        if (rows == null) {
-            return;
-        }
-        for (int id : new int[]{R.id.status_bar, R.id.reader_progress_row}) {
-            View child = rows.findViewById(id);
-            if (child == null) {
-                continue;
-            }
-            ViewGroup.LayoutParams lp = child.getLayoutParams();
-            if (lp != null && lp.width != bandPx) {
-                lp.width = bandPx;
-                child.setLayoutParams(lp);
-            }
-        }
     }
 
     private void applyMangaMode() {
