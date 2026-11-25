@@ -150,11 +150,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private boolean mVideoCompleted;
 
     private MediaPlayer mMediaPlayer;
-    /** LibVLC backend for SMB/115 online video. This replaces the hand-written
-     *  local cache + MediaPlayer seek path for remote media. */
-    private org.videolan.libvlc.LibVLC mVlcLib;
-    private org.videolan.libvlc.Media mVlcMedia;
-    private org.videolan.libvlc.MediaPlayer mVlcPlayer;
+    /** Media3/ExoPlayer engine for SMB/115 online video. Local files keep using
+     *  MediaPlayer; remote media is handed to ExoPlayer, which owns network
+     *  buffering, seeking and decoding (no extra native .so). */
+    private androidx.media3.exoplayer.ExoPlayer mExoPlayer;
+    private androidx.media3.common.Player.Listener mExoListener;
     private Surface mVideoSurface;
     private SurfaceTexture mVideoSurfaceTexture;
     /** Streaming source for a remote video; closed when playback stops. */
@@ -170,6 +170,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  after start forces a keyframe (= visible picture). Automatic version of
      *  the user's stick-nudge workaround. */
     private boolean mVideoKickstartDone;
+    /** Resume-from-saved-position is applied once per ExoPlayer session. */
+    private boolean mExoResumeApplied;
     /** VR widget compositing pulls the view tree into the VR surface ONLY on
      *  invalidate(). TextureView video frames arrive via a separate BufferQueue
      *  and do NOT invalidate the view, so without an explicit bridge the VR
@@ -2282,17 +2284,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mSettings.videoExtensions());
     }
 
-    private boolean usingVlc() {
-        return mVlcPlayer != null;
+    private boolean usingExo() {
+        return mExoPlayer != null;
     }
 
     private boolean hasVideoEngine() {
-        return mVlcPlayer != null || mMediaPlayer != null;
+        return mExoPlayer != null || mMediaPlayer != null;
     }
 
     private int videoPositionMs() {
         try {
-            if (mVlcPlayer != null) return (int) mVlcPlayer.getTime();
+            if (mExoPlayer != null) return (int) Math.max(0L, mExoPlayer.getCurrentPosition());
             if (mMediaPlayer != null) return mMediaPlayer.getCurrentPosition();
         } catch (Exception ignored) { }
         return 0;
@@ -2300,7 +2302,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private int videoDurationMs() {
         try {
-            if (mVlcPlayer != null) return (int) mVlcPlayer.getLength();
+            if (mExoPlayer != null) {
+                long d = mExoPlayer.getDuration();
+                return d > 0 && d != androidx.media3.common.C.TIME_UNSET ? (int) d : -1;
+            }
             if (mMediaPlayer != null) return mMediaPlayer.getDuration();
         } catch (Exception ignored) { }
         return -1;
@@ -2308,7 +2313,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private boolean videoEnginePlaying() {
         try {
-            if (mVlcPlayer != null) return mVlcPlayer.isPlaying();
+            if (mExoPlayer != null) return mExoPlayer.isPlaying();
             return mMediaPlayer != null && mMediaPlayer.isPlaying();
         } catch (Exception ignored) {
             return false;
@@ -2317,8 +2322,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void videoSeekTo(int positionMs) {
         try {
-            if (mVlcPlayer != null) {
-                mVlcPlayer.setTime(positionMs);
+            if (mExoPlayer != null) {
+                mExoPlayer.seekTo(positionMs);
             } else if (mMediaPlayer != null) {
                 mMediaPlayer.seekTo(positionMs);
             }
@@ -2327,8 +2332,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void videoPause() {
         try {
-            if (mVlcPlayer != null) {
-                mVlcPlayer.pause();
+            if (mExoPlayer != null) {
+                mExoPlayer.pause();
             } else if (mMediaPlayer != null) {
                 mMediaPlayer.pause();
             }
@@ -2337,8 +2342,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void videoStart() {
         try {
-            if (mVlcPlayer != null) {
-                mVlcPlayer.play();
+            if (mExoPlayer != null) {
+                mExoPlayer.play();
             } else if (mMediaPlayer != null) {
                 startPreparedVideo(mMediaPlayer);
             }
@@ -3591,8 +3596,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     mVideoSeekGeneration++;
                     mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
                     mVideoSeekWaitingFinal = false;
-                    if (usingVlc()) {
+                    if (usingExo()) {
+                        // ExoPlayer reopens the byte source at the target and
+                        // buffers straight into the decoder - no sparse file,
+                        // no preroll dance, no post-seek frame kick.
                         videoSeekTo(target);
+                        Log.i(TAG, "exo seek " + target + "ms");
                     } else if (mVideoFileCache != null && duration > 0) {
                         requestCachedSeek(mMediaPlayer, target);
                     } else {
@@ -3971,8 +3980,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVideoSeekWaitingFinal = false;
             mVideoSeekStartedAt = android.os.SystemClock.uptimeMillis();
             mMainHandler.removeCallbacks(mClearVideoSeekLock);
-            if (usingVlc()) {
-                // LibVLC owns the full seek/buffer/decode path.
+            if (usingExo()) {
+                // ExoPlayer owns the full seek/buffer/decode path.
                 videoSeekTo(position);
             } else if (mVideoFileCache != null && duration > 0) {
                 requestCachedSeek(mMediaPlayer, position);
@@ -4222,92 +4231,109 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // for the every-few-seconds stutter of MediaDataSource streaming.
         if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
             RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
-            String mrl = pi == null ? null : mRemoteManga.openVideoMrl(pi);
-            if (mrl != null && !mrl.isEmpty()) {
-                // LibVLC takes over. Release the unused Android MediaPlayer.
-                try { player.reset(); player.release(); } catch (Throwable ignored) { }
-                mMediaPlayer = null;
-                startVlcVideo(page, pi, mrl);
-                return;
-            }
-            startLocalVideoCache(player, page, generation);
+            // ExoPlayer owns network reads, buffering, seeking and decoding.
+            // Release the unused Android MediaPlayer first: two engines on one
+            // SurfaceTexture fight over the same buffer queue.
+            try { player.reset(); player.release(); } catch (Throwable ignored) { }
+            if (mMediaPlayer == player) mMediaPlayer = null;
+            startExoVideo(page, pi);
             return;
         }
         prepareLocalPathVideo(player, page);
     }
 
-    /** Opens SMB/115 video through LibVLC, the mature open-source playback
-     *  backend. VLC owns network Range reads, buffering, decoder/renderer and
-     *  seek - no sparse local file, no post-seek nudge. */
-    private void startVlcVideo(final File page, final RemoteManga.PageInfo pi,
-                               final String mrl) {
+    /** Opens an SMB/115 video with Media3 ExoPlayer, the mature open-source
+     *  playback engine. ExoPlayer handles network buffering, seeking, A/V sync
+     *  and MediaCodec decoding; the only custom part is the byte transport
+     *  (SMB random-access reader / 115 HTTP Range). */
+    private void startExoVideo(final File page, final RemoteManga.PageInfo pi) {
         stopVideo(false);
         mVideoPrepared = false;
         mVideoPlayFailed = false;
         mVideoCompleted = false;
-        mVideoKickstartDone = true;   // VLC does not need the MediaPlayer kick
         mVideoPaused = false;
         mVideoPage = page;
         mVideoSeeking = false;
         mVideoSeekWaitingFinal = false;
-        showLoading("正在准备视频…", -1, -1, -1, -1);
+        mVideoKickstartDone = true;   // ExoPlayer does not need the frame kick
+        mExoResumeApplied = false;
         updateVideoControls();
+        if (pi == null) {
+            mVideoPlayFailed = true;
+            hideLoading();
+            showHint("视频信息读取失败：" + page.getName());
+            return;
+        }
+        if (mVideoSurface == null) {
+            // SurfaceTexture not ready yet; onSurfaceTextureAvailable() retries.
+            mPendingVideoPage = page;
+            return;
+        }
+        showLoading("正在连接视频…", -1, -1, -1, -1);
         try {
-            ArrayList<String> options = new ArrayList<>();
-            options.add("--no-video-title-show");
-            options.add("--network-caching=1500");
-            options.add("--file-caching=1500");
-            options.add("--avcodec-hw=any");
-            mVlcLib = new org.videolan.libvlc.LibVLC(getContext(), options);
-            mVlcLib.setUserAgent("115Browser/27.0.5.7",
-                    "Mozilla/5.0 115Browser/27.0.5.7");
-            mVlcMedia = new org.videolan.libvlc.Media(mVlcLib, mrl);
-            String[] mediaOptions = mRemoteManga.openVideoOptions(pi);
-            if (mediaOptions != null) {
-                for (String option : mediaOptions) {
-                    if (option != null && !option.isEmpty()) {
-                        mVlcMedia.addOption(option);
-                    }
-                }
+            final RemoteManga.VideoStream stream = mRemoteManga.openVideoStream(pi);
+            if (stream == null || stream.uri == null || stream.uri.isEmpty()) {
+                mVideoPlayFailed = true;
+                hideLoading();
+                showHint("视频地址获取失败：" + page.getName());
+                return;
             }
-            mVlcMedia.addOption(":network-caching=1500");
-            mVlcPlayer = new org.videolan.libvlc.MediaPlayer(mVlcMedia);
-            final org.videolan.libvlc.MediaPlayer player = mVlcPlayer;
-            player.setEventListener(event -> {
-                if (event == null) return;
-                final int type = event.type;
-                final float buffering = type == org.videolan.libvlc.MediaPlayer.Event.Buffering
-                        ? event.getBuffering() : 0f;
-                mMainHandler.post(() -> {
-                    if (player != mVlcPlayer || mDestroyed) return;
-                    switch (type) {
-                        case org.videolan.libvlc.MediaPlayer.Event.Buffering:
-                            int pct = Math.max(0, Math.min(100, (int) buffering));
-                            showLoading("正在缓冲视频…", pct, 100, -1, -1);
+            final androidx.media3.datasource.DataSource.Factory factory;
+            if (stream.reader != null) {
+                factory = new com.igalia.wolvic.manga.ReaderVideoDataSource.Factory(
+                        mRemoteManga, pi, android.net.Uri.parse(stream.uri));
+            } else {
+                androidx.media3.datasource.DefaultHttpDataSource.Factory http =
+                        new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                                .setUserAgent("Mozilla/5.0 115Browser/27.0.5.7")
+                                .setAllowCrossProtocolRedirects(true)
+                                .setConnectTimeoutMs(15000)
+                                .setReadTimeoutMs(20000);
+                if (stream.headers != null) {
+                    http.setDefaultRequestProperties(stream.headers);
+                }
+                factory = http;
+            }
+            final androidx.media3.exoplayer.ExoPlayer exo =
+                    new androidx.media3.exoplayer.ExoPlayer.Builder(getContext())
+                            .setMediaSourceFactory(
+                                    new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(factory))
+                            .build();
+            mExoPlayer = exo;
+            mExoListener = new androidx.media3.common.Player.Listener() {
+                @Override
+                public void onPlaybackStateChanged(int state) {
+                    if (exo != mExoPlayer || mDestroyed) return;
+                    switch (state) {
+                        case androidx.media3.common.Player.STATE_BUFFERING:
+                            if (!mVideoPlayFailed) {
+                                showLoading("正在缓冲视频…", -1, -1, -1, -1);
+                            }
                             break;
-                        case org.videolan.libvlc.MediaPlayer.Event.Playing:
+                        case androidx.media3.common.Player.STATE_READY:
                             mVideoPrepared = true;
                             mVideoPlayFailed = false;
                             hideLoading();
                             startVideoTick();
                             updateVideoControls();
                             postInvalidate();
-                            if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)
-                                    && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
-                                    && mSettings.bool(MangaSettings.READER_VIDEO_RESUME)) {
-                                int saved = progressPrefs().getInt(videoProgressKey(page), 0);
-                                if (saved > 0 && saved < player.getLength()) {
-                                    player.setTime(saved);
-                                    Log.i(TAG, "VLC resume " + saved + "ms");
+                            if (!mExoResumeApplied) {
+                                mExoResumeApplied = true;
+                                if (mSettings.bool(MangaSettings.PROGRESS_ENABLED)
+                                        && mSettings.bool(MangaSettings.PROGRESS_VIDEO)
+                                        && mSettings.bool(MangaSettings.READER_VIDEO_RESUME)) {
+                                    int saved = progressPrefs().getInt(videoProgressKey(page), 0);
+                                    long dur = exo.getDuration();
+                                    if (saved > 1000 && dur > 0
+                                            && dur != androidx.media3.common.C.TIME_UNSET
+                                            && saved < dur - 3000) {
+                                        exo.seekTo(saved);
+                                        Log.i(TAG, "ExoPlayer resume " + saved + "ms");
+                                    }
                                 }
                             }
                             break;
-                        case org.videolan.libvlc.MediaPlayer.Event.Vout:
-                        case org.videolan.libvlc.MediaPlayer.Event.ESAdded:
-                            applyVideoTransform();
-                            postInvalidate();
-                            break;
-                        case org.videolan.libvlc.MediaPlayer.Event.EndReached:
+                        case androidx.media3.common.Player.STATE_ENDED:
                             mVideoCompleted = true;
                             progressPrefs().edit().putInt(videoProgressKey(page), 0).apply();
                             if (mSettings.bool(MangaSettings.READER_VIDEO_NEXT_ON_END)
@@ -4315,50 +4341,67 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 showPage(mIndex + 1);
                             }
                             break;
-                        case org.videolan.libvlc.MediaPlayer.Event.EncounteredError:
-                            mVideoPlayFailed = true;
-                            mVideoPrepared = false;
-                            hideLoading();
-                            showHint("视频无法播放：" + page.getName());
-                            break;
                         default:
                             break;
                     }
-                });
-            });
-            if (mVideoSurfaceTexture == null) {
-                mPendingVideoPage = page;
-                return;
-            }
-            player.getVLCVout().setVideoView(mVideoTexture);
-            player.getVLCVout().attachViews();
-            player.play();
-            Log.i(TAG, "VLC play " + mrl);
+                }
+
+                @Override
+                public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                    if (exo != mExoPlayer || mDestroyed) return;
+                    mVideoPlayFailed = true;
+                    mVideoPrepared = false;
+                    Log.e(TAG, "ExoPlayer error: " + error.getErrorCodeName()
+                            + " " + error.getMessage(), error);
+                    hideLoading();
+                    showHint("视频无法播放(" + error.getErrorCodeName() + ")：" + page.getName());
+                }
+
+                @Override
+                public void onVideoSizeChanged(androidx.media3.common.VideoSize size) {
+                    if (exo != mExoPlayer || mDestroyed
+                            || size.width <= 0 || size.height <= 0) return;
+                    mVideoWidth = size.width;
+                    mVideoHeight = size.height;
+                    applyVideoTransform();
+                    postInvalidate();
+                }
+
+                @Override
+                public void onIsPlayingChanged(boolean isPlaying) {
+                    if (exo != mExoPlayer || mDestroyed) return;
+                    updateVideoControls();
+                }
+            };
+            exo.addListener(mExoListener);
+            exo.setVideoSurface(mVideoSurface);
+            exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(stream.uri));
+            exo.setPlayWhenReady(true);
+            exo.prepare();
+            mVideoDataSource = null;
+            Log.i(TAG, "ExoPlayer open " + stream.uri);
         } catch (Throwable e) {
-            Log.e(TAG, "VLC open failed: " + e.getMessage(), e);
-            releaseVlc();
+            Log.e(TAG, "ExoPlayer create failed: " + e.getMessage(), e);
+            releaseExo();
             mVideoPlayFailed = true;
             hideLoading();
             showHint("视频打开失败：" + e.getMessage());
         }
     }
 
-    private void releaseVlc() {
-        try {
-            if (mVlcPlayer != null) {
-                mVlcPlayer.setEventListener(null);
-                if (mVlcPlayer.getVLCVout().areViewsAttached()) {
-                    mVlcPlayer.getVLCVout().detachViews();
-                }
-                mVlcPlayer.stop();
-                mVlcPlayer.release();
-            }
-        } catch (Throwable ignored) { }
-        try { if (mVlcMedia != null) mVlcMedia.release(); } catch (Throwable ignored) { }
-        try { if (mVlcLib != null) mVlcLib.release(); } catch (Throwable ignored) { }
-        mVlcPlayer = null;
-        mVlcMedia = null;
-        mVlcLib = null;
+    private void releaseExo() {
+        final androidx.media3.exoplayer.ExoPlayer exo = mExoPlayer;
+        mExoPlayer = null;
+        if (exo != null) {
+            try {
+                if (mExoListener != null) exo.removeListener(mExoListener);
+                exo.setVideoSurface(null);
+                exo.stop();
+                exo.clearMediaItems();
+                exo.release();
+            } catch (Throwable ignored) { }
+        }
+        mExoListener = null;
     }
 
     /** Starts a background download of a remote video into the local cache,
@@ -4488,12 +4531,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private void stopVideo(boolean savePosition) {
         stopVideoTick();
         MediaPlayer player = mMediaPlayer;
-        // Save BEFORE clearing mMediaPlayer, otherwise persistState() has no
+        // Save BEFORE clearing the engine, otherwise persistState() has no
         // player to read the current playback position from.
         if (savePosition) {
             persistState();
         }
-        releaseVlc();
+        releaseExo();
         mVideoPrepared = false;
         mMediaPlayer = null;
         mVideoPage = null;
@@ -4501,23 +4544,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoSeekDragging = false;
         mVideoSeeking = false;
         mVideoSeekWaitingFinal = false;
+        mExoResumeApplied = false;
         mMainHandler.removeCallbacks(mClearVideoSeekLock);
         showVideoBar(false);
         updateVideoControls();
-        if (player == null) {
-            return;
+        if (player != null) {
+            try {
+                player.setOnPreparedListener(null);
+                player.setOnSeekCompleteListener(null);
+                player.setOnCompletionListener(null);
+                player.setOnVideoSizeChangedListener(null);
+                player.setOnErrorListener(null);
+                player.reset();
+                player.release();
+            } catch (Exception ignored) {
+            }
         }
-        try {
-            player.setOnPreparedListener(null);
-            player.setOnSeekCompleteListener(null);
-            player.setOnCompletionListener(null);
-            player.setOnVideoSizeChangedListener(null);
-            player.setOnErrorListener(null);
-            player.reset();
-            player.release();
-        } catch (Exception ignored) {
-        }
-        // Close the lazy network stream after MediaPlayer has released it.
+        // Close the lazy network stream after the engine has released it.
         if (mVideoDataSource != null) {
             try { mVideoDataSource.close(); } catch (Exception ignored) { }
             mVideoDataSource = null;

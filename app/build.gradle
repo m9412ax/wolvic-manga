@@ -737,10 +737,13 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
     implementation libs.zxing.core
 
-    // Mature open-source backend for SMB/115 video. LibVLC owns network
-    // access, buffering, decoding and seek instead of the old hand-written
-    // MediaPlayer + sparse-file cache path.
-    implementation 'org.videolan.android:libvlc-all:4.0.0-eap29'
+    // Mature open-source playback engine for SMB/115 video: AndroidX Media3
+    // ExoPlayer. Pure Java/MediaCodec (no extra .so), so it cannot collide
+    // with the app's native image decoders the way libvlc-all did. 115 uses
+    // ExoPlayer's own HTTP Range DataSource; SMB is fed by a custom DataSource
+    // that wraps the existing smbj random-access reader.
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-datasource:1.4.1'
 
     // AOSP
     aospImplementation libs.games.activity

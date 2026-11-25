@@ -61,12 +61,25 @@ public interface RemoteManga {
      *  it into a LOCAL file for smooth playback. Lazy like openVideo. */
     default PrefetchVideoDataSource.Reader openVideoReader(PageInfo page) { return null; }
 
-    /** MRL for the mature LibVLC backend. When non-null the reader delegates
-     *  the whole decoder/network/seek stack to LibVLC instead of MediaPlayer. */
-    default String openVideoMrl(PageInfo page) { return null; }
+    /** Unified playback descriptor handed to the Media3/ExoPlayer engine.
+     *  Either {@link #reader} is set (SMB: random-access byte source, played
+     *  through {@link ReaderVideoDataSource}) or {@link #headers} is set
+     *  (115/HTTP: ExoPlayer's own Range DataSource). */
+    default VideoStream openVideoStream(PageInfo page) { return null; }
 
-    /** Optional LibVLC media options, e.g. ":smb-user=..." or ":http-cookies=...". */
-    default String[] openVideoOptions(PageInfo page) { return null; }
+    /** How to play a remote video with ExoPlayer. */
+    final class VideoStream {
+        public final String uri;                              // MediaItem uri
+        public final java.util.Map<String, String> headers;    // HTTP headers (may be null)
+        public final PrefetchVideoDataSource.Reader reader;    // SMB byte source (may be null)
+
+        public VideoStream(String uri, java.util.Map<String, String> headers,
+                           PrefetchVideoDataSource.Reader reader) {
+            this.uri = uri;
+            this.headers = headers;
+            this.reader = reader;
+        }
+    }
 
     final class ChapterInfo {
         public final String id;     // stable remote id/path

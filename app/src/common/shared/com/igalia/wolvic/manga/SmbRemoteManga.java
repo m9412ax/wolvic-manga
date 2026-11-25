@@ -86,24 +86,19 @@ public final class SmbRemoteManga implements RemoteManga {
     @Override
     public List<PageInfo> listPages(ChapterInfo chapter) throws Exception {
         List<MangaSmb.Entry> entries = MangaSmb.list(auth, chapter.id);
-        List<MangaSmb.Entry> mediaEntries = new ArrayList<>();
+        List<MangaFileCore.Entry> mediaEntries = new ArrayList<>();
         for (MangaSmb.Entry e : entries) {
             if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
-                mediaEntries.add(e);
+                mediaEntries.add(new MangaFileCore.Entry(e.name, e.path, false, e.size, e.modifiedMs));
             }
         }
-        // Order exactly like the file browser: videos first (when enabled),
-        // then the shared name/date sort. This keeps the cached page order and
-        // "next picture" identical to what the user sees in the folder list.
-        mediaEntries.sort(SortUtil.listingComparator(sortMode, videoFirst,
-                e -> false,
-                e -> MangaSettings.hasExtension(e.name, videoExt),
-                e -> e.name,
-                e -> e.modifiedMs));
+        // Shared file core: identical order to the SMB browser (videos first
+        // when enabled, then the same name/date sort mode).
+        mediaEntries = MangaFileCore.sortForListing(mediaEntries, sortMode, videoFirst, videoExt);
         List<PageInfo> out = new ArrayList<>();
         for (int i = 0; i < mediaEntries.size(); i++) {
-            MangaSmb.Entry e = mediaEntries.get(i);
-            out.add(new PageInfo(i, e.path, e.name, e.size, e.modifiedMs));
+            MangaFileCore.Entry e = mediaEntries.get(i);
+            out.add(new PageInfo(i, e.id, e.name, e.size, e.modifiedMs));
         }
         return out;
     }
@@ -133,22 +128,13 @@ public final class SmbRemoteManga implements RemoteManga {
     }
 
     @Override
-    public String openVideoMrl(PageInfo page) {
-        // LibVLC's smb2 module authenticates via the smb-user/smb-pwd/
-        // smb-domain media options, NOT credentials embedded in the URL.
-        // URL credentials are not decoded by libsmb2 on all builds and made
-        // SMB fail with "SMB authentication required".
-        return "smb://" + auth.host + "/" + encodePath(auth.share)
-                + (page.id == null || page.id.isEmpty() ? "" : "/" + encodePath(page.id));
-    }
-
-    @Override
-    public String[] openVideoOptions(PageInfo page) {
-        return new String[] {
-                ":smb-user=" + (auth.user == null ? "" : auth.user),
-                ":smb-pwd=" + (auth.pass == null ? "" : auth.pass),
-                ":smb-domain=" + (auth.domain == null ? "" : auth.domain)
-        };
+    public VideoStream openVideoStream(PageInfo page) {
+        // smbj random-access reader: ExoPlayer can seek anywhere on the share
+        // without pre-buffering the whole file. Credentials never leave the
+        // SMB client, so nothing is put into a URL.
+        String uri = "smb://" + auth.host + "/" + auth.share
+                + (page.id == null || page.id.isEmpty() ? "" : "/" + page.id);
+        return new VideoStream(uri, null, new SmbVideoDataSource(auth, page.id));
     }
 
     private static String encodePath(String path) {

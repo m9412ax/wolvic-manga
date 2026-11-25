@@ -92,24 +92,21 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     @Override
     public List<PageInfo> listPages(ChapterInfo chapter) throws Exception {
         List<Manga115Api.DirEntry> entries = Manga115Api.listDir(cookie, chapter.id);
-        List<Manga115Api.DirEntry> mediaEntries = new ArrayList<>();
+        List<MangaFileCore.Entry> mediaEntries = new ArrayList<>();
         for (Manga115Api.DirEntry e : entries) {
             if (!e.isDir && isMedia(e.name)
                     && (!e.pickCode.isEmpty() || !e.fileId.isEmpty())) {
-                mediaEntries.add(e);
+                String id = !e.pickCode.isEmpty() ? e.pickCode : e.fileId;
+                mediaEntries.add(new MangaFileCore.Entry(e.name, id, false, e.size, e.modifiedMs));
             }
         }
-        // Same order as the file browser (video-first + shared name/date sort).
-        mediaEntries.sort(SortUtil.listingComparator(sortMode, videoFirst,
-                e -> false,
-                e -> MangaSettings.hasExtension(e.name, videoExt),
-                e -> e.name,
-                e -> e.modifiedMs));
+        // Shared file core: same order as the 115 browser (video-first + the
+        // one name/date sort mode all three sources use).
+        mediaEntries = MangaFileCore.sortForListing(mediaEntries, sortMode, videoFirst, videoExt);
         List<PageInfo> out = new ArrayList<>();
         for (int i = 0; i < mediaEntries.size(); i++) {
-            Manga115Api.DirEntry e = mediaEntries.get(i);
-            String id = !e.pickCode.isEmpty() ? e.pickCode : e.fileId;
-            out.add(new PageInfo(i, id, e.name, e.size, e.modifiedMs));
+            MangaFileCore.Entry e = mediaEntries.get(i);
+            out.add(new PageInfo(i, e.id, e.name, e.size, e.modifiedMs));
         }
         android.util.Log.i(TAG, "listPages " + chapter.name + " (cid=" + chapter.id + ") -> "
                 + out.size());
@@ -142,21 +139,24 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     }
 
     @Override
-    public String openVideoMrl(PageInfo page) {
+    public VideoStream openVideoStream(PageInfo page) {
+        // 115 CDN speaks plain HTTP Range, so ExoPlayer's DefaultHttpDataSource
+        // does the transport (connection reuse, redirects, retries). Only the
+        // short-lived CDN cookie/UA need to be injected.
         Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, page.id);
-        return link == null ? null : link.url;
-    }
-
-    @Override
-    public String[] openVideoOptions(PageInfo page) {
-        Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, page.id);
-        if (link == null) return null;
-        return new String[] {
-                ":http-cookies=" + (link.cdnCookie == null ? "" : link.cdnCookie),
-                ":http-referrer=https://115.com/",
-                ":http-user-agent=Mozilla/5.0 115Browser/27.0.5.7",
-                ":http-reconnect=true"
-        };
+        if (link == null || link.url == null || link.url.isEmpty()) {
+            return null;
+        }
+        java.util.Map<String, String> headers = new java.util.HashMap<>();
+        String cdnCookie = link.cdnCookie == null ? "" : link.cdnCookie.trim();
+        if (!cdnCookie.isEmpty()) {
+            headers.put("Cookie", cdnCookie);
+        } else if (cookie != null && !cookie.isEmpty()) {
+            headers.put("Cookie", cookie);
+        }
+        headers.put("Referer", "https://115.com/");
+        headers.put("User-Agent", "Mozilla/5.0 115Browser/27.0.5.7");
+        return new VideoStream(link.url, headers, null);
     }
 
     private boolean isMedia(String name) {
