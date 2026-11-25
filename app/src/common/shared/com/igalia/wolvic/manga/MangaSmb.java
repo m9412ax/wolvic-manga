@@ -8,11 +8,13 @@ package com.igalia.wolvic.manga;
 import android.util.Log;
 
 import com.hierynomus.mssmb2.SMB2CreateDisposition;
+import com.hierynomus.mssmb2.SMB2Dialect;
 import com.hierynomus.mssmb2.SMB2ShareAccess;
 import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.msfscc.FileAttributes;
 import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
 import com.hierynomus.smbj.SMBClient;
+import com.hierynomus.smbj.SmbConfig;
 import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.connection.Connection;
 import com.hierynomus.smbj.session.Session;
@@ -38,6 +40,38 @@ import java.util.Set;
 public final class MangaSmb {
 
     private static final String TAG = "MangaSmb";
+
+    /**
+     * SMB client tuned exactly like NextPlayer's proven SMB2 client
+     * (github.com/anilbeesetti/nextplayer, core/media SmbClient):
+     *  - 8 MB read/write buffers instead of smbj's small defaults, so one
+     *    SMB2 READ returns megabytes instead of a few hundred KB;
+     *  - signing/encryption explicitly off (avoids the Android Key.getEncoded
+     *    crash and the extra per-packet work);
+     *  - explicit 3.1.1/3.0/2.1/2.0.2 dialect list with multi-protocol
+     *    negotiate, which is what makes it work against Windows, Samba and
+     *    most NAS boxes.
+     * Read throughput is what a 4K stream lives or dies by.
+     */
+    public static SMBClient newClient() {
+        SmbConfig config = SmbConfig.builder()
+                .withTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                .withSoTimeout(35, java.util.concurrent.TimeUnit.SECONDS)
+                .withDialects(
+                        SMB2Dialect.SMB_3_1_1,
+                        SMB2Dialect.SMB_3_0_2,
+                        SMB2Dialect.SMB_3_0,
+                        SMB2Dialect.SMB_2_1,
+                        SMB2Dialect.SMB_2_0_2)
+                .withDfsEnabled(false)
+                .withMultiProtocolNegotiate(true)
+                .withSigningRequired(false)
+                .withEncryptData(false)
+                .withReadBufferSize(8 * 1024 * 1024)
+                .withWriteBufferSize(8 * 1024 * 1024)
+                .build();
+        return new SMBClient(config);
+    }
 
     public static final class Entry {
         public final String path;      // path relative to the share root, '/' separated
@@ -104,7 +138,7 @@ public final class MangaSmb {
 
     /** Lists direct children of [relativePath] inside the share root. */
     public static List<Entry> list(Auth auth, String relativePath) throws Exception {
-        SMBClient client = new SMBClient();
+        SMBClient client = newClient();
         Connection connection = null;
         try {
             connection = client.connect(auth.host);
@@ -139,7 +173,7 @@ public final class MangaSmb {
     /** Streams one SMB file to a local destination. */
     public static long download(Auth auth, String relativePath, java.io.File destination,
                                 ProgressListener listener) throws Exception {
-        SMBClient client = new SMBClient();
+        SMBClient client = newClient();
         Connection connection = null;
         try {
             connection = client.connect(auth.host);
@@ -245,7 +279,7 @@ public final class MangaSmb {
      */
     public static int mirrorManga(Auth auth, String remoteRoot, java.io.File localRoot,
                                   String[] mediaExtensions, ProgressListener listener) throws Exception {
-        SMBClient client = new SMBClient();
+        SMBClient client = newClient();
         Connection connection = null;
         try {
             connection = client.connect(auth.host);

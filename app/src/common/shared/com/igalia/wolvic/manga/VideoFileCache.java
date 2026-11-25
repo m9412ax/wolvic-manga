@@ -23,7 +23,7 @@ import java.io.RandomAccessFile;
 public final class VideoFileCache {
 
     private static final String TAG = "VideoFileCache";
-    private static final int CHUNK = 256 * 1024;
+    private static final int CHUNK = 1024 * 1024;
 
     public interface Callback {
         /** Enough of the head is on disk to start playback. */

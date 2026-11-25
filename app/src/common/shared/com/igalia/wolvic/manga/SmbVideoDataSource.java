@@ -27,7 +27,15 @@ import java.util.EnumSet;
 public final class SmbVideoDataSource implements PrefetchVideoDataSource.Reader {
 
     private static final String TAG = "SmbVideoDS";
-    private static final int SMB_CHUNK = 256 * 1024;
+    // Ported from NextPlayer: ask smbj for multi-MB reads and keep a 4 MB
+    // window in memory, so a 64 KB decoder read does not cost a network
+    // round-trip. This is what turns a 4K stream from "rebuffer forever" into
+    // smooth playback on a LAN share.
+    private static final int SMB_CHUNK = 2 * 1024 * 1024;
+    private static final int WINDOW = 4 * 1024 * 1024;
+    private final byte[] window = new byte[WINDOW];
+    private long windowStart = -1L;
+    private int windowLen = 0;
 
     private final MangaSmb.Auth auth;
     private final String path;
@@ -55,7 +63,7 @@ public final class SmbVideoDataSource implements PrefetchVideoDataSource.Reader 
     private synchronized boolean ensureOpen() {
         if (file != null) return true;
         try {
-            client = new SMBClient();
+            client = MangaSmb.newClient();
             connection = client.connect(auth.host);
             session = connection.authenticate(new AuthenticationContext(
                     auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
@@ -86,14 +94,29 @@ public final class SmbVideoDataSource implements PrefetchVideoDataSource.Reader 
         if (!ensureOpen() || len <= 0) return -1;
         if (position >= size) return -1;
         int want = (int) Math.min(len, size - position);
+        if (windowStart >= 0 && position >= windowStart
+                && position + want <= windowStart + windowLen) {
+            System.arraycopy(window, (int) (position - windowStart), buf, off, want);
+            return want;
+        }
+        int fetch = (int) Math.min(WINDOW, size - position);
         int filled = 0;
-        while (filled < want) {
-            int chunk = Math.min(SMB_CHUNK, want - filled);
-            int n = file.read(buf, position + filled, off + filled, chunk);
+        while (filled < fetch) {
+            int chunk = Math.min(SMB_CHUNK, fetch - filled);
+            int n = file.read(window, position + filled, filled, chunk);
             if (n <= 0) break;
             filled += n;
         }
-        return filled > 0 ? filled : -1;
+        if (filled <= 0) {
+            windowStart = -1L;
+            windowLen = 0;
+            return -1;
+        }
+        windowStart = position;
+        windowLen = filled;
+        int n = Math.min(want, filled);
+        System.arraycopy(window, 0, buf, off, n);
+        return n;
     }
 
     @Override
