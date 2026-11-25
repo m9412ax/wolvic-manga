@@ -4306,16 +4306,43 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // A local file gives MediaPlayer its full (OS-cached, large) buffer and
         // removes all network jitter from the decoder - the only reliable fix
         // for the every-few-seconds stutter of MediaDataSource streaming.
-        // Remote videos (SMB/115) are tiny marker files. Download the real
-        // bytes to a LOCAL file in the background, then play that local path.
-        // This is the path that played smoothly before; ExoPlayer was removed
-        // because streaming straight off the share kept rebuffering.
+        // Remote videos (SMB/115) are tiny marker files. Playback is done the
+        // way NextPlayer does it (Media3 ExoPlayer + a stream opened at the
+        // byte offset) instead of the old sparse local file: the local-file
+        // path needed a "wait until this region is downloaded" lock for every
+        // seek, and repeated seeks thrashed that lock until the UI looked
+        // frozen. Streaming has no such lock - a seek just reopens the stream.
         if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
-            startLocalVideoCache(player, page, generation);
+            RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
+            try { player.reset(); player.release(); } catch (Throwable ignored) { }
+            if (mMediaPlayer == player) mMediaPlayer = null;
+            startExoVideo(page, pi);
             return;
         }
         prepareLocalPathVideo(player, page);
     }
+
+    /** A seek that never becomes ready used to leave the buffering overlay on
+     *  screen forever, which reads as a frozen reader. After 12 s we surface a
+     *  hint and give the UI back while the loader keeps working. */
+    private long mExoBufferingSince;
+    private final Runnable mExoStallCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (mDestroyed || mExoPlayer == null || mExoBufferingSince == 0L) {
+                return;
+            }
+            long waited = android.os.SystemClock.uptimeMillis() - mExoBufferingSince;
+            if (waited >= 12000L) {
+                Log.w(TAG, "exo buffering stuck " + waited + "ms, releasing UI");
+                mExoBufferingSince = 0L;
+                hideLoading();
+                showHint("缓冲超时（" + (waited / 1000) + "s），可再拖一次或返回");
+                return;
+            }
+            mMainHandler.postDelayed(this, 2000L);
+        }
+    };
 
     /** Opens an SMB/115 video with Media3 ExoPlayer, the mature open-source
      *  playback engine. ExoPlayer handles network buffering, seeking, A/V sync
@@ -4381,7 +4408,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             // up as a rebuffer ("一直在缓冲"). 30 s minimum,
                             // 180 s max, 192 MB target.
                             .setLoadControl(new androidx.media3.exoplayer.DefaultLoadControl.Builder()
-                                    .setBufferDurationsMs(30000, 180000, 2000, 5000)
+                                    // 800 ms to start / 1500 ms after a rebuffer:
+                                    // the old 2 s/5 s values made every seek sit
+                                    // on "正在缓冲" for seconds before resuming.
+                                    .setBufferDurationsMs(30000, 180000, 800, 1500)
                                     .setTargetBufferBytes(192 * 1024 * 1024)
                                     .build())
                             .build();
@@ -4394,9 +4424,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         case androidx.media3.common.Player.STATE_BUFFERING:
                             if (!mVideoPlayFailed) {
                                 showLoading("正在缓冲视频…", -1, -1, -1, -1);
+                                if (mExoBufferingSince == 0L) {
+                                    mExoBufferingSince = android.os.SystemClock.uptimeMillis();
+                                    mMainHandler.removeCallbacks(mExoStallCheck);
+                                    mMainHandler.postDelayed(mExoStallCheck, 2000L);
+                                }
                             }
                             break;
                         case androidx.media3.common.Player.STATE_READY:
+                            mExoBufferingSince = 0L;
+                            mMainHandler.removeCallbacks(mExoStallCheck);
                             mVideoPrepared = true;
                             mVideoPlayFailed = false;
                             hideLoading();
@@ -4420,6 +4457,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             }
                             break;
                         case androidx.media3.common.Player.STATE_ENDED:
+                            mExoBufferingSince = 0L;
+                            mMainHandler.removeCallbacks(mExoStallCheck);
                             mVideoCompleted = true;
                             progressPrefs().edit().putInt(videoProgressKey(page), 0).apply();
                             if (mSettings.bool(MangaSettings.READER_VIDEO_NEXT_ON_END)
@@ -4477,6 +4516,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void releaseExo() {
+        mExoBufferingSince = 0L;
+        mMainHandler.removeCallbacks(mExoStallCheck);
         final androidx.media3.exoplayer.ExoPlayer exo = mExoPlayer;
         mExoPlayer = null;
         if (exo != null) {
