@@ -506,7 +506,7 @@ public class MangaFileBrowser extends LinearLayout {
                             if (mSettingsClick != null) {
                                 right.divider();
                                 right.section("更多");
-                                right.toggleChipsRaw(new String[]{"⚙  本来源的设置 / 登录"},
+                                right.toggleChipsRaw(new String[]{"⚙  设置 / 登录"},
                                         new boolean[]{false}, i -> {
                                             Runnable action = mSettingsClick;
                                             s.dismiss();

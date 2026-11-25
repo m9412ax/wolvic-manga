@@ -728,12 +728,23 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                 && mBaseTrayWidth == width) {
             return;
         }
+        int previousHeight = p.height;
         p.height = height;
         p.width = width;
         // Keep the control bar the same physical height while letting it grow
         // horizontally, otherwise extra buttons would be squeezed, not shown.
         if (mOriginalWorldWidth > 0f && baseWidth > 0) {
             p.worldWidth = mOriginalWorldWidth * (width / (float) baseWidth);
+        }
+        // The widget is anchored by its CENTRE, so switching between the 72dp
+        // two-row tray and the 98dp three-row (reader) tray used to push the
+        // button row up/down by half the difference - the file manager bar and
+        // the reader bar looked vertically staggered. Pin the BOTTOM edge
+        // instead: translationY is in "units" (1 m = 360), while worldWidth is
+        // in metres, so a pixel maps to (worldWidth / width) * 360 units.
+        if (previousHeight > 0 && height != previousHeight && width > 0) {
+            float unitsPerPx = (p.worldWidth / (float) width) * 360.0f;
+            p.translationY += (height - previousHeight) * 0.5f * unitsPerPx;
         }
         mBaseTrayHeight = height;
         mBaseTrayWidth = width;

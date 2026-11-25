@@ -142,10 +142,10 @@
     <item name="tray_world_z" format="float" type="dimen">-2.5</item>
     <item name="tray_world_width" format="float" type="dimen">1.95</item>
     <dimen name="tray_width">340dp</dimen>
-    <dimen name="tray_height">66dp</dimen>
+    <dimen name="tray_height">72dp</dimen>
     <!-- Reader mode shows three rows (status bar + page scrubber + buttons),
          so the tray surface is taller than the browser/manga two-row tray. -->
-    <dimen name="tray_height_reader">88dp</dimen>
+    <dimen name="tray_height_reader">98dp</dimen>
     <dimen name="tray_button_size">40dp</dimen>
     <!-- The density of the tray tooltips is the default one. -->
     <item name="tray_tooltip_density" format="float" type="dimen">1.0</item>

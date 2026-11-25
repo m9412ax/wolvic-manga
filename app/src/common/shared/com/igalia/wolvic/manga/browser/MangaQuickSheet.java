@@ -76,7 +76,6 @@ public class MangaQuickSheet extends FrameLayout {
     private static final int COLOR_CHIP_FILL = 0xFF232B2E;
     private static final int COLOR_STROKE = 0x33FFFFFF;
 
-    private final LinearLayout mBody;
     private final LinearLayout mFooter;
     private final ScrollView mScroll;
     private final TextView mTitle;
@@ -250,40 +249,60 @@ public class MangaQuickSheet extends FrameLayout {
     }
 
     /**
-     * Segmented pill: one rounded container, selected entry filled. Mirrors
-     * NextPlayer's 媒体浏览模式 / 媒体布局 rows.
+     * Segmented pill: rounded containers with the selected entry filled.
+     * Mirrors NextPlayer's 媒体浏览模式 / 媒体布局 rows.
+     *
+     * <p>A row only ever holds 2-4 entries: extension sources can expose twenty
+     * genres, and squeezing them into one row made every label unreadable and
+     * untappable, so long lists wrap into several stacked rows.
      */
     public MangaQuickSheet segments(String[] labels, int selected, IntPick pick) {
-        LinearLayout row = new LinearLayout(getContext());
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setBackground(pill(0x00000000, COLOR_STROKE, 22));
-        row.setPadding(dp(3), dp(3), dp(3), dp(3));
-        for (int i = 0; i < labels.length; i++) {
-            final int index = i;
-            TextView item = new TextView(getContext());
-            item.setText(i == selected ? "✓  " + labels[i] : labels[i]);
-            item.setTextSize(16f);
-            item.setSingleLine(true);
-            item.setEllipsize(TextUtils.TruncateAt.END);
-            item.setGravity(Gravity.CENTER);
-            item.setHeight(dp(38));
-            item.setTextColor(i == selected ? COLOR_TEXT : 0xFFC0C9C7);
-            item.setBackground(i == selected
-                    ? pill(COLOR_SEGMENT_FILL, 0x00000000, 19)
-                    : pill(0x00000000, 0x00000000, 19));
-            item.setOnClickListener(v -> {
-                pick.onPick(index);
-                render();
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            row.addView(item, lp);
+        if (labels == null || labels.length == 0) {
+            return this;
         }
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        rowLp.bottomMargin = dp(4);
-        mBody.addView(row, rowLp);
+        int total = 0;
+        for (String label : labels) {
+            total += label == null ? 0 : label.length();
+        }
+        int avg = total / Math.max(1, labels.length);
+        int perRow = labels.length <= 4 ? labels.length : 3;
+        if (avg > 7) {
+            perRow = Math.min(perRow, 2);
+        }
+        for (int start = 0; start < labels.length; start += perRow) {
+            int end = Math.min(labels.length, start + perRow);
+            LinearLayout row = new LinearLayout(getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setBackground(pill(0x00000000, COLOR_STROKE, 22));
+            row.setPadding(dp(3), dp(3), dp(3), dp(3));
+            for (int i = start; i < end; i++) {
+                final int index = i;
+                TextView item = new TextView(getContext());
+                item.setText(i == selected ? "✓  " + labels[i] : labels[i]);
+                item.setTextSize(16f);
+                item.setSingleLine(true);
+                item.setEllipsize(TextUtils.TruncateAt.END);
+                item.setGravity(Gravity.CENTER);
+                item.setHeight(dp(38));
+                item.setPadding(dp(6), 0, dp(6), 0);
+                item.setTextColor(i == selected ? COLOR_TEXT : 0xFFC0C9C7);
+                item.setBackground(i == selected
+                        ? pill(COLOR_SEGMENT_FILL, 0x00000000, 19)
+                        : pill(0x00000000, 0x00000000, 19));
+                item.setOnClickListener(v -> {
+                    pick.onPick(index);
+                    render();
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+                row.addView(item, lp);
+            }
+            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rowLp.bottomMargin = dp(6);
+            mBody.addView(row, rowLp);
+        }
         return this;
     }
 
