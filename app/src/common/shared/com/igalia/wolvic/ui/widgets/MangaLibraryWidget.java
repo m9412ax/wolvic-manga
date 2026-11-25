@@ -1753,6 +1753,7 @@ public class MangaLibraryWidget extends UIWidget {
         }
 
         // Unified browser: identical cards / breadcrumb / sorting as local files.
+        final String[] smbVideoExt = mSettings.videoExtensions();
         List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (MangaSmb.Entry entry : mSmbEntries) {
             MangaFileBrowser.Entry e = new MangaFileBrowser.Entry(
