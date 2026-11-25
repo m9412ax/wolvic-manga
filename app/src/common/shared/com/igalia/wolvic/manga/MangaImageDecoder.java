@@ -66,6 +66,48 @@ public final class MangaImageDecoder {
         return DIMENSIONS.get(fileKey(file));
     }
 
+    /** Background probe so the reader never calls BitmapFactory on the UI
+     *  thread. A 65-page SMB folder used to decode every page's bounds inside
+     *  showPage() and froze the widget for 5 s+ (system logged
+     *  topResumeLossTimeout). Now the size is fetched off the UI thread and the
+     *  caller is pinged once it is cached. */
+    private static final java.util.concurrent.ExecutorService DIM_PROBE =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "manga-dim-probe");
+                t.setPriority(Thread.NORM_PRIORITY - 1);
+                t.setDaemon(true);
+                return t;
+            });
+    private static final java.util.Set<String> DIM_INFLIGHT =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final android.os.Handler DIM_MAIN =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+
+    /** Fetches the image size in the background (deduplicated per file) and
+     *  calls [onDone] on the main thread once it is cached. Never blocks the
+     *  caller. */
+    public static void requestDimensions(@Nullable final File file,
+                                         @Nullable final Runnable onDone) {
+        if (file == null) return;
+        final String key = fileKey(file);
+        if (DIMENSIONS.get(key) != null) return;
+        if (!DIM_INFLIGHT.add(key)) return;
+        DIM_PROBE.execute(() -> {
+            try {
+                if (DIMENSIONS.get(key) == null) {
+                    BitmapFactory.Options o = new BitmapFactory.Options();
+                    o.inJustDecodeBounds = true;
+                    decodeBounds(file, o);
+                }
+            } catch (Throwable ignored) {
+                // Unknown size is handled by the caller (single-page fallback).
+            } finally {
+                DIM_INFLIGHT.remove(key);
+                if (onDone != null) DIM_MAIN.post(onDone);
+            }
+        });
+    }
+
     /** Kotlin names its factory ImageDecoder.new(InputStream); "new" is a
      *  Java keyword, so invoke it reflectively. */
     private static Object createNativeDecoder(java.io.InputStream in) throws Exception {

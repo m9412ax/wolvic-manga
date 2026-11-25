@@ -1206,6 +1206,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             } else {
                 showHint("点击画面播放视频");
             }
+            // Watchdog: an autoplay attempt that ran before the TextureView had
+            // a valid Surface used to die silently (no player, no hint, black
+            // frame). Retry until an engine exists.
+            mVideoWatchdogTries = 0;
+            scheduleVideoWatchdog();
             return;
         }
 
@@ -1364,7 +1369,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (MangaImageDecoder.isAvif(first)) {
             return;
         }
-        File second = mDoublePage && mIndex + 1 < mPages.size() && !isVideoIndex(mIndex + 1)
+        // Spread decision comes from the SAME predicate paging uses
+        // (startsTwoPageSpread). Previously display merged whenever two pages
+        // happened to be portrait while paging used another rule, which is how
+        // a "next page" could silently skip the second half of a spread.
+        File second = mDoublePage && !isContinuous() && startsTwoPageSpread(mIndex)
                 ? mPages.get(mIndex + 1) : null;
         int[] dimensions = MangaImageDecoder.cachedDimensions(first);
         if (second == null && (dimensions == null
@@ -1746,8 +1755,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         PageLoad load = mPendingPages.get(key);
         if (load == null) {
-            File second = mDoublePage && !isContinuous() && index + 1 < mPages.size()
-                    && !isVideoIndex(index + 1) ? mPages.get(index + 1) : null;
+            File second = mDoublePage && !isContinuous() && startsTwoPageSpread(index)
+                    ? mPages.get(index + 1) : null;
             load = new PageLoad(key, index, mPages.get(index), second,
                     pageCacheBudget(), mSettings.bool(MangaSettings.READER_CROP_BORDERS));
             mPendingPages.put(key, load);
@@ -2350,6 +2359,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         } catch (Exception ignored) { }
     }
 
+    /** True when the page is a portrait still, judged ONLY from the cached
+     *  size. Decoding bounds here used to run once per page from
+     *  pageGroupAnchors(), so opening a 65-page SMB folder decode-blocked the
+     *  UI thread for 5 s (system: topResumeLossTimeout) and looked like a
+     *  frozen black reader. Unknown sizes are probed in the background and the
+     *  page is shown alone until the answer arrives; display, preload and
+     *  paging all use THIS predicate, so they can never disagree. */
     private boolean isPortraitPage(File file) {
         if (file == null) {
             return false;
@@ -2358,13 +2374,35 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (cached != null && cached.length >= 2 && cached[0] > 0 && cached[1] > 0) {
             return cached[1] >= cached[0];
         }
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        if (!MangaImageDecoder.decodeBounds(file, bounds) || bounds.outWidth <= 0
-                || bounds.outHeight <= 0) {
-            return false;
-        }
-        return bounds.outHeight >= bounds.outWidth;
+        MangaImageDecoder.requestDimensions(file, mDimensionsProbed);
+        return false;
     }
+
+    /** Fired on the main thread after a background size probe. If the answer
+     *  turns the current single page into a spread, rebuild it once. */
+    private int mLastSpreadRebuildIndex = -1;
+    private final Runnable mDimensionsProbed = new Runnable() {
+        @Override
+        public void run() {
+            if (mDestroyed || mPages.isEmpty() || !mDoublePage || isContinuous()) {
+                return;
+            }
+            if (mIndex < 0 || mIndex >= mPages.size()) {
+                return;
+            }
+            if (!startsTwoPageSpread(mIndex)) {
+                return;
+            }
+            if (mLastSpreadRebuildIndex == mIndex) {
+                return;   // already rebuilt for this page
+            }
+            // Size known now -> the cached display was decoded as a single
+            // page. Rebuild it as a spread exactly once.
+            mLastSpreadRebuildIndex = mIndex;
+            Log.i(TAG, "dimensions probed, rebuilding spread at " + mIndex);
+            requestPage(mIndex);
+        }
+    };
 
     private boolean isPortraitIndex(int index) {
         return index >= 0 && index < mPages.size() && !isVideoIndex(index)
@@ -4091,6 +4129,34 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    /** Retries an autoplay attempt that ran before the Surface existed. Without
+     *  this the page stayed black with no hint and no player (the "视频打不开"
+     *  case that left no trace in logcat). */
+    private int mVideoWatchdogTries;
+    private final Runnable mVideoWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (mDestroyed || !isVideoPage() || hasVideoEngine()) return;
+            if (mVideoWatchdogTries++ >= 8) {
+                showHint("视频未能启动：" + mPages.get(mIndex).getName());
+                return;
+            }
+            File page = mPages.get(mIndex);
+            Log.i(TAG, "video watchdog retry " + mVideoWatchdogTries
+                    + " file=" + page.getName());
+            playVideo(page);
+            mMainHandler.postDelayed(this, 1000L);
+        }
+    };
+
+    private void scheduleVideoWatchdog() {
+        mMainHandler.removeCallbacks(mVideoWatchdog);
+        if (!mSettings.bool(MangaSettings.READER_VIDEO_AUTOPLAY)) {
+            return;   // user will start it by tapping
+        }
+        mMainHandler.postDelayed(mVideoWatchdog, 1200L);
+    }
+
     private void playVideo(File page) {
         if (mDestroyed || !isVideoPage() || !page.equals(mPages.get(mIndex))) {
             return;
@@ -4101,6 +4167,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (mVideoSurface == null || !mVideoSurface.isValid()) {
             mPendingVideoPage = page;
+            Log.i(TAG, "playVideo deferred: surface not ready yet");
             return; // Normal asynchronous surface creation, not a playback failure.
         }
         Log.i(TAG, "playVideo file=" + page.getName());
@@ -4229,7 +4296,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // A local file gives MediaPlayer its full (OS-cached, large) buffer and
         // removes all network jitter from the decoder - the only reliable fix
         // for the every-few-seconds stutter of MediaDataSource streaming.
-        if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
+        if (RemoteManga.isVideoMarker(page)) {
+            if (mRemoteManga == null) {
+                // A marker without its remote source cannot be streamed: it is
+                // a few bytes of text, so MediaPlayer would fail with a
+                // confusing "无法播放". Say what actually happened.
+                Log.e(TAG, "video marker without remote source: " + page.getName());
+                try { player.reset(); player.release(); } catch (Throwable ignored) { }
+                if (mMediaPlayer == player) mMediaPlayer = null;
+                mVideoPlayFailed = true;
+                hideLoading();
+                showHint("远程视频源已断开，请重新进入：" + page.getName());
+                return;
+            }
             RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
             // ExoPlayer owns network reads, buffering, seeking and decoding.
             // Release the unused Android MediaPlayer first: two engines on one
@@ -4265,8 +4344,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mVideoSurface == null) {
-            // SurfaceTexture not ready yet; onSurfaceTextureAvailable() retries.
+            // SurfaceTexture not ready yet; the watchdog retries shortly.
             mPendingVideoPage = page;
+            Log.i(TAG, "startExoVideo deferred: surface not ready");
+            scheduleVideoWatchdog();
             return;
         }
         showLoading("正在连接视频…", -1, -1, -1, -1);
@@ -4378,6 +4459,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(stream.uri));
             exo.setPlayWhenReady(true);
             exo.prepare();
+            mMainHandler.removeCallbacks(mVideoWatchdog);
             mVideoDataSource = null;
             Log.i(TAG, "ExoPlayer open " + stream.uri);
         } catch (Throwable e) {
@@ -4530,6 +4612,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void stopVideo(boolean savePosition) {
         stopVideoTick();
+        mMainHandler.removeCallbacks(mVideoWatchdog);
         MediaPlayer player = mMediaPlayer;
         // Save BEFORE clearing the engine, otherwise persistState() has no
         // player to read the current playback position from.
