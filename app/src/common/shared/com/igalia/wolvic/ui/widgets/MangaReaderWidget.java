@@ -1193,6 +1193,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // SurfaceTexture delivered by onSurfaceTextureAvailable().
             // No synthetic texture, no path tricks, no extra layout work.
             mPageImage.setVisibility(GONE);
+            // Cap the rasterised panel size before the Surface is (re)created,
+            // otherwise the TextureView keeps the large buffer for this frame.
+            applyVideoRenderBudget();
             mVideoTexture.setVisibility(VISIBLE);
             // Keep key/joystick events flowing to the reader: a TextureView or
             // the video bar's SeekBar/Buttons can steal focus, which made the
@@ -1230,6 +1233,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
 
+        // Back to a still image: give the panel its full pixel size again so
+        // text stays sharp.
+        restoreRenderBudget();
         showVideoBar(false);
         stopVideoTick();
         if (mVideoProgressTrack != null) {
@@ -4143,6 +4149,62 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mLastVideoTransformLog = transformLog;
             Log.i(TAG, transformLog);
         }
+    }
+
+    /**
+     * Pixel size the panel is RASTERISED at while a video is on screen.
+     *
+     * Measured on the device (Pico Neo 3): reading 4K images costs FrmGpu ~3 ms
+     * at 72 fps, but as soon as a 4K video is drawn the same frame costs
+     * 41-51 ms and the app drops to 19-25 fps with GPU pegged at 99%. Decode is
+     * NOT the problem (OMX.qcom.video.decoder.avc, 3840x2160, use_surface=1);
+     * the cost is filling a 5704x3373 widget texture with the video every
+     * frame. The system player and Thru3D never do that - they hand a single
+     * video layer straight to the compositor.
+     *
+     * We cannot hand a layer to Wolvic's compositor from inside a UIWidget, so
+     * the practical lever is the size of the texture we rasterise into. The
+     * video keeps decoding at full 4K; only the panel texture is capped, and
+     * worldWidth is untouched so the panel stays the same size in VR.
+     */
+    private static final int VIDEO_MAX_RENDER_WIDTH = 2560;
+    private int mSavedRenderWidth = -1;
+    private int mSavedRenderHeight = -1;
+
+    private void applyVideoRenderBudget() {
+        WidgetPlacement p = getPlacement();
+        if (p == null || p.width <= 0 || mSavedRenderWidth > 0) {
+            return;
+        }
+        if (p.width <= VIDEO_MAX_RENDER_WIDTH) {
+            Log.i(TAG, "video render budget: panel already " + p.width + "px");
+            return;
+        }
+        final float f = (float) VIDEO_MAX_RENDER_WIDTH / (float) p.width;
+        mSavedRenderWidth = p.width;
+        mSavedRenderHeight = p.height;
+        p.width = VIDEO_MAX_RENDER_WIDTH;
+        p.height = Math.max(2, Math.round(p.height * f));
+        if (mWidgetManager != null) {
+            mWidgetManager.updateWidget(this);
+        }
+        Log.i(TAG, "video render budget " + mSavedRenderWidth + "x" + mSavedRenderHeight
+                + " -> " + p.width + "x" + p.height);
+    }
+
+    private void restoreRenderBudget() {
+        if (mSavedRenderWidth <= 0) {
+            return;
+        }
+        WidgetPlacement p = getPlacement();
+        p.width = mSavedRenderWidth;
+        p.height = mSavedRenderHeight;
+        mSavedRenderWidth = -1;
+        mSavedRenderHeight = -1;
+        if (mWidgetManager != null) {
+            mWidgetManager.updateWidget(this);
+        }
+        Log.i(TAG, "video render budget restored " + p.width + "x" + p.height);
     }
 
     private int dp(int value) {
