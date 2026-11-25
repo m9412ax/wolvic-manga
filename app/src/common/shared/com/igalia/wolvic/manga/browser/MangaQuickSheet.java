@@ -80,6 +80,8 @@ public class MangaQuickSheet extends FrameLayout {
     private final LinearLayout mFooter;
     private final ScrollView mScroll;
     private final TextView mTitle;
+    /** Where the builder methods append; switched while rendering a column. */
+    private LinearLayout mBody;
 
     private Renderer mRenderer;
     private DismissListener mListener;
@@ -172,6 +174,41 @@ public class MangaQuickSheet extends FrameLayout {
 
     // ------------------------------------------------------------ builders
 
+    /**
+     * Splits the body into two side-by-side columns. The manga panel is a
+     * landscape 16:9-ish window, so stacking everything vertically would make
+     * the sheet taller than the panel and hide the lower sections.
+     */
+    public MangaQuickSheet columns(Renderer left, Renderer right) {
+        LinearLayout row = new LinearLayout(getContext());
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout colLeft = new LinearLayout(getContext());
+        colLeft.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout colRight = new LinearLayout(getContext());
+        colRight.setOrientation(LinearLayout.VERTICAL);
+        row.addView(colLeft, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        rightLp.leftMargin = dp(18);
+        row.addView(colRight, rightLp);
+        mBody.addView(row, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout host = mBody;
+        mBody = colLeft;
+        if (left != null) {
+            left.render(this);
+        }
+        mBody = colRight;
+        if (right != null) {
+            right.render(this);
+        }
+        mBody = host;
+        return this;
+    }
+
     /** Section heading, e.g. 媒体布局 / 排序 / 字段. */
     public MangaQuickSheet section(String text) {
         TextView tv = new TextView(getContext());
@@ -182,8 +219,8 @@ public class MangaQuickSheet extends FrameLayout {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(14);
-        lp.bottomMargin = dp(8);
+        lp.topMargin = dp(10);
+        lp.bottomMargin = dp(6);
         mBody.addView(tv, lp);
         return this;
     }
@@ -193,7 +230,7 @@ public class MangaQuickSheet extends FrameLayout {
         line.setBackgroundColor(0x1FFFFFFF);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
-        lp.topMargin = dp(12);
+        lp.topMargin = dp(9);
         mBody.addView(line, lp);
         return this;
     }
@@ -229,7 +266,7 @@ public class MangaQuickSheet extends FrameLayout {
             item.setSingleLine(true);
             item.setEllipsize(TextUtils.TruncateAt.END);
             item.setGravity(Gravity.CENTER);
-            item.setHeight(dp(42));
+            item.setHeight(dp(38));
             item.setTextColor(i == selected ? COLOR_TEXT : 0xFFC0C9C7);
             item.setBackground(i == selected
                     ? pill(COLOR_SEGMENT_FILL, 0x00000000, 19)
@@ -291,7 +328,7 @@ public class MangaQuickSheet extends FrameLayout {
             circle.setColor(on ? COLOR_SEGMENT_FILL : COLOR_CHIP_FILL);
             circle.setStroke(Math.max(1, dp(1)), on ? COLOR_ACCENT : COLOR_STROKE);
             glyph.setBackground(circle);
-            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(50), dp(50));
+            LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(dp(46), dp(46));
             gp.gravity = Gravity.CENTER_HORIZONTAL;
             cell.addView(glyph, gp);
 

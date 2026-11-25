@@ -456,65 +456,66 @@ public class MangaFileBrowser extends LinearLayout {
 
         MangaQuickSheet sheet = MangaQuickSheet.open(sheetHost(),
                 "快捷设置",
-                s -> {
-                    s.section("媒体布局");
-                    s.segments(new String[]{"列表", "网格"},
-                            draft.compact ? 0 : 1, i -> draft.compact = i == 0);
+                s -> s.columns(
+                        // Left column: layout + sort.
+                        left -> {
+                            left.section("媒体布局");
+                            left.segments(new String[]{"列表", "网格"},
+                                    draft.compact ? 0 : 1, i -> draft.compact = i == 0);
 
-                    s.divider();
-                    s.section("排序");
-                    s.roundChips(new String[]{"T", "◷", "▤"},
-                            new String[]{"标题", "日期", "大小"},
-                            SortUtil.keyOf(draft.sortMode), i -> {
-                                draft.sortMode = SortUtil.modeOf(i,
-                                        SortUtil.ascendingOf(draft.sortMode));
-                            });
-                    // Direction labels follow the key: A-Z for names, old/new
-                    // for dates, small/large for sizes.
-                    int draftKey = SortUtil.keyOf(draft.sortMode);
-                    String[] dirs = draftKey == 0
-                            ? new String[]{"A → Z", "Z → A"}
-                            : draftKey == 1
-                            ? new String[]{"旧 → 新", "新 → 旧"}
-                            : new String[]{"小 → 大", "大 → 小"};
-                    s.segments(dirs,
-                            SortUtil.ascendingOf(draft.sortMode) ? 0 : 1, i -> {
-                                draft.sortMode = SortUtil.modeOf(
-                                        SortUtil.keyOf(draft.sortMode), i == 0);
-                            });
+                            left.divider();
+                            left.section("排序");
+                            left.roundChips(new String[]{"T", "◷", "▤"},
+                                    new String[]{"标题", "日期", "大小"},
+                                    SortUtil.keyOf(draft.sortMode), i -> {
+                                        draft.sortMode = SortUtil.modeOf(i,
+                                                SortUtil.ascendingOf(draft.sortMode));
+                                    });
+                            // Direction labels follow the key: A-Z for names,
+                            // old/new for dates, small/large for sizes.
+                            int draftKey = SortUtil.keyOf(draft.sortMode);
+                            String[] dirs = draftKey == 0
+                                    ? new String[]{"A → Z", "Z → A"}
+                                    : draftKey == 1
+                                    ? new String[]{"旧 → 新", "新 → 旧"}
+                                    : new String[]{"小 → 大", "大 → 小"};
+                            left.segments(dirs,
+                                    SortUtil.ascendingOf(draft.sortMode) ? 0 : 1, i -> {
+                                        draft.sortMode = SortUtil.modeOf(
+                                                SortUtil.keyOf(draft.sortMode), i == 0);
+                                    });
+                        },
+                        // Right column: pinned groups, thumbnail shape, and the
+                        // entry point to the per-source settings.
+                        right -> {
+                            right.section("置顶");
+                            right.toggleChips(new String[]{"文件夹置顶", "视频置顶"},
+                                    new boolean[]{draft.folderFirst, draft.videoFirst}, i -> {
+                                        if (i == 0) {
+                                            draft.folderFirst = !draft.folderFirst;
+                                        } else {
+                                            draft.videoFirst = !draft.videoFirst;
+                                        }
+                                    });
 
-                    s.divider();
-                    s.section("置顶");
-                    s.toggleChips(new String[]{"文件夹置顶", "视频置顶"},
-                            new boolean[]{draft.folderFirst, draft.videoFirst}, i -> {
-                                if (i == 0) {
-                                    draft.folderFirst = !draft.folderFirst;
-                                } else {
-                                    draft.videoFirst = !draft.videoFirst;
-                                }
-                            });
+                            right.divider();
+                            right.section("缩略图比例");
+                            right.segments(new String[]{"16:9", "3:4", "9:16"},
+                                    draft.thumbRatio, i -> draft.thumbRatio = i);
 
-                    s.section("缩略图");
-                    s.segments(new String[]{"16:9", "3:4", "9:16"},
-                            draft.thumbRatio, i -> draft.thumbRatio = i);
-                    s.caption("缩略图大小在「设置 · 来源」里统一调整（影响本地 / SMB / 115 / 扩展源）。");
-
-                    // The header no longer carries a settings button, so the
-                    // per-source config (SMB host, 115 login, WebDAV account)
-                    // stays one tap away from this sheet.
-                    if (mSettingsClick != null) {
-                        s.divider();
-                        s.section("更多");
-                        s.toggleChipsRaw(new String[]{"⚙  本来源的设置 / 登录"},
-                                new boolean[]{false}, i -> {
-                                    Runnable action = mSettingsClick;
-                                    s.dismiss();
-                                    if (action != null) {
-                                        post(action);
-                                    }
-                                });
-                    }
-                },
+                            if (mSettingsClick != null) {
+                                right.divider();
+                                right.section("更多");
+                                right.toggleChipsRaw(new String[]{"⚙  本来源的设置 / 登录"},
+                                        new boolean[]{false}, i -> {
+                                            Runnable action = mSettingsClick;
+                                            s.dismiss();
+                                            if (action != null) {
+                                                post(action);
+                                            }
+                                        });
+                            }
+                        }),
                 new MangaQuickSheet.DismissListener() {
                     @Override
                     public void onConfirm() {
