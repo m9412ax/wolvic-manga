@@ -97,6 +97,17 @@ public class MangaFileBrowser extends LinearLayout {
         }
     }
 
+    /** One extra header command (默认位置 / 加入书架 / 开始阅读 / 继续阅读). */
+    public static class Action {
+        public final String label;
+        public final Runnable run;
+
+        public Action(String label, Runnable run) {
+            this.label = label == null ? "" : label;
+            this.run = run;
+        }
+    }
+
     public interface Callback {
         /** A file was tapped. */
         void onOpen(Entry entry);
@@ -123,6 +134,7 @@ public class MangaFileBrowser extends LinearLayout {
     private TextView mStatus;
     private TextView mBack;
     private TextView mSettingsButton;
+    private LinearLayout mActionBar;
     private LinearLayout mCrumbs;
     private View mCrumbScroll;
 
@@ -162,6 +174,7 @@ public class MangaFileBrowser extends LinearLayout {
         mStatus = findViewById(R.id.browserStatus);
         mBack = findViewById(R.id.browserBack);
         mSettingsButton = findViewById(R.id.browserSettings);
+        mActionBar = findViewById(R.id.browserActions);
         mCrumbs = findViewById(R.id.browserCrumbs);
         mCrumbScroll = findViewById(R.id.browserCrumbScroll);
 
@@ -195,6 +208,38 @@ public class MangaFileBrowser extends LinearLayout {
 
     public void setCallback(@Nullable Callback callback) {
         mCallback = callback;
+    }
+
+    /**
+     * Shelf actions shown in their own framed group at the top right, in the
+     * same row as the ⚙ button. Passing an empty list hides the frame.
+     */
+    public void setHeaderActions(@Nullable List<Action> actions) {
+        mActionBar.removeAllViews();
+        if (actions == null || actions.isEmpty()) {
+            mActionBar.setVisibility(GONE);
+            return;
+        }
+        mActionBar.setVisibility(VISIBLE);
+        for (final Action action : actions) {
+            TextView button = new TextView(getContext());
+            button.setText(action.label);
+            button.setTextSize(13f);
+            button.setSingleLine(true);
+            button.setTextColor(0xFFDCE4E2);
+            button.setPadding(dp(10), dp(6), dp(10), dp(6));
+            button.setBackgroundResource(R.drawable.manga_pill_bg);
+            button.setOnClickListener(v -> {
+                if (action.run != null) {
+                    action.run.run();
+                }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.rightMargin = dp(4);
+            mActionBar.addView(button, lp);
+        }
     }
 
     /** Hosts the floating quick sheet (the panel's page container). */
@@ -424,7 +469,15 @@ public class MangaFileBrowser extends LinearLayout {
                                 draft.sortMode = SortUtil.modeOf(i,
                                         SortUtil.ascendingOf(draft.sortMode));
                             });
-                    s.segments(new String[]{"A → Z", "Z → A"},
+                    // Direction labels follow the key: A-Z for names, old/new
+                    // for dates, small/large for sizes.
+                    int draftKey = SortUtil.keyOf(draft.sortMode);
+                    String[] dirs = draftKey == 0
+                            ? new String[]{"A → Z", "Z → A"}
+                            : draftKey == 1
+                            ? new String[]{"旧 → 新", "新 → 旧"}
+                            : new String[]{"小 → 大", "大 → 小"};
+                    s.segments(dirs,
                             SortUtil.ascendingOf(draft.sortMode) ? 0 : 1, i -> {
                                 draft.sortMode = SortUtil.modeOf(
                                         SortUtil.keyOf(draft.sortMode), i == 0);

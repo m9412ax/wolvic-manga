@@ -1108,6 +1108,12 @@ public class MangaLibraryWidget extends UIWidget {
     /** [startPageName] positions the reader at a specific image of the folder
      *  (used when the user taps one file: open the WHOLE manga at that page). */
     private void openRemoteManga(final RemoteManga manga, final String startPageName) {
+        openRemoteManga(manga, startPageName, false);
+    }
+
+    /** @param fromStart true = "开始阅读" (chapter 1, page 1), false = resume. */
+    private void openRemoteManga(final RemoteManga manga, final String startPageName,
+                                final boolean fromStart) {
         // Guard against repeated VR clicks opening the same reader many times.
         long now = System.currentTimeMillis();
         if (now - mLastOpenReaderMs < 900L) {
@@ -1133,12 +1139,14 @@ public class MangaLibraryWidget extends UIWidget {
                 int index = 0;
                 int page = 0;
                 float frac = 0f;
-                float[] saved = MangaReaderWidget.readChapterProgress(
-                        progressPrefs(), "remote:" + manga.key());
-                if (saved != null) {
-                    index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
-                    page = (int) saved[1];
-                    frac = saved[2];
+                if (!fromStart) {
+                    float[] saved = MangaReaderWidget.readChapterProgress(
+                            progressPrefs(), "remote:" + manga.key());
+                    if (saved != null) {
+                        index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
+                        page = (int) saved[1];
+                        frac = saved[2];
+                    }
                 }
                 // If the user tapped a specific file, position the reader at
                 // that image instead of at the saved/first page.
@@ -1909,7 +1917,137 @@ public class MangaLibraryWidget extends UIWidget {
         browser.setOnSettingsClick(settings);
         // The quick sheet floats over the whole panel, not over the grid only.
         browser.setSheetHost(mPageContainer);
+        browser.setHeaderActions(browserHeaderActions(page));
         attachBrowser(page, browser);
+    }
+
+    /**
+     * 默认位置 / 加入书架 / 开始阅读 / 继续阅读 for the folder currently shown.
+     * They sit in a framed group at the top right of the browser header, next to
+     * the ⚙ button, and re-evaluate on every folder change because the browser
+     * is rebuilt by refreshPage().
+     */
+    private List<MangaFileBrowser.Action> browserHeaderActions(MangaPage page) {
+        List<MangaFileBrowser.Action> out = new ArrayList<>();
+        if (page == MangaPage.LOCAL) {
+            final File cur = mLocalDir;
+            if (cur == null || !cur.isDirectory()) {
+                return out;
+            }
+            final String path = cur.getAbsolutePath();
+            out.add(new MangaFileBrowser.Action("★ 默认位置", () -> toggleLocalDefault(cur)));
+            out.add(new MangaFileBrowser.Action(
+                    mSettings.isInBookshelf(path) ? "★ 已在书架" : "＋ 加入书架",
+                    () -> toggleLocalShelf(cur)));
+            out.add(new MangaFileBrowser.Action("▶ 开始阅读",
+                    () -> openLocalSession(cur, null, false)));
+            out.add(new MangaFileBrowser.Action("▶▶ 继续阅读", () -> continueReading(cur)));
+            return out;
+        }
+        if (page == MangaPage.SMB) {
+            if (!smbConfigured() || mSmbConfigOpen) {
+                return out;
+            }
+            out.add(new MangaFileBrowser.Action("★ 默认位置", this::toggleSmbDefault));
+            out.add(new MangaFileBrowser.Action("＋ 加入书架", () -> addRemoteToShelf(smbShelfKey())));
+            out.add(new MangaFileBrowser.Action("▶ 开始阅读",
+                    () -> openRemoteManga(smbManga(smbAuth(), mSmbPath), null, true)));
+            out.add(new MangaFileBrowser.Action("▶▶ 继续阅读",
+                    () -> openRemoteManga(smbManga(smbAuth(), mSmbPath), null, false)));
+            return out;
+        }
+        if (page == MangaPage.WEBDAV) {
+            if (mNetdiskAtRoot) {
+                return out;
+            }
+            if ("115".equals(mNetdiskMode)) {
+                out.add(new MangaFileBrowser.Action("★ 默认位置", this::setP115DefaultDir));
+                out.add(new MangaFileBrowser.Action("＋ 加入书架",
+                        () -> addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title)));
+                out.add(new MangaFileBrowser.Action("▶ 开始阅读", () -> {
+                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                    openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), null, true);
+                }));
+                out.add(new MangaFileBrowser.Action("▶▶ 继续阅读", () -> {
+                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                    openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), null, false);
+                }));
+            } else {
+                out.add(new MangaFileBrowser.Action("★ 默认位置", () -> {
+                    mSettings.setDefaultDir("WEBDAV", mWebDavUrl);
+                    Toast.makeText(getContext(), "已设为 WebDAV 默认位置",
+                            Toast.LENGTH_SHORT).show();
+                }));
+                out.add(new MangaFileBrowser.Action("▶ 开始阅读",
+                        this::downloadCurrentWebDav));
+            }
+        }
+        return out;
+    }
+
+    private String smbShelfKey() {
+        return SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
+                + "/" + mSettings.text(MangaSettings.SMB_SHARE)
+                + (mSmbPath.isEmpty() ? "" : "/" + mSmbPath);
+    }
+
+    /** Sets the current local folder as default, or jumps to the saved one. */
+    private void toggleLocalDefault(File current) {
+        if (current == null) {
+            return;
+        }
+        String path = current.getAbsolutePath();
+        String def = mSettings.defaultDir("LOCAL");
+        if (def.isEmpty() || def.equals(path)) {
+            mSettings.setDefaultDir("LOCAL", path);
+            Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
+            refreshPage(MangaPage.LOCAL);
+            return;
+        }
+        File dir = new File(def);
+        if (!dir.isDirectory()) {
+            Toast.makeText(getContext(), "默认位置已不存在，已重新设为当前目录",
+                    Toast.LENGTH_SHORT).show();
+            mSettings.setDefaultDir("LOCAL", path);
+            refreshPage(MangaPage.LOCAL);
+            return;
+        }
+        mLocalDir = dir;
+        mSettings.setLastDir(def);
+        refreshPage(MangaPage.LOCAL);
+    }
+
+    private void toggleLocalShelf(File folder) {
+        if (folder == null) {
+            return;
+        }
+        String path = folder.getAbsolutePath();
+        if (mSettings.isInBookshelf(path)) {
+            mSettings.removeFromBookshelf(path);
+            Toast.makeText(getContext(), "已从书架移除", Toast.LENGTH_SHORT).show();
+        } else {
+            mSettings.addToBookshelf(path);
+            Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
+        }
+        refreshPage(MangaPage.LOCAL);
+    }
+
+    /** SMB: remember the current remote path, or jump to the saved one. */
+    private void toggleSmbDefault() {
+        String def = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
+        if (def == null || def.isEmpty() || def.equals(mSmbPath)) {
+            mSettings.put(MangaSettings.SMB_DEFAULT_PATH, mSmbPath);
+            Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mSmbPath = def;
+        connectSmb();
+    }
+
+    private void setP115DefaultDir() {
+        mSettings.put(MangaSettings.P115_DEFAULT_CID, mP115Cid);
+        mSettings.put(MangaSettings.P115_DEFAULT_TITLE, mP115Title);
+        Toast.makeText(getContext(), "已设为 115 默认目录", Toast.LENGTH_SHORT).show();
     }
 
     /** Attaches a finished browser to the reserved full-height slot. */

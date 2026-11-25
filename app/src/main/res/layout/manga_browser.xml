@@ -38,12 +38,30 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minWidth="0dp"
             android:text="文件"
             android:textColor="#FFDDE4E3"
             android:textSize="22sp"
             android:textStyle="bold"
             android:singleLine="true"
             android:ellipsize="middle" />
+
+        <!-- Shelf actions for the folder currently open (默认位置 / 加入书架 /
+             开始阅读 / 继续阅读). Wrapped in their own rounded frame so they
+             read as one independent group and never crowd the title. -->
+        <LinearLayout
+            android:id="@+id/browserActions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginRight="8dp"
+            android:background="@drawable/manga_action_bar_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="4dp"
+            android:paddingTop="3dp"
+            android:paddingRight="4dp"
+            android:paddingBottom="3dp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/browserSettings"
