@@ -7,7 +7,8 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FF0E1514"
+    android:background="@drawable/manga_panel_bg"
+    android:clipToOutline="true"
     android:padding="16dp">
 
     <LinearLayout
@@ -56,7 +57,8 @@
         android:layout_weight="1"
         android:layout_marginTop="12dp"
         android:layout_marginBottom="10dp"
-        android:background="#FF121A19">
+        android:background="@drawable/manga_inner_bg"
+        android:clipToOutline="true">
 
         <LinearLayout
             android:id="@+id/libraryPage"

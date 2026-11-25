@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Outer panel surface: rounded, so the shelf / file manager stops looking
+     like a hard rectangle inside VR. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FF0E1514" />
+    <corners android:radius="22dp" />
+</shape>

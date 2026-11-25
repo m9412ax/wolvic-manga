@@ -25,7 +25,10 @@
             android:layout_height="wrap_content"
             android:layout_centerHorizontal="true"
             android:gravity="center_horizontal"
-            android:orientation="vertical">
+            android:orientation="vertical"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="12dp">
 
             <RelativeLayout
                 android:id="@+id/status_bar"

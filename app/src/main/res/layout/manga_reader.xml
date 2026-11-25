@@ -55,7 +55,7 @@
         android:paddingEnd="16dp"
         android:paddingTop="6dp"
         android:paddingBottom="6dp"
-        android:background="#99000000"
+        android:background="@drawable/manga_pill_bg"
         android:text="0 / 0"
         android:textColor="#FFFFFFFF"
         android:textSize="20sp" />
@@ -70,7 +70,7 @@
         android:orientation="vertical"
         android:gravity="center"
         android:padding="22dp"
-        android:background="#E6222229"
+        android:background="@drawable/manga_overlay_bg"
         android:visibility="gone">
 
         <TextView
@@ -169,7 +169,7 @@
         android:orientation="horizontal"
         android:gravity="center"
         android:visibility="gone"
-        android:background="#CC2A2A33"
+        android:background="@drawable/manga_pill_bg"
         android:clickable="false"
         android:focusable="false">
 

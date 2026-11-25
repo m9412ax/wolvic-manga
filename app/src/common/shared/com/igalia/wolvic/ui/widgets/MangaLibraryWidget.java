@@ -648,7 +648,9 @@ public class MangaLibraryWidget extends UIWidget {
         for (Map.Entry<MangaPage, View> entry : mPageViews.entrySet()) {
             entry.getValue().setVisibility(entry.getKey() == page ? VISIBLE : GONE);
         }
-        mTitle.setText("漫画 · " + page.label);
+        // No legacy "漫画 · 本地文件" prefix: the browser header already names
+        // the current location.
+        mTitle.setText(page.label);
         refreshCurrentPage();
         scrollPageToTop(page);
         // SMB: once configured, auto-connect on entry and show the share as a
@@ -1276,7 +1278,8 @@ public class MangaLibraryWidget extends UIWidget {
         LinearLayout actions = addRow(content);
         File parent = folder.getParentFile();
         if (parent != null) {
-            }
+            addButton(actions, "返回上级", v -> openFolderView(parent, false));
+        }
         addButton(actions, "▶ 继续阅读", v -> continueReading(folder));
         addButton(actions, "打开首页", v -> openReaderAt(folder, null));
         if (mSettings.isInBookshelf(path)) {
@@ -1514,50 +1517,9 @@ public class MangaLibraryWidget extends UIWidget {
     // ------------------------------------------------------------- local
 
     private void fillLocalPage(LinearLayout content) {
-        addInfo(content, "当前目录", mLocalDir == null ? "不可用" : mLocalDir.getAbsolutePath());
-        addDefaultDirControls(content, "LOCAL", mLocalDir);
-        if (mLocalSettingsOpen) {
-            String def = mSettings.defaultDir("LOCAL");
-            addInfo(content, "设置", "默认位置：" + (def.isEmpty() ? "未设置（默认恢复到上次位置）" : def));
-            LinearLayout setRow = addRow(content);
-            addButton(setRow, "设为默认位置", v -> {
-                if (mLocalDir == null) return;
-                mSettings.setDefaultDir("LOCAL", mLocalDir.getAbsolutePath());
-                Toast.makeText(getContext(), "已设为默认位置", Toast.LENGTH_SHORT).show();
-                mLocalSettingsOpen = false;
-                refreshPage(MangaPage.LOCAL);
-            });
-            addButton(setRow, "清除默认", v -> {
-                mSettings.setDefaultDir("LOCAL", "");
-                mLocalSettingsOpen = false;
-                refreshPage(MangaPage.LOCAL);
-            });
-            addButton(setRow, "收起设置", v -> {
-                mLocalSettingsOpen = false;
-                refreshPage(MangaPage.LOCAL);
-            });
-        }
-
-        LinearLayout actions = addRow(content);
-        addButton(actions, "返回上级", v -> {
-            File parent = mLocalDir != null ? mLocalDir.getParentFile() : null;
-            if (parent != null) {
-                mLocalDir = parent;
-                mSettings.setLastDir(parent.getAbsolutePath());
-                refreshPage(MangaPage.LOCAL);
-            }
-        });
-        addButton(actions, "漫画根目录", v -> {
-            mLocalDir = mRoot;
-            mSettings.setLastDir(mRoot.getAbsolutePath());
-            refreshPage(MangaPage.LOCAL);
-        });
-        addButton(actions, "打开阅读器", v -> openReader(mLocalDir));
-        addButton(actions, mLocalSettingsOpen ? "收起设置" : "⚙ 设置", v -> {
-            mLocalSettingsOpen = !mLocalSettingsOpen;
-            refreshPage(MangaPage.LOCAL);
-        });
-
+        // The browser owns navigation, sorting and settings, so this page has
+        // no header at all: only blocking problems (permission / unreadable
+        // directory) are printed above it.
         if (!hasStoragePermission()) {
             addInfo(content, "权限", "存储权限未授予，请在「设置」中申请后重试。");
             return;
@@ -1628,6 +1590,11 @@ public class MangaLibraryWidget extends UIWidget {
         localBrowser.setCanGoBack(mLocalDir != null && mRoot != null && !mLocalDir.equals(mRoot));
         localBrowser.setCallback(new MangaFileBrowser.Callback() {
             @Override
+            public void onSortChanged(int sortMode) {
+                mSettings.put(MangaSettings.SORT_MODE, sortMode);
+            }
+
+            @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
                 openReaderAt(mLocalDir, new File(entry.path));
             }
@@ -1652,7 +1619,7 @@ public class MangaLibraryWidget extends UIWidget {
                 }
             }
         });
-        attachBrowser(MangaPage.LOCAL, localBrowser);
+        finishBrowser(localBrowser, MangaPage.LOCAL, () -> switchPage(MangaPage.SETTINGS));
     }
 
     // -------------------------------------------------------------- SMB
@@ -1735,11 +1702,11 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
 
-        // Configured with a share: folder-style browser.
-        addInfo(content, "SMB 共享 · " + mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
-                mSmbStatus);
-        addInfo(content, "当前目录", mSmbPath.isEmpty() ? "共享根目录" : "/" + mSmbPath);
-        addInfo(content, "看图提示", "进入任意文件夹后点「▷ 在线阅读」：首图秒开、边看边缓存、支持书签与预载，不会整本下载。点「＋ 加入书架」可长期收藏。");
+        // Minimal header: status only. Browsing, sorting and navigation all
+        // live in the browser below, so there is no duplicate path/sort row.
+        if (mSmbStatus != null && !mSmbStatus.isEmpty()) {
+            addInfo(content, "状态", mSmbStatus);
+        }
 
         LinearLayout actions = addRow(content);
         String smbDef = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
@@ -1824,6 +1791,11 @@ public class MangaLibraryWidget extends UIWidget {
         smbBrowser.setCanGoBack(!mSmbPath.isEmpty());
         smbBrowser.setCallback(new MangaFileBrowser.Callback() {
             @Override
+            public void onSortChanged(int sortMode) {
+                mSettings.put(MangaSettings.SORT_MODE, sortMode);
+            }
+
+            @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
                 // Open the WHOLE current folder as a manga, positioned at this
                 // image, so up/down page turns keep working.
@@ -1843,7 +1815,10 @@ public class MangaLibraryWidget extends UIWidget {
                 connectSmb();
             }
         });
-        attachBrowser(MangaPage.SMB, smbBrowser);
+        finishBrowser(smbBrowser, MangaPage.SMB, () -> {
+            mSmbConfigOpen = true;
+            refreshPage(MangaPage.SMB);
+        });
     }
 
     private Button newButton(String text) {
@@ -1854,6 +1829,14 @@ public class MangaLibraryWidget extends UIWidget {
         b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         b.setMinHeight(dp(50));
         return b;
+    }
+
+    /** Applies the shared sort settings, wires the gear button, then attaches. */
+    private void finishBrowser(MangaFileBrowser browser, MangaPage page, Runnable settings) {
+        browser.setSortConfig(mSettings.integer(MangaSettings.SORT_MODE),
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+        browser.setOnSettingsClick(settings);
+        attachBrowser(page, browser);
     }
 
     /** Attaches a finished browser to the reserved full-height slot. */
@@ -2201,9 +2184,7 @@ public class MangaLibraryWidget extends UIWidget {
     /** Pure 115 directory browser: folders first, then media files, with a
      *  compact action row. No config/login UI lives here. */
     private void fill115Browser(LinearLayout content) {
-        addInfo(content, "115 · " + (mP115Title == null ? "网盘" : mP115Title),
-                "0".equals(mP115Cid) ? "（根目录）" : mP115Cid);
-        if (!mP115DirStatus.isEmpty()) {
+        if (mP115DirStatus != null && !mP115DirStatus.isEmpty()) {
             addInfo(content, "状态", mP115DirStatus);
         }
         LinearLayout dirActions = addRow(content);
@@ -2257,6 +2238,11 @@ public class MangaLibraryWidget extends UIWidget {
         p115Browser.setCanGoBack(!"0".equals(mP115Cid));
         p115Browser.setCallback(new MangaFileBrowser.Callback() {
             @Override
+            public void onSortChanged(int sortMode) {
+                mSettings.put(MangaSettings.SORT_MODE, sortMode);
+            }
+
+            @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
                 String cookie = mSettings.text(MangaSettings.P115_COOKIE);
                 openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), entry.name);
@@ -2300,7 +2286,10 @@ public class MangaLibraryWidget extends UIWidget {
                 listP115Dir(mP115Cid);
             }
         });
-        attachBrowser(MangaPage.WEBDAV, p115Browser);
+        finishBrowser(p115Browser, MangaPage.WEBDAV, () -> {
+            mNetdiskSettingsOpen = true;
+            refreshPage(MangaPage.WEBDAV);
+        });
     }
 
     private void listP115Dir(final String cid) {
@@ -2540,6 +2529,11 @@ public class MangaLibraryWidget extends UIWidget {
                     has115 || hasWebdav ? null : "尚未配置网盘：在 ⚙ 设置 里扫码登录 115 或填写 WebDAV 地址。");
             driveBrowser.setCanGoBack(false);
             driveBrowser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onSortChanged(int sortMode) {
+                mSettings.put(MangaSettings.SORT_MODE, sortMode);
+            }
+
                 @Override
                 public void onOpen(MangaFileBrowser.Entry entry) {
                     onNavigate(entry.path);
@@ -2573,7 +2567,10 @@ public class MangaLibraryWidget extends UIWidget {
                     }
                 }
             });
-            attachBrowser(MangaPage.WEBDAV, driveBrowser);
+            finishBrowser(driveBrowser, MangaPage.WEBDAV, () -> {
+                mNetdiskSettingsOpen = true;
+                refreshPage(MangaPage.WEBDAV);
+            });
             return;
         }
 
@@ -2605,9 +2602,9 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Pure WebDAV directory browser (no config UI). */
     private void fillWebDavBrowser(LinearLayout content) {
-        addInfo(content, "WebDAV · 当前目录",
-                mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);
-        addInfo(content, "状态", mWebDavStatus);
+        if (mWebDavStatus != null && !mWebDavStatus.isEmpty()) {
+            addInfo(content, "状态", mWebDavStatus);
+        }
         LinearLayout actions = addRow(content);
         addButton(actions, "▷ 在线阅读", v -> downloadCurrentWebDav());
 
@@ -2638,6 +2635,11 @@ public class MangaLibraryWidget extends UIWidget {
         davBrowser.setData(entries, "WebDAV", crumbs, statusOrHint(null));
         davBrowser.setCanGoBack(true);
         davBrowser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onSortChanged(int sortMode) {
+                mSettings.put(MangaSettings.SORT_MODE, sortMode);
+            }
+
             @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
                 if (entry.tag instanceof MangaWebDav.Entry) {
@@ -2679,7 +2681,10 @@ public class MangaLibraryWidget extends UIWidget {
                 }
             }
         });
-        attachBrowser(MangaPage.WEBDAV, davBrowser);
+        finishBrowser(davBrowser, MangaPage.WEBDAV, () -> {
+            mNetdiskSettingsOpen = true;
+            refreshPage(MangaPage.WEBDAV);
+        });
     }
 
     private void connectWebDav() {

@@ -27,6 +27,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
+import com.igalia.wolvic.manga.SortUtil;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
 import java.io.File;
@@ -57,10 +58,6 @@ public class MangaFileBrowser extends LinearLayout {
     /** How many columns each display mode uses. */
     private static final int GRID_SPAN = 4;
     private static final int COMPACT_SPAN = 2;
-
-    private static final int SORT_NAME = 0;
-    private static final int SORT_DATE = 1;
-    private static final int SORT_SIZE = 2;
 
     private static final String PREFS = "manga_browser_prefs";
     private static final String KEY_SORT = "sort_key";
@@ -114,6 +111,9 @@ public class MangaFileBrowser extends LinearLayout {
 
         /** Host-provided back action (may be null at the root). */
         default void onBack() { }
+
+        /** User cycled the sort mode; host should persist it to settings. */
+        default void onSortChanged(int sortMode) { }
     }
 
     private final List<Entry> mEntries = new ArrayList<>();
@@ -129,14 +129,17 @@ public class MangaFileBrowser extends LinearLayout {
     private TextView mBack;
     private TextView mSortButton;
     private TextView mModeButton;
+    private TextView mSettingsButton;
     private LinearLayout mCrumbs;
     private View mCrumbScroll;
 
     private Callback mCallback;
+    @Nullable private Runnable mSettingsClick;
     private String mTitleText = "文件";
     private List<Crumb> mCrumbList = new ArrayList<>();
-    private int mSortKey = SORT_NAME;
-    private boolean mSortAsc = true;
+    /** Matches MangaSettings.SORT_MODE exactly (0 name asc .. 3 date asc). */
+    private int mSortMode = 0;
+    private boolean mVideoFirst;
     private boolean mCompact;
     private boolean mCanGoBack;
 
@@ -162,12 +165,12 @@ public class MangaFileBrowser extends LinearLayout {
         mBack = findViewById(R.id.browserBack);
         mSortButton = findViewById(R.id.browserSort);
         mModeButton = findViewById(R.id.browserMode);
+        mSettingsButton = findViewById(R.id.browserSettings);
         mCrumbs = findViewById(R.id.browserCrumbs);
         mCrumbScroll = findViewById(R.id.browserCrumbScroll);
 
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        mSortKey = prefs.getInt(KEY_SORT, SORT_NAME);
-        mSortAsc = prefs.getBoolean(KEY_ASC, true);
+        mSortMode = prefs.getInt(KEY_SORT, 0);
         mCompact = prefs.getInt(KEY_MODE, 0) == 1;
 
         mAdapter = new Adapter();
@@ -181,23 +184,20 @@ public class MangaFileBrowser extends LinearLayout {
             }
         });
         mSortButton.setOnClickListener(v -> {
-            // Name asc -> name desc -> date desc -> size desc -> name asc
-            if (mSortKey == SORT_NAME && mSortAsc) {
-                mSortKey = SORT_NAME;
-                mSortAsc = false;
-            } else if (mSortKey == SORT_NAME) {
-                mSortKey = SORT_DATE;
-                mSortAsc = false;
-            } else if (mSortKey == SORT_DATE) {
-                mSortKey = SORT_SIZE;
-                mSortAsc = false;
-            } else {
-                mSortKey = SORT_NAME;
-                mSortAsc = true;
-            }
+            // Same 4-state cycle as the settings screen, so the two can never
+            // disagree: name asc / name desc / date new / date old.
+            mSortMode = SortUtil.next(mSortMode);
             persistSort();
             refreshSortLabel();
             sortAndRender();
+            if (mCallback != null) {
+                mCallback.onSortChanged(mSortMode);
+            }
+        });
+        mSettingsButton.setOnClickListener(v -> {
+            if (mSettingsClick != null) {
+                mSettingsClick.run();
+            }
         });
         mModeButton.setOnClickListener(v -> {
             mCompact = !mCompact;
@@ -225,15 +225,8 @@ public class MangaFileBrowser extends LinearLayout {
     }
 
     private void refreshSortLabel() {
-        String label;
-        if (mSortKey == SORT_NAME) {
-            label = mSortAsc ? "名称 ↑" : "名称 ↓";
-        } else if (mSortKey == SORT_DATE) {
-            label = "日期 ↓";
-        } else {
-            label = "大小 ↓";
-        }
-        mSortButton.setText(label);
+        String[] labels = {"名称 ↑", "名称 ↓", "日期 ↓", "日期 ↑"};
+        mSortButton.setText(labels[Math.max(0, Math.min(3, mSortMode))]);
     }
 
     private void refreshModeLabel() {
@@ -242,13 +235,27 @@ public class MangaFileBrowser extends LinearLayout {
 
     private void persistSort() {
         getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putInt(KEY_SORT, mSortKey)
-                .putBoolean(KEY_ASC, mSortAsc)
+                .putInt(KEY_SORT, mSortMode)
                 .apply();
     }
 
     public void setCallback(@Nullable Callback callback) {
         mCallback = callback;
+    }
+
+    /** Mirrors MangaSettings.SORT_MODE / SORT_VIDEO_FIRST into the browser. */
+    public void setSortConfig(int sortMode, boolean videoFirst) {
+        mSortMode = Math.max(0, Math.min(3, sortMode));
+        mVideoFirst = videoFirst;
+        refreshSortLabel();
+        if (!mSorted.isEmpty()) {
+            sortAndRender();
+        }
+    }
+
+    /** Opens the host settings screen; null hides nothing but does nothing. */
+    public void setOnSettingsClick(@Nullable Runnable action) {
+        mSettingsClick = action;
     }
 
     /** True when the host can navigate to a parent folder. */
@@ -326,29 +333,17 @@ public class MangaFileBrowser extends LinearLayout {
     private void sortAndRender() {
         mSorted.clear();
         mSorted.addAll(mEntries);
-        final Comparator<Entry> byName = (a, b) ->
-                MangaCoverAdapter.naturalCompare(a.name, b.name);
-        Comparator<Entry> chosen;
-        if (mSortKey == SORT_NAME) {
-            chosen = byName;
-        } else if (mSortKey == SORT_DATE) {
-            chosen = (a, b) -> Long.compare(b.modifiedMs, a.modifiedMs);
-        } else {
-            chosen = (a, b) -> Long.compare(b.size, a.size);
-        }
-        if (mSortKey == SORT_NAME && !mSortAsc) {
-            chosen = chosen.reversed();
-        }
-        // Effectively final: the comparator below is captured by a lambda.
-        final Comparator<Entry> cmp = chosen;
-        Collections.sort(mSorted, (a, b) -> {
-            // Folders always come first: that is what a file manager is
-            // expected to do regardless of the chosen sort.
-            if (a.directory != b.directory) {
-                return a.directory ? -1 : 1;
-            }
-            return cmp.compare(a, b);
-        });
+        // Shared with the settings screen: SortUtil enforces
+        //   1) folders first
+        //   2) videos before images when "视频置顶" is on
+        //   3) the configured name/date order inside each group
+        // so ticking the setting actually changes this listing.
+        final Comparator<Entry> cmp = SortUtil.listingComparator(mSortMode, mVideoFirst,
+                e -> e.directory,
+                e -> e.video,
+                e -> e.name,
+                e -> e.modifiedMs);
+        Collections.sort(mSorted, cmp);
         mAdapter.notifyDataSetChanged();
         updateSummary();
     }
