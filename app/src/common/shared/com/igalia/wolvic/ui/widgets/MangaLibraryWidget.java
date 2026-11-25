@@ -1276,10 +1276,7 @@ public class MangaLibraryWidget extends UIWidget {
         LinearLayout actions = addRow(content);
         File parent = folder.getParentFile();
         if (parent != null) {
-            addButton(actions, "返回上级", v -> {
-                openFolderView(parent, false);
-            });
-        }
+            }
         addButton(actions, "▶ 继续阅读", v -> continueReading(folder));
         addButton(actions, "打开首页", v -> openReaderAt(folder, null));
         if (mSettings.isInBookshelf(path)) {
@@ -1556,8 +1553,6 @@ public class MangaLibraryWidget extends UIWidget {
             refreshPage(MangaPage.LOCAL);
         });
         addButton(actions, "打开阅读器", v -> openReader(mLocalDir));
-        addButton(actions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                v -> cycleSortAndApply(MangaPage.LOCAL));
         addButton(actions, mLocalSettingsOpen ? "收起设置" : "⚙ 设置", v -> {
             mLocalSettingsOpen = !mLocalSettingsOpen;
             refreshPage(MangaPage.LOCAL);
@@ -1747,16 +1742,6 @@ public class MangaLibraryWidget extends UIWidget {
         addInfo(content, "看图提示", "进入任意文件夹后点「▷ 在线阅读」：首图秒开、边看边缓存、支持书签与预载，不会整本下载。点「＋ 加入书架」可长期收藏。");
 
         LinearLayout actions = addRow(content);
-        if (!mSmbPath.isEmpty()) {
-            addButton(actions, "← 上级", v -> {
-                int slash = mSmbPath.lastIndexOf('/');
-                mSmbPath = slash > 0 ? mSmbPath.substring(0, slash) : "";
-                connectSmb();
-            });
-        }
-        addButton(actions, "刷新", v -> connectSmb());
-        addButton(actions, "排序：" + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                v -> cycleSortAndApply(MangaPage.SMB));
         String smbDef = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
         addButton(actions, smbDef.isEmpty() ? "★ 设为默认位置" : "★ 默认位置", v -> {
             String target = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
@@ -2222,28 +2207,6 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "状态", mP115DirStatus);
         }
         LinearLayout dirActions = addRow(content);
-        addButton(dirActions, "⌂ 网盘列表", v -> {
-            mNetdiskAtRoot = true;
-            refreshPage(MangaPage.WEBDAV);
-        });
-        if (!"0".equals(mP115Cid)) {
-            addButton(dirActions, "← 上级", v -> {
-                if (!mP115ParentStack.isEmpty()) {
-                    String[] parent = mP115ParentStack.pop();
-                    mP115Cid = parent[0];
-                    mP115Title = parent[1];
-                } else {
-                    mP115Cid = "0";
-                    mP115Title = "115 网盘";
-                }
-                mSettings.put(MangaSettings.P115_LAST_CID, mP115Cid);
-                mSettings.put(MangaSettings.P115_LAST_TITLE, mP115Title);
-                listP115Dir(mP115Cid);
-            });
-        }
-        addButton(dirActions, "刷新", v -> listP115Dir(mP115Cid));
-        addButton(dirActions, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                v -> cycleSortAndApply(MangaPage.WEBDAV));
         addButton(dirActions, "▷ 在线阅读", v -> readP115Online(mP115Cid, mP115Title));
         addButton(dirActions, "＋ 书架", v ->
                 addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title));
@@ -2541,8 +2504,6 @@ public class MangaLibraryWidget extends UIWidget {
             mNetdiskSettingsOpen = !mNetdiskSettingsOpen;
             refreshPage(MangaPage.WEBDAV);
         });
-        addButton(top, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                v -> cycleSortAndApply(MangaPage.WEBDAV));
 
         if (mNetdiskSettingsOpen) {
             fill115LoginSection(content);
@@ -2648,25 +2609,6 @@ public class MangaLibraryWidget extends UIWidget {
                 mWebDavUrl.isEmpty() ? "（未配置地址）" : mWebDavUrl);
         addInfo(content, "状态", mWebDavStatus);
         LinearLayout actions = addRow(content);
-        addButton(actions, "⌂ 网盘列表", v -> {
-            mNetdiskAtRoot = true;
-            refreshPage(MangaPage.WEBDAV);
-        });
-        addButton(actions, "← 上级", v -> {
-            int slash = mWebDavUrl.lastIndexOf('/');
-            if (slash > 8) {
-                String trimmed = mWebDavUrl.endsWith("/")
-                        ? mWebDavUrl.substring(0, mWebDavUrl.length() - 1) : mWebDavUrl;
-                int parentSlash = trimmed.lastIndexOf('/');
-                if (parentSlash > 8) {
-                    mWebDavUrl = trimmed.substring(0, parentSlash + 1);
-                    connectWebDav();
-                }
-            }
-        });
-        addButton(actions, "刷新", v -> connectWebDav());
-        addButton(actions, "↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)),
-                v -> cycleSortAndApply(MangaPage.WEBDAV));
         addButton(actions, "▷ 在线阅读", v -> downloadCurrentWebDav());
 
         if (mWebDavEntries.isEmpty()) {
