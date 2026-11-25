@@ -148,9 +148,15 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     }
 
     @Override
-    public String[] openVideoHeaders(PageInfo page) {
+    public String[] openVideoOptions(PageInfo page) {
         Manga115Api.ResolvedLink link = Manga115Api.resolveLink(cookie, page.id);
-        return Manga115Api.videoHeaders(link);
+        if (link == null) return null;
+        return new String[] {
+                ":http-cookies=" + (link.cdnCookie == null ? "" : link.cdnCookie),
+                ":http-referrer=https://115.com/",
+                ":http-user-agent=Mozilla/5.0 115Browser/27.0.5.7",
+                ":http-reconnect=true"
+        };
     }
 
     private boolean isMedia(String name) {

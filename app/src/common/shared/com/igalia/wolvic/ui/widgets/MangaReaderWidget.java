@@ -4262,15 +4262,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mVlcLib.setUserAgent("115Browser/27.0.5.7",
                     "Mozilla/5.0 115Browser/27.0.5.7");
             mVlcMedia = new org.videolan.libvlc.Media(mVlcLib, mrl);
-            String[] headers = mRemoteManga.openVideoHeaders(pi);
-            if (headers != null) {
-                StringBuilder h = new StringBuilder();
-                for (int i = 0; i + 1 < headers.length; i += 2) {
-                    if (i > 0) h.append("\r\n");
-                    h.append(headers[i]).append(": ").append(headers[i + 1]);
-                }
-                if (h.length() > 0) {
-                    mVlcMedia.addOption(":http-headers=" + h.toString());
+            String[] mediaOptions = mRemoteManga.openVideoOptions(pi);
+            if (mediaOptions != null) {
+                for (String option : mediaOptions) {
+                    if (option != null && !option.isEmpty()) {
+                        mVlcMedia.addOption(option);
+                    }
                 }
             }
             mVlcMedia.addOption(":network-caching=1500");

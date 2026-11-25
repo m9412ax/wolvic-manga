@@ -65,8 +65,8 @@ public interface RemoteManga {
      *  the whole decoder/network/seek stack to LibVLC instead of MediaPlayer. */
     default String openVideoMrl(PageInfo page) { return null; }
 
-    /** Optional header pairs (name, value, name, value...) for the LibVLC MRL. */
-    default String[] openVideoHeaders(PageInfo page) { return null; }
+    /** Optional LibVLC media options, e.g. ":smb-user=..." or ":http-cookies=...". */
+    default String[] openVideoOptions(PageInfo page) { return null; }
 
     final class ChapterInfo {
         public final String id;     // stable remote id/path

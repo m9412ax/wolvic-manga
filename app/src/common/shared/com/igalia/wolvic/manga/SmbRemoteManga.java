@@ -134,16 +134,21 @@ public final class SmbRemoteManga implements RemoteManga {
 
     @Override
     public String openVideoMrl(PageInfo page) {
-        // LibVLC has its own SMB access module. Give it the native smb:// MRL
-        // so it owns authentication, Range reads, buffering and seeking.
-        String user = auth.user == null ? "" : auth.user;
-        String pass = auth.pass == null ? "" : auth.pass;
-        String domain = auth.domain == null ? "" : auth.domain;
-        String login = domain.isEmpty() ? user : (domain + ";" + user);
-        String authPart = user.isEmpty() ? ""
-                : Uri.encode(login) + ":" + Uri.encode(pass) + "@";
-        return "smb://" + authPart + auth.host + "/" + encodePath(auth.share)
+        // LibVLC's smb2 module authenticates via the smb-user/smb-pwd/
+        // smb-domain media options, NOT credentials embedded in the URL.
+        // URL credentials are not decoded by libsmb2 on all builds and made
+        // SMB fail with "SMB authentication required".
+        return "smb://" + auth.host + "/" + encodePath(auth.share)
                 + (page.id == null || page.id.isEmpty() ? "" : "/" + encodePath(page.id));
+    }
+
+    @Override
+    public String[] openVideoOptions(PageInfo page) {
+        return new String[] {
+                ":smb-user=" + (auth.user == null ? "" : auth.user),
+                ":smb-pwd=" + (auth.pass == null ? "" : auth.pass),
+                ":smb-domain=" + (auth.domain == null ? "" : auth.domain)
+        };
     }
 
     private static String encodePath(String path) {
