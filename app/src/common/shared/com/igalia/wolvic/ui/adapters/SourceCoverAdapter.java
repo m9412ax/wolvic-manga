@@ -37,6 +37,8 @@ public class SourceCoverAdapter extends RecyclerView.Adapter<SourceCoverAdapter.
         void onMangaClick(@NonNull SManga manga);
     }
 
+    /** Card width in px, set by the host so covers keep a 3:4 shape. */
+    private int mCardWidth;
     private final Context mContext;
     private final Source mSource;
     private final OnSourceMangaClickListener mListener;
@@ -72,11 +74,21 @@ public class SourceCoverAdapter extends RecyclerView.Adapter<SourceCoverAdapter.
         return new CoverViewHolder(view);
     }
 
+    /** Card width in px; covers are drawn at a 3:4 ratio of it. */
+    public void setCardWidth(int px) {
+        if (mCardWidth != px) {
+            mCardWidth = px;
+            notifyDataSetChanged();
+        }
+    }
+
     @Override
     public void onBindViewHolder(@NonNull CoverViewHolder holder, int position) {
         final SManga manga = mItems.get(position);
         holder.title.setText(manga.getTitle());
-        int targetPx = (int) (200 * MangaSettings.librarySizeFactor(
+        int targetPx = mCardWidth > 0
+                ? Math.round(mCardWidth * 1.33f)
+                : (int) (200 * MangaSettings.librarySizeFactor(
                 MangaSettings.get(mContext).integer(MangaSettings.LIBRARY_SIZE))
                 * mContext.getResources().getDisplayMetrics().density + 0.5f);
         ViewGroup.LayoutParams lp = holder.cover.getLayoutParams();

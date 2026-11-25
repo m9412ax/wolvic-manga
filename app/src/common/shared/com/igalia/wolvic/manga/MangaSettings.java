@@ -99,6 +99,10 @@ public final class MangaSettings {
     /** When true, media files in local/SMB/115 folder listings are ordered with
      *  videos pinned to the top regardless of the active name/date sort mode. */
     public static final String SORT_VIDEO_FIRST = "sort_video_first";
+    /** Target tile width in dp for every cover grid (file browsers, shelf and
+     *  extension sources). Smaller value = more columns = more items per row.
+     *  Range 90..280, default 160. */
+    public static final String THUMB_SIZE = "thumb_size";
     /** File browser thumbnail aspect: 0 = 16:9 landscape, 1 = 3:4 portrait
      *  (default, what most manga pages actually look like), 2 = 9:16 tall. */
     public static final String THUMB_RATIO = "thumb_ratio";
@@ -272,6 +276,8 @@ public final class MangaSettings {
         switch (key) {
             case THUMB_RATIO:
                 return 1;
+            case THUMB_SIZE:
+                return 160;
             case READER_BRIGHTNESS:
                 return 100;
             case READER_AUTO_ADVANCE_SEC:

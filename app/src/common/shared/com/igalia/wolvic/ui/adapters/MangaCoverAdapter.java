@@ -78,6 +78,8 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
 
     private static final int COVER_TARGET_PX = 320;
 
+    /** Card width in px, set by the host so covers keep a 3:4 shape. */
+    private int mCardWidth;
     private final Context mContext;
     private final List<MangaItem> mItems = new ArrayList<>();
     private final OnMangaClickListener mListener;
@@ -88,6 +90,14 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     private final int mTargetPx;
     /** Compact rows for the bookshelf list view. */
     private boolean mCompact = false;
+
+    /** Card width in px; covers are drawn at a 3:4 ratio of it. */
+    public void setCardWidth(int px) {
+        if (mCardWidth != px) {
+            mCardWidth = px;
+            notifyDataSetChanged();
+        }
+    }
 
     public void setCompact(boolean compact) {
         mCompact = compact;
@@ -125,7 +135,9 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         // Only touch layout params when the height actually changes. Setting
         // them unconditionally on every bind requests a layout from inside a
         // RecyclerView layout pass, which can loop forever and freeze the UI.
-        int targetPx = (int) ((mCompact ? 96 : 200)
+        int targetPx = mCardWidth > 0
+                ? Math.round(mCardWidth * 1.33f)
+                : (int) ((mCompact ? 96 : 200)
                 * MangaSettings.librarySizeFactor(
                         MangaSettings.get(mContext).integer(MangaSettings.LIBRARY_SIZE))
                 * mContext.getResources().getDisplayMetrics().density + 0.5f);

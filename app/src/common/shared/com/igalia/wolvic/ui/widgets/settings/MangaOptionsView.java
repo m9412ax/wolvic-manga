@@ -11,6 +11,7 @@ import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -186,6 +187,7 @@ public class MangaOptionsView extends SettingsView
         radio("书架视图大小（窗口与封面）", MangaSettings.LIBRARY_SIZE,
                 new String[]{"小", "中（默认）", "大"},
                 new int[]{0, 1, 2});
+        slider("缩略图大小（越小列数越多，全局生效）", MangaSettings.THUMB_SIZE, 90, 280);
         radio("文件缩略图比例", MangaSettings.THUMB_RATIO,
                 new String[]{"16:9（横向）", "3:4（竖向，默认）", "9:16（长竖）"},
                 new int[]{0, 1, 2});
@@ -392,6 +394,60 @@ public class MangaOptionsView extends SettingsView
                 mSettings.put(key, values[checkedId]);
                 Log.i(TAG, key + "=" + values[checkedId]);
             }
+        });
+        mSections.addView(row);
+    }
+
+    /** Slider row with minus/plus steps; saves on release. */
+    private void slider(String title, String key, int min, int max) {
+        mGroupKeys.add(key);
+        View row = LayoutInflater.from(getContext())
+                .inflate(R.layout.manga_row_slider, mSections, false);
+        label(row, title);
+        SeekBar bar = row.findViewById(R.id.mangaSlider);
+        TextView value = row.findViewById(R.id.mangaSliderValue);
+        TextView minus = row.findViewById(R.id.mangaSliderMinus);
+        TextView plus = row.findViewById(R.id.mangaSliderPlus);
+
+        int current = Math.max(min, Math.min(max, mSettings.integer(key)));
+        bar.setMax(Math.max(1, max - min));
+        bar.setProgress(current - min);
+        value.setText(current + " dp");
+
+        final int[] holder = {current};
+        final int lo = min;
+        final int hi = max;
+        Runnable commit = () -> {
+            mSettings.put(key, holder[0]);
+            value.setText(holder[0] + " dp");
+            bar.setProgress(holder[0] - lo);
+            Log.i(TAG, key + "=" + holder[0]);
+        };
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                holder[0] = lo + progress;
+                value.setText(holder[0] + " dp");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) { }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                commit.run();
+            }
+        });
+        minus.setOnClickListener(v -> {
+            holder[0] = Math.max(lo, holder[0] - 10);
+            commit.run();
+        });
+        plus.setOnClickListener(v -> {
+            holder[0] = Math.min(hi, holder[0] + 10);
+            commit.run();
         });
         mSections.addView(row);
     }

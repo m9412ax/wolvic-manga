@@ -143,6 +143,8 @@ public class MangaFileBrowser extends LinearLayout {
     private boolean mCompact;
     /** 0 = 16:9, 1 = 3:4 (default), 2 = 9:16. */
     private int mThumbRatio = 1;
+    /** Target tile width in dp; drives the column count. */
+    private int mThumbSize = 160;
     private boolean mCanGoBack;
 
     public MangaFileBrowser(Context context) {
@@ -215,7 +217,7 @@ public class MangaFileBrowser extends LinearLayout {
     }
 
     private void applyLayoutManager() {
-        int span = mCompact ? 1 : GRID_SPAN;
+        int span = mCompact ? 1 : gridSpan();
         GridLayoutManager lm = new GridLayoutManager(getContext(), span);
         lm.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override
@@ -261,12 +263,37 @@ public class MangaFileBrowser extends LinearLayout {
         mAdapter.notifyDataSetChanged();
     }
 
+    /** Columns are derived from the configured tile width, so shrinking the
+     *  thumbnails genuinely fits more items per row. */
+    private int gridSpan() {
+        int widthDp = listWidthDp();
+        int target = Math.max(90, mThumbSize);
+        return Math.max(2, Math.min(10, widthDp / target));
+    }
+
+    private int listWidthDp() {
+        int px = mList.getWidth();
+        if (px <= 0) {
+            px = getResources().getDisplayMetrics().widthPixels;
+        }
+        float density = getResources().getDisplayMetrics().density;
+        return Math.max(200, (int) (px / (density <= 0 ? 1f : density)));
+    }
+
+    public void setThumbSize(int dp) {
+        mThumbSize = Math.max(90, Math.min(280, dp));
+        applyLayoutManager();
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
+        }
+    }
+
     private int gridThumbHeight() {
         int listWidth = mList.getWidth();
         if (listWidth <= 0) {
             listWidth = getResources().getDisplayMetrics().widthPixels;
         }
-        int cardWidth = Math.max(dp(80), listWidth / GRID_SPAN - dp(16));
+        int cardWidth = Math.max(dp(60), listWidth / Math.max(1, gridSpan()) - dp(16));
         float ratio = mThumbRatio == 0 ? 9f / 16f : mThumbRatio == 2 ? 16f / 9f : 4f / 3f;
         return Math.round(cardWidth * ratio);
     }
@@ -525,6 +552,12 @@ public class MangaFileBrowser extends LinearLayout {
         void bind(Entry entry) {
             name.setText(entry.name);
             meta.setText(entryMeta(entry));
+            // Row height follows the same size slider as the grid, so shrinking
+            // the thumbnails also fits more rows on screen.
+            ViewGroup.LayoutParams lp = itemView.getLayoutParams();
+            lp.height = Math.max(dp(48), Math.round(mThumbSize * 0.42f
+                    * getResources().getDisplayMetrics().density));
+            itemView.setLayoutParams(lp);
             badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
             if (!TextUtils.isEmpty(entry.badge)) {
                 badge.setText(entry.badge);

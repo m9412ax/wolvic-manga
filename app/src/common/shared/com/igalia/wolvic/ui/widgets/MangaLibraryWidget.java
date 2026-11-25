@@ -268,6 +268,7 @@ public class MangaLibraryWidget extends UIWidget {
                     }
                 }, this::resetProgress);
         mAdapter.setCompact(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1);
+        mAdapter.setCardWidth(gridCardWidthPx(spanCount()));
         mGrid.setAdapter(mAdapter);
         setupLibraryToolbar();
         setupPanelDrag();
@@ -471,6 +472,7 @@ public class MangaLibraryWidget extends UIWidget {
             mPageBrowsers.put(page, host);
             mPageContents.put(page, content);
             fillPage(page, content);
+            syncHeaderVisibility(content);
             // Never let the header eat the browser: cap it at 40% of the page.
             header.post(() -> {
                 int max = root.getHeight() * 2 / 5;
@@ -503,6 +505,7 @@ public class MangaLibraryWidget extends UIWidget {
             browserHost.removeAllViews();
         }
         fillPage(page, content);
+        syncHeaderVisibility(content);
     }
 
     /** Each page keeps its own ScrollView, so hiding and re-showing it used to
@@ -636,6 +639,13 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         mCurrentPage = page;
+        if (page == MangaPage.LIBRARY && mGrid != null && mAdapter != null) {
+            // Re-derive columns from the shared thumbnail size: changing the
+            // slider must affect the shelf the next time it is shown.
+            int span = spanCount();
+            mGrid.setLayoutManager(new GridLayoutManager(getContext(), span));
+            mAdapter.setCardWidth(gridCardWidthPx(span));
+        }
         for (Map.Entry<MangaPage, View> entry : mPageViews.entrySet()) {
             entry.getValue().setVisibility(entry.getKey() == page ? VISIBLE : GONE);
         }
@@ -663,11 +673,27 @@ public class MangaLibraryWidget extends UIWidget {
 
     // --------------------------------------------------------- bookshelf
 
+    /** Card width in px for a grid with [span] columns. */
+    private int gridCardWidthPx(int span) {
+        int width = getWidth();
+        if (width <= 0) {
+            width = Math.round(800 * getResources().getDisplayMetrics().density);
+        }
+        return Math.max(1, width / Math.max(1, span) - dp(16));
+    }
+
     private int spanCount() {
         if (mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1) {
             return 1;
         }
-        return Math.max(2, Math.min(6, mSettings.integer(MangaSettings.SOURCE_SPAN_COUNT)));
+        // One global control: the same tile width drives the shelf, the file
+        // browsers and the extension cover grid.
+        int size = Math.max(90, Math.min(280, mSettings.integer(MangaSettings.THUMB_SIZE)));
+        int widthPx = getWidth();
+        int widthDp = widthPx > 0
+                ? (int) (widthPx / getResources().getDisplayMetrics().density)
+                : 800;
+        return Math.max(2, Math.min(10, widthDp / size));
     }
 
     private boolean hasStoragePermission() {
@@ -1648,6 +1674,30 @@ public class MangaLibraryWidget extends UIWidget {
                     MangaSettings.SMB_PASS, "密码",
                     MangaSettings.SMB_PATH, "起始远程路径（可留空=共享根）"};
             final List<EditText> inputs = bindConfigFields(content, fields);
+            if (smbConfigured()) {
+                // Everything that used to sit in a header row on the browse
+                // page lives here now; the page itself is pure browser.
+                LinearLayout quick = addRow(content);
+                addButton(quick, "▷ 在线阅读当前目录", v -> {
+                    mSmbConfigOpen = false;
+                    refreshPage(MangaPage.SMB);
+                    readSmbFolderOnline(mSmbPath);
+                });
+                addButton(quick, "＋ 加入书架", v -> {
+                    String key = SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
+                            + "/" + mSettings.text(MangaSettings.SMB_SHARE)
+                            + (mSmbPath.isEmpty() ? "" : "/" + mSmbPath);
+                    addRemoteToShelf(key);
+                });
+                addButton(quick, "切换共享", v -> {
+                    mSettings.put(MangaSettings.SMB_SHARE, "");
+                    mSmbShares.clear();
+                    mSmbStatus = "";
+                    mSmbConfigOpen = false;
+                    refreshPage(MangaPage.SMB);
+                });
+            }
+
             LinearLayout actions = addRow(content);
             addButton(actions, "保存并连接", v -> {
                 saveConfigFields(fields, inputs);
@@ -1702,55 +1752,6 @@ public class MangaLibraryWidget extends UIWidget {
             addInfo(content, "状态", mSmbStatus);
         }
 
-        LinearLayout actions = addRow(content);
-        String smbDef = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
-        addButton(actions, smbDef.isEmpty() ? "★ 设为默认位置" : "★ 默认位置", v -> {
-            String target = mSettings.text(MangaSettings.SMB_DEFAULT_PATH);
-            if (target.isEmpty()) {
-                mSettings.put(MangaSettings.SMB_DEFAULT_PATH, mSmbPath);
-                Toast.makeText(getContext(), "已设为 SMB 默认位置", Toast.LENGTH_SHORT).show();
-            } else {
-                mSmbPath = target;
-                connectSmb();
-            }
-        });
-        addButton(actions, "▷ 在线阅读", v -> readSmbFolderOnline(mSmbPath));
-        addButton(actions, "＋ 加入书架", v -> {
-            String key = SHELF_SMB + "smb://" + mSettings.text(MangaSettings.SMB_HOST)
-                    + "/" + mSettings.text(MangaSettings.SMB_SHARE)
-                    + (mSmbPath.isEmpty() ? "" : "/" + mSmbPath);
-            addRemoteToShelf(key);
-        });
-        addButton(actions, "切换共享", v -> {
-            mSettings.put(MangaSettings.SMB_SHARE, "");
-            mSmbShares.clear();
-            mSmbStatus = "";
-            refreshPage(MangaPage.SMB);
-        });
-        addButton(actions, "设置", v -> {
-            mSmbConfigOpen = true;
-            refreshPage(MangaPage.SMB);
-        });
-
-        // Apply the shared sort mode (name/date, asc/desc). Folders always first.
-        final int smbSort = mSettings.integer(MangaSettings.SORT_MODE);
-        final java.util.Comparator<MangaSmb.Entry> smbBase =
-                SortUtil.comparator(smbSort,
-                        (MangaSmb.Entry e) -> e.name, (MangaSmb.Entry e) -> e.modifiedMs);
-        final String[] smbVideoExt = mSettings.videoExtensions();
-        mSmbEntries.sort((a, b) -> {
-            if (a.directory != b.directory) return a.directory ? -1 : 1;
-            if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST) && !a.directory) {
-                boolean va = MangaSettings.hasExtension(a.name, smbVideoExt);
-                boolean vb = MangaSettings.hasExtension(b.name, smbVideoExt);
-                if (va != vb) return va ? -1 : 1;
-            }
-            return smbBase.compare(a, b);
-        });
-        if (mSmbEntries.isEmpty()) {
-            addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
-            return;
-        }
         // Unified browser: identical cards / breadcrumb / sorting as local files.
         List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (MangaSmb.Entry entry : mSmbEntries) {
@@ -1839,11 +1840,29 @@ public class MangaLibraryWidget extends UIWidget {
         }
     }
 
+    /** An empty header must not reserve blank space above the browser. */
+    private void syncHeaderVisibility(LinearLayout content) {
+        android.view.ViewParent parent = content.getParent();
+        if (!(parent instanceof ScrollView)) {
+            return;
+        }
+        ScrollView header = (ScrollView) parent;
+        boolean hasContent = false;
+        for (int i = 0; i < content.getChildCount(); i++) {
+            if (content.getChildAt(i).getVisibility() == View.VISIBLE) {
+                hasContent = true;
+                break;
+            }
+        }
+        header.setVisibility(hasContent ? View.VISIBLE : View.GONE);
+    }
+
     /** Applies the shared sort settings, wires the gear button, then attaches. */
     private void finishBrowser(MangaFileBrowser browser, MangaPage page, Runnable settings) {
         browser.setSortConfig(mSettings.integer(MangaSettings.SORT_MODE),
                 mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
         browser.setThumbRatio(mSettings.integer(MangaSettings.THUMB_RATIO));
+        browser.setThumbSize(mSettings.integer(MangaSettings.THUMB_SIZE));
         browser.setOnSettingsClick(settings);
         attachBrowser(page, browser);
     }
@@ -2196,10 +2215,6 @@ public class MangaLibraryWidget extends UIWidget {
         if (mP115DirStatus != null && !mP115DirStatus.isEmpty()) {
             addInfo(content, "状态", mP115DirStatus);
         }
-        LinearLayout dirActions = addRow(content);
-        addButton(dirActions, "▷ 在线阅读", v -> readP115Online(mP115Cid, mP115Title));
-        addButton(dirActions, "＋ 书架", v ->
-                addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title));
 
         final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
         final java.util.Comparator<Manga115Api.DirEntry> p115Base =
@@ -2504,6 +2519,18 @@ public class MangaLibraryWidget extends UIWidget {
         });
 
         if (mNetdiskSettingsOpen) {
+            LinearLayout quick = addRow(content);
+            addButton(quick, "▷ 在线阅读当前目录", v -> {
+                mNetdiskSettingsOpen = false;
+                refreshPage(MangaPage.WEBDAV);
+                if ("webdav".equals(mNetdiskMode)) {
+                    downloadCurrentWebDav();
+                } else {
+                    readP115Online(mP115Cid, mP115Title);
+                }
+            });
+            addButton(quick, "＋ 115 加入书架", v ->
+                    addRemoteToShelf(SHELF_115 + mP115Cid + "|" + mP115Title));
             fill115LoginSection(content);
             fillWebDavSettings(content);
             return;
@@ -2614,8 +2641,6 @@ public class MangaLibraryWidget extends UIWidget {
         if (mWebDavStatus != null && !mWebDavStatus.isEmpty()) {
             addInfo(content, "状态", mWebDavStatus);
         }
-        LinearLayout actions = addRow(content);
-        addButton(actions, "▷ 在线阅读", v -> downloadCurrentWebDav());
 
         if (mWebDavEntries.isEmpty()) {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
@@ -3035,7 +3060,9 @@ public class MangaLibraryWidget extends UIWidget {
             mSourceAdapter = new SourceCoverAdapter(getContext(), source, this::openSourceManga);
             mSourceGrid.setAdapter(mSourceAdapter);
         }
-        mSourceGrid.setLayoutManager(new GridLayoutManager(getContext(), Math.max(2, spanCount())));
+        int sourceSpan = Math.max(2, spanCount());
+        mSourceGrid.setLayoutManager(new GridLayoutManager(getContext(), sourceSpan));
+        mSourceAdapter.setCardWidth(gridCardWidthPx(sourceSpan));
         mSourceAdapter.update(mSourceMangas);
         content.addView(mSourceGrid, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
