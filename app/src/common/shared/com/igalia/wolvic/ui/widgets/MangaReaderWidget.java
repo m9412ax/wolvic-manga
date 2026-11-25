@@ -80,11 +80,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  Keep a wide margin. This is a DRAW limit, not a decode limit - pages
      *  above it are decoded at 1:1 into tiles, so no detail is lost. */
     private static final long SINGLE_BITMAP_LIMIT = 72L * 1024 * 1024;
-    /** Budget for the first (window-filling) decode pass. A 4K page decodes at
-     *  sample=2 -> ~10 MB instead of 42 MB, cutting a page turn from ~3-6 s to
-     *  well under a second. The visible page is upgraded to native resolution
-     *  afterwards by restorePageDetail(). */
-    private static final long PREVIEW_BITMAP_BYTES = 16L * 1024 * 1024;
     /** Each region tile must also stay far below the draw limit. */
     private static final long TILE_BYTES_LIMIT = 40L * 1024 * 1024;
     /** Above this size, holding every 1:1 tile at once would exhaust memory;
@@ -148,6 +143,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  the "loading" flag block chapter crossing forever. */
     private volatile long mChapterLoadingSince;
     private float mPendingStripFrac;
+    private int[] mAnchorCache;
+    private int mAnchorCacheSize = -1;
+    private boolean mAnchorCacheDouble;
     private final Runnable mChapterSaveTick = this::saveChapterProgress;
     private volatile int mLoadGeneration;
     private Bitmap mCurrent;
@@ -395,12 +393,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     (v, l, t, r, b, ol, ot, or_, ob) -> updateStripTransform());
         }
         setupReaderDrag();
-        // Opaque (not alpha-blended): the video layer is full-bleed and very
-        // large (5704x3373 px on Pico Neo 3), so blending it cost enough GPU
-        // time per frame to drop the VR compositor below its frame budget.
-        // setOpaque() is only valid before the SurfaceTexture exists, hence it
-        // is set here once and never toggled.
-        mVideoTexture.setOpaque(true);
+        mVideoTexture.setOpaque(false);
         mVideoTexture.setSurfaceTextureListener(this);
         mVideoTexture.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
             if (isVideoPage()) {
@@ -709,6 +702,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPages.addAll(all);
         }
 
+        // Warm the size cache in the background: pageGroupAnchors() needs the
+        // orientation of every page, and decoding 65 headers lazily on the UI
+        // thread was what froze the reader for seconds on open.
+        final int warmCount = Math.min(mPages.size(), 400);
+        for (int i = 0; i < warmCount; i++) {
+            File f = mPages.get(i);
+            if (!MangaSettings.hasExtension(f.getName(), videoExt)) {
+                MangaImageDecoder.requestDimensions(f, null);
+            }
+        }
         int saved = startIndex >= 0 ? startIndex
                 : (folder == null || !mSettings.bool(MangaSettings.PROGRESS_ENABLED)
                         ? 0 : progressPrefs().getInt(pageProgressKey(), 0));
@@ -952,7 +955,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (all.size() <= mPages.size()) {
             return; // nothing new landed
         }
-        int keepIndex = 0;
+        int keepIndex = -1;
         if (current != null) {
             for (int i = 0; i < all.size(); i++) {
                 if (all.get(i).equals(current)) {
@@ -960,6 +963,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     break;
                 }
             }
+        }
+        if (current != null && keepIndex < 0) {
+            // The page we are on is no longer in the listing (e.g. the video
+            // marker was evicted). Abort instead of snapping to page 1: that
+            // is what made a video "disappear and show only pictures" after
+            // leaving and reopening it.
+            Log.w(TAG, "chapter rebuild skipped: current page vanished");
+            return;
+        }
+        if (keepIndex < 0) {
+            keepIndex = 0;
         }
         mPages.clear();
         mPages.addAll(all);
@@ -1193,9 +1207,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // SurfaceTexture delivered by onSurfaceTextureAvailable().
             // No synthetic texture, no path tricks, no extra layout work.
             mPageImage.setVisibility(GONE);
-            // Cap the rasterised panel size before the Surface is (re)created,
-            // otherwise the TextureView keeps the large buffer for this frame.
-            applyVideoRenderBudget();
             mVideoTexture.setVisibility(VISIBLE);
             // Keep key/joystick events flowing to the reader: a TextureView or
             // the video bar's SeekBar/Buttons can steal focus, which made the
@@ -1233,9 +1244,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
 
-        // Back to a still image: give the panel its full pixel size again so
-        // text stays sharp.
-        restoreRenderBudget();
         showVideoBar(false);
         stopVideoTick();
         if (mVideoProgressTrack != null) {
@@ -1376,6 +1384,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void restorePageDetail(Bitmap preview) {
+        if (pageCacheBudget() >= SINGLE_BITMAP_LIMIT) {
+            return;
+        }
         // Already showing the cached detail pass - nothing to upgrade.
         if (preview == mCache.get(detailKey(mIndex))) {
             return;
@@ -1388,11 +1399,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (MangaImageDecoder.isAvif(first)) {
             return;
         }
-        // Spread decision comes from the SAME predicate paging uses
-        // (startsTwoPageSpread). Previously display merged whenever two pages
-        // happened to be portrait while paging used another rule, which is how
-        // a "next page" could silently skip the second half of a spread.
-        File second = mDoublePage && !isContinuous() && startsTwoPageSpread(mIndex)
+        File second = mDoublePage && mIndex + 1 < mPages.size() && !isVideoIndex(mIndex + 1)
                 ? mPages.get(mIndex + 1) : null;
         int[] dimensions = MangaImageDecoder.cachedDimensions(first);
         if (second == null && (dimensions == null
@@ -1774,17 +1781,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         PageLoad load = mPendingPages.get(key);
         if (load == null) {
-            File second = mDoublePage && !isContinuous() && startsTwoPageSpread(index)
-                    ? mPages.get(index + 1) : null;
-            // Two-pass decode: this pass only has to fill the window, so it
-            // targets a display-sized bitmap (~4x less work on a 4K page).
-            // restorePageDetail() then upgrades the visible page to native
-            // resolution in the background. Decoding every page at 4096x2600
-            // (42 MB, 2.5-5.8 s each) was why a page turn always showed a
-            // loading overlay.
-            long budget = isContinuous() ? pageCacheBudget() : PREVIEW_BITMAP_BYTES;
+            File second = mDoublePage && !isContinuous() && index + 1 < mPages.size()
+                    && !isVideoIndex(index + 1) ? mPages.get(index + 1) : null;
             load = new PageLoad(key, index, mPages.get(index), second,
-                    budget, mSettings.bool(MangaSettings.READER_CROP_BORDERS));
+                    pageCacheBudget(), mSettings.bool(MangaSettings.READER_CROP_BORDERS));
             mPendingPages.put(key, load);
         }
         ordered.add(load);
@@ -2385,13 +2385,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         } catch (Exception ignored) { }
     }
 
-    /** True when the page is a portrait still, judged ONLY from the cached
-     *  size. Decoding bounds here used to run once per page from
-     *  pageGroupAnchors(), so opening a 65-page SMB folder decode-blocked the
-     *  UI thread for 5 s (system: topResumeLossTimeout) and looked like a
-     *  frozen black reader. Unknown sizes are probed in the background and the
-     *  page is shown alone until the answer arrives; display, preload and
-     *  paging all use THIS predicate, so they can never disagree. */
     private boolean isPortraitPage(File file) {
         if (file == null) {
             return false;
@@ -2400,35 +2393,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (cached != null && cached.length >= 2 && cached[0] > 0 && cached[1] > 0) {
             return cached[1] >= cached[0];
         }
-        MangaImageDecoder.requestDimensions(file, mDimensionsProbed);
-        return false;
-    }
-
-    /** Fired on the main thread after a background size probe. If the answer
-     *  turns the current single page into a spread, rebuild it once. */
-    private int mLastSpreadRebuildIndex = -1;
-    private final Runnable mDimensionsProbed = new Runnable() {
-        @Override
-        public void run() {
-            if (mDestroyed || mPages.isEmpty() || !mDoublePage || isContinuous()) {
-                return;
-            }
-            if (mIndex < 0 || mIndex >= mPages.size()) {
-                return;
-            }
-            if (!startsTwoPageSpread(mIndex)) {
-                return;
-            }
-            if (mLastSpreadRebuildIndex == mIndex) {
-                return;   // already rebuilt for this page
-            }
-            // Size known now -> the cached display was decoded as a single
-            // page. Rebuild it as a spread exactly once.
-            mLastSpreadRebuildIndex = mIndex;
-            Log.i(TAG, "dimensions probed, rebuilding spread at " + mIndex);
-            requestPage(mIndex);
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        if (!MangaImageDecoder.decodeBounds(file, bounds) || bounds.outWidth <= 0
+                || bounds.outHeight <= 0) {
+            return false;
         }
-    };
+        return bounds.outHeight >= bounds.outWidth;
+    }
 
     private boolean isPortraitIndex(int index) {
         return index >= 0 && index < mPages.size() && !isVideoIndex(index)
@@ -2447,9 +2418,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  Paging must move between anchors, never to the second page of a spread:
      *  going back from the landscape page at 2 returns to anchor 0, not 1. */
     private int[] pageGroupAnchors() {
+        // Memoised: this is O(pages) and every isPortraitPage() call may decode
+        // a page's bounds, so recomputing on every page turn made a 65-page
+        // folder decode all its headers again and again (5 s+ freezes).
+        if (mAnchorCache != null && mAnchorCacheSize == mPages.size()
+                && mAnchorCacheDouble == (mDoublePage && !isContinuous())) {
+            return mAnchorCache;
+        }
         ArrayList<Integer> list = new ArrayList<>();
         if (mPages.isEmpty()) {
-            return new int[0];
+            mAnchorCache = new int[0];
+            mAnchorCacheSize = 0;
+            mAnchorCacheDouble = mDoublePage && !isContinuous();
+            return mAnchorCache;
         }
         int index = 0;
         while (index < mPages.size()) {
@@ -2460,6 +2441,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         for (int i = 0; i < anchors.length; i++) {
             anchors[i] = list.get(i);
         }
+        mAnchorCache = anchors;
+        mAnchorCacheSize = mPages.size();
+        mAnchorCacheDouble = mDoublePage && !isContinuous();
         return anchors;
     }
 
@@ -4151,62 +4135,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /**
-     * Pixel size the panel is RASTERISED at while a video is on screen.
-     *
-     * Measured on the device (Pico Neo 3): reading 4K images costs FrmGpu ~3 ms
-     * at 72 fps, but as soon as a 4K video is drawn the same frame costs
-     * 41-51 ms and the app drops to 19-25 fps with GPU pegged at 99%. Decode is
-     * NOT the problem (OMX.qcom.video.decoder.avc, 3840x2160, use_surface=1);
-     * the cost is filling a 5704x3373 widget texture with the video every
-     * frame. The system player and Thru3D never do that - they hand a single
-     * video layer straight to the compositor.
-     *
-     * We cannot hand a layer to Wolvic's compositor from inside a UIWidget, so
-     * the practical lever is the size of the texture we rasterise into. The
-     * video keeps decoding at full 4K; only the panel texture is capped, and
-     * worldWidth is untouched so the panel stays the same size in VR.
-     */
-    private static final int VIDEO_MAX_RENDER_WIDTH = 2560;
-    private int mSavedRenderWidth = -1;
-    private int mSavedRenderHeight = -1;
-
-    private void applyVideoRenderBudget() {
-        WidgetPlacement p = getPlacement();
-        if (p == null || p.width <= 0 || mSavedRenderWidth > 0) {
-            return;
-        }
-        if (p.width <= VIDEO_MAX_RENDER_WIDTH) {
-            Log.i(TAG, "video render budget: panel already " + p.width + "px");
-            return;
-        }
-        final float f = (float) VIDEO_MAX_RENDER_WIDTH / (float) p.width;
-        mSavedRenderWidth = p.width;
-        mSavedRenderHeight = p.height;
-        p.width = VIDEO_MAX_RENDER_WIDTH;
-        p.height = Math.max(2, Math.round(p.height * f));
-        if (mWidgetManager != null) {
-            mWidgetManager.updateWidget(this);
-        }
-        Log.i(TAG, "video render budget " + mSavedRenderWidth + "x" + mSavedRenderHeight
-                + " -> " + p.width + "x" + p.height);
-    }
-
-    private void restoreRenderBudget() {
-        if (mSavedRenderWidth <= 0) {
-            return;
-        }
-        WidgetPlacement p = getPlacement();
-        p.width = mSavedRenderWidth;
-        p.height = mSavedRenderHeight;
-        mSavedRenderWidth = -1;
-        mSavedRenderHeight = -1;
-        if (mWidgetManager != null) {
-            mWidgetManager.updateWidget(this);
-        }
-        Log.i(TAG, "video render budget restored " + p.width + "x" + p.height);
-    }
-
     private int dp(int value) {
         return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -4378,26 +4306,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // A local file gives MediaPlayer its full (OS-cached, large) buffer and
         // removes all network jitter from the decoder - the only reliable fix
         // for the every-few-seconds stutter of MediaDataSource streaming.
-        if (RemoteManga.isVideoMarker(page)) {
-            if (mRemoteManga == null) {
-                // A marker without its remote source cannot be streamed: it is
-                // a few bytes of text, so MediaPlayer would fail with a
-                // confusing "无法播放". Say what actually happened.
-                Log.e(TAG, "video marker without remote source: " + page.getName());
-                try { player.reset(); player.release(); } catch (Throwable ignored) { }
-                if (mMediaPlayer == player) mMediaPlayer = null;
-                mVideoPlayFailed = true;
-                hideLoading();
-                showHint("远程视频源已断开，请重新进入：" + page.getName());
-                return;
-            }
-            RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
-            // ExoPlayer owns network reads, buffering, seeking and decoding.
-            // Release the unused Android MediaPlayer first: two engines on one
-            // SurfaceTexture fight over the same buffer queue.
-            try { player.reset(); player.release(); } catch (Throwable ignored) { }
-            if (mMediaPlayer == player) mMediaPlayer = null;
-            startExoVideo(page, pi);
+        // Remote videos (SMB/115) are tiny marker files. Download the real
+        // bytes to a LOCAL file in the background, then play that local path.
+        // This is the path that played smoothly before; ExoPlayer was removed
+        // because streaming straight off the share kept rebuffering.
+        if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
+            startLocalVideoCache(player, page, generation);
             return;
         }
         prepareLocalPathVideo(player, page);
