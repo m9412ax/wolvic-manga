@@ -328,17 +328,19 @@ public class MangaFileBrowser extends LinearLayout {
         mSorted.addAll(mEntries);
         final Comparator<Entry> byName = (a, b) ->
                 MangaCoverAdapter.naturalCompare(a.name, b.name);
-        Comparator<Entry> cmp;
+        Comparator<Entry> chosen;
         if (mSortKey == SORT_NAME) {
-            cmp = byName;
+            chosen = byName;
         } else if (mSortKey == SORT_DATE) {
-            cmp = (a, b) -> Long.compare(b.modifiedMs, a.modifiedMs);
+            chosen = (a, b) -> Long.compare(b.modifiedMs, a.modifiedMs);
         } else {
-            cmp = (a, b) -> Long.compare(b.size, a.size);
+            chosen = (a, b) -> Long.compare(b.size, a.size);
         }
         if (mSortKey == SORT_NAME && !mSortAsc) {
-            cmp = cmp.reversed();
+            chosen = chosen.reversed();
         }
+        // Effectively final: the comparator below is captured by a lambda.
+        final Comparator<Entry> cmp = chosen;
         Collections.sort(mSorted, (a, b) -> {
             // Folders always come first: that is what a file manager is
             // expected to do regardless of the chosen sort.
