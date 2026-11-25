@@ -11,45 +11,6 @@
     android:clipToOutline="true"
     android:padding="16dp">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-        <TextView
-            android:id="@+id/libraryTitle"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="漫画书架"
-            android:textColor="#FFDDE4E3"
-            android:textSize="26sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/settingsShortcutButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⚙ 自定义快捷键"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFFFF"
-            android:textSize="16sp"
-            android:background="#FF1A2120"
-            android:paddingLeft="14dp"
-            android:paddingRight="14dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp" />
-
-        <TextView
-            android:id="@+id/pageHint"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="  拖动下方白条可移动位置"
-            android:textColor="#FF8A8A96"
-            android:textSize="14sp" />
-    </LinearLayout>
-
     <FrameLayout
         android:id="@+id/pageContainer"
         android:layout_width="match_parent"
@@ -86,6 +47,17 @@
                 android:scrollbars="vertical" />
         </LinearLayout>
     </FrameLayout>
+
+    <!-- Source name, centred and small, in the empty strip under the grid.
+         Replaces the old 28sp title row so the content gets the space. -->
+    <TextView
+        android:id="@+id/panelSourceLabel"
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:gravity="center"
+        android:textColor="#FF7A8B89"
+        android:textSize="13sp"
+        android:text="书架" />
 
     <!-- The grab bar is now a separate floating widget (MangaDragBarWidget)
          in the gap between the shelf and the tray. This id is kept hidden with

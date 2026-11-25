@@ -121,6 +121,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
     private float mBaseTrayWorldWidth = -1f;
     private int mBaseTrayWidth = -1;
     private int mBaseTrayHeight = -1;
+    /** Untouched world width from initial placement; mode changes scale from it. */
+    private float mOriginalWorldWidth = -1f;
     /** True only while parented to a manga surface, not to a browser window. */
     private boolean mParentedToManga = false;
 
@@ -688,14 +690,48 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         if (mWidgetManager == null) {
             return;
         }
-        int height = WidgetPlacement.dpDimension(getContext(),
+        Context context = getContext();
+        int baseWidth = WidgetPlacement.dpDimension(context, R.dimen.tray_width);
+        int height = WidgetPlacement.dpDimension(context,
                 reader ? R.dimen.tray_height_reader : R.dimen.tray_height);
+
+        // Fit the frame to the row that is actually visible: reader mode has
+        // nine 40dp buttons, which used to overflow the fixed 340dp quad.
+        int width = baseWidth;
+        View row = null;
+        if (mBinding != null) {
+            row = mMangaMode == MODE_BROWSER ? mBinding.trayButtons
+                    : mMangaMode == MODE_MANGA ? mBinding.mangaButtons
+                    : mBinding.readerButtons;
+        }
+        if (row instanceof ViewGroup) {
+            int visible = 0;
+            ViewGroup group = (ViewGroup) row;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                if (group.getChildAt(i).getVisibility() == View.VISIBLE) {
+                    visible++;
+                }
+            }
+            int needed = visible * WidgetPlacement.dpDimension(context, R.dimen.tray_button_size)
+                    + WidgetPlacement.dpDimension(context, R.dimen.tray_icon_padding_min) * 3;
+            width = Math.max(baseWidth, needed);
+        }
+
         WidgetPlacement p = getPlacement();
-        if (p.height == height && mBaseTrayHeight == height) {
+        if (p.height == height && p.width == width && mBaseTrayHeight == height
+                && mBaseTrayWidth == width) {
             return;
         }
         p.height = height;
+        p.width = width;
+        // Keep the control bar the same physical height while letting it grow
+        // horizontally, otherwise extra buttons would be squeezed, not shown.
+        if (mOriginalWorldWidth > 0f && baseWidth > 0) {
+            p.worldWidth = mOriginalWorldWidth * (width / (float) baseWidth);
+        }
         mBaseTrayHeight = height;
+        mBaseTrayWidth = width;
+        mBaseTrayWorldWidth = p.worldWidth;
         mWidgetManager.updateWidget(this);
     }
 
@@ -851,6 +887,9 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         aPlacement.cylinder = false;
         aPlacement.textureScale *= aPlacement.worldWidth;
         mBaseTrayWorldWidth = aPlacement.worldWidth;
+        if (mOriginalWorldWidth <= 0f) {
+            mOriginalWorldWidth = aPlacement.worldWidth;
+        }
         mBaseTrayWidth = aPlacement.width;
         mBaseTrayHeight = aPlacement.height;
         updatePlacementTranslationZ();

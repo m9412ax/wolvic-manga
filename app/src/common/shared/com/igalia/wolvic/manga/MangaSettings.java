@@ -99,6 +99,9 @@ public final class MangaSettings {
     /** When true, media files in local/SMB/115 folder listings are ordered with
      *  videos pinned to the top regardless of the active name/date sort mode. */
     public static final String SORT_VIDEO_FIRST = "sort_video_first";
+    /** File browser thumbnail aspect: 0 = 16:9 landscape, 1 = 3:4 portrait
+     *  (default, what most manga pages actually look like), 2 = 9:16 tall. */
+    public static final String THUMB_RATIO = "thumb_ratio";
     /** Bookshelf view: 0 = icon grid, 1 = compact list. */
     public static final String LIBRARY_VIEW_MODE = "library_view_mode";
     /** Bookshelf window size: 0 = small (legacy), 1 = medium (default), 2 = large. */
@@ -267,6 +270,8 @@ public final class MangaSettings {
 
     public static int defaultInt(String key) {
         switch (key) {
+            case THUMB_RATIO:
+                return 1;
             case READER_BRIGHTNESS:
                 return 100;
             case READER_AUTO_ADVANCE_SEC:

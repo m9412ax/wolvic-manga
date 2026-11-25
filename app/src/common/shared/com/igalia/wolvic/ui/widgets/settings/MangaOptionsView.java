@@ -186,6 +186,9 @@ public class MangaOptionsView extends SettingsView
         radio("书架视图大小（窗口与封面）", MangaSettings.LIBRARY_SIZE,
                 new String[]{"小", "中（默认）", "大"},
                 new int[]{0, 1, 2});
+        radio("文件缩略图比例", MangaSettings.THUMB_RATIO,
+                new String[]{"16:9（横向）", "3:4（竖向，默认）", "9:16（长竖）"},
+                new int[]{0, 1, 2});
         radio("封面解码尺寸", MangaSettings.SOURCE_THUMB_PX,
                 new String[]{"320 px", "480 px", "720 px", "1080 px"},
                 new int[]{320, 480, 720, 1080});

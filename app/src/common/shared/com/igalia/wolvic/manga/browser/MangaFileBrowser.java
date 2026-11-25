@@ -141,6 +141,8 @@ public class MangaFileBrowser extends LinearLayout {
     private int mSortMode = 0;
     private boolean mVideoFirst;
     private boolean mCompact;
+    /** 0 = 16:9, 1 = 3:4 (default), 2 = 9:16. */
+    private int mThumbRatio = 1;
     private boolean mCanGoBack;
 
     public MangaFileBrowser(Context context) {
@@ -213,7 +215,7 @@ public class MangaFileBrowser extends LinearLayout {
     }
 
     private void applyLayoutManager() {
-        int span = mCompact ? COMPACT_SPAN : GRID_SPAN;
+        int span = mCompact ? 1 : GRID_SPAN;
         GridLayoutManager lm = new GridLayoutManager(getContext(), span);
         lm.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override
@@ -251,6 +253,22 @@ public class MangaFileBrowser extends LinearLayout {
         if (!mSorted.isEmpty()) {
             sortAndRender();
         }
+    }
+
+    /** Thumbnail aspect for the grid: 0 = 16:9, 1 = 3:4, 2 = 9:16. */
+    public void setThumbRatio(int ratio) {
+        mThumbRatio = Math.max(0, Math.min(2, ratio));
+        mAdapter.notifyDataSetChanged();
+    }
+
+    private int gridThumbHeight() {
+        int listWidth = mList.getWidth();
+        if (listWidth <= 0) {
+            listWidth = getResources().getDisplayMetrics().widthPixels;
+        }
+        int cardWidth = Math.max(dp(80), listWidth / GRID_SPAN - dp(16));
+        float ratio = mThumbRatio == 0 ? 9f / 16f : mThumbRatio == 2 ? 16f / 9f : 4f / 3f;
+        return Math.round(cardWidth * ratio);
     }
 
     /** Opens the host settings screen; null hides nothing but does nothing. */
@@ -374,20 +392,29 @@ public class MangaFileBrowser extends LinearLayout {
 
     // ------------------------------------------------------------------ items
 
-    private class Adapter extends RecyclerView.Adapter<Holder> {
+    private class Adapter extends RecyclerView.Adapter<BaseHolder> {
+
+        @Override
+        public int getItemViewType(int position) {
+            // 0 = cover grid, 1 = true single-column list row.
+            return mCompact ? 1 : 0;
+        }
 
         @NonNull
         @Override
-        public Holder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            View v = LayoutInflater.from(parent.getContext())
-                    .inflate(R.layout.manga_browser_item, parent, false);
-            return new Holder(v);
+        public BaseHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            LayoutInflater inflater = LayoutInflater.from(parent.getContext());
+            if (viewType == 1) {
+                return new RowHolder(inflater.inflate(
+                        R.layout.manga_browser_row, parent, false));
+            }
+            return new GridHolder(inflater.inflate(
+                    R.layout.manga_browser_item, parent, false));
         }
 
         @Override
-        public void onBindViewHolder(@NonNull Holder holder, int position) {
-            Entry entry = mSorted.get(position);
-            holder.bind(entry);
+        public void onBindViewHolder(@NonNull BaseHolder holder, int position) {
+            holder.bind(mSorted.get(position));
         }
 
         @Override
@@ -396,7 +423,37 @@ public class MangaFileBrowser extends LinearLayout {
         }
     }
 
-    private class Holder extends RecyclerView.ViewHolder {
+    private abstract class BaseHolder extends RecyclerView.ViewHolder {
+        BaseHolder(@NonNull View itemView) {
+            super(itemView);
+            itemView.setOnClickListener(v -> openAt(getBindingAdapterPosition()));
+            itemView.setOnFocusChangeListener((v, hasFocus) -> {
+                // Dim non-focused rows instead of repainting the background:
+                // setBackgroundColor would square off the rounded card.
+                v.setAlpha(hasFocus ? 1f : 0.86f);
+                v.setScaleX(hasFocus ? 1.03f : 1f);
+                v.setScaleY(hasFocus ? 1.03f : 1f);
+            });
+        }
+
+        void openAt(int pos) {
+            if (pos == RecyclerView.NO_POSITION || pos >= mSorted.size()
+                    || mCallback == null) {
+                return;
+            }
+            Entry entry = mSorted.get(pos);
+            if (entry.directory) {
+                mCallback.onNavigate(entry.path);
+            } else {
+                mCallback.onOpen(entry);
+            }
+        }
+
+        abstract void bind(Entry entry);
+    }
+
+    /** Cover tile (grid mode). */
+    private class GridHolder extends BaseHolder {
         final ImageView thumb;
         final TextView glyph;
         final TextView name;
@@ -404,7 +461,7 @@ public class MangaFileBrowser extends LinearLayout {
         final TextView badge;
         final FrameLayout thumbWrap;
 
-        Holder(@NonNull View itemView) {
+        GridHolder(@NonNull View itemView) {
             super(itemView);
             thumb = itemView.findViewById(R.id.itemThumb);
             glyph = itemView.findViewById(R.id.itemGlyph);
@@ -412,36 +469,17 @@ public class MangaFileBrowser extends LinearLayout {
             meta = itemView.findViewById(R.id.itemMeta);
             badge = itemView.findViewById(R.id.itemBadge);
             thumbWrap = (FrameLayout) thumb.getParent();
-
-            itemView.setOnClickListener(v -> {
-                int pos = getBindingAdapterPosition();
-                if (pos == RecyclerView.NO_POSITION || pos >= mSorted.size()) {
-                    return;
-                }
-                Entry entry = mSorted.get(pos);
-                if (mCallback == null) {
-                    return;
-                }
-                if (entry.directory) {
-                    mCallback.onNavigate(entry.path);
-                } else {
-                    mCallback.onOpen(entry);
-                }
-            });
-            itemView.setOnFocusChangeListener((v, hasFocus) -> {
-                itemView.setBackgroundColor(hasFocus ? 0xFF252B2B : 0xFF1A2120);
-                v.setScaleX(hasFocus ? 1.04f : 1f);
-                v.setScaleY(hasFocus ? 1.04f : 1f);
-            });
         }
 
+        @Override
         void bind(Entry entry) {
             name.setText(entry.name);
             meta.setText(entryMeta(entry));
 
-            // Compact mode: shorter tile so many rows fit on the panel.
+            // Aspect ratio follows the setting: manga pages are portrait, so
+            // the old hard-coded 16:9 strip cut most of the preview off.
             ViewGroup.LayoutParams lp = thumbWrap.getLayoutParams();
-            lp.height = dp(mCompact ? 74 : 118);
+            lp.height = gridThumbHeight();
             thumbWrap.setLayoutParams(lp);
 
             badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
@@ -449,6 +487,48 @@ public class MangaFileBrowser extends LinearLayout {
                 badge.setText(entry.badge);
             }
 
+            if (entry.thumb != null && entry.thumb.isFile()) {
+                glyph.setVisibility(GONE);
+                thumb.setVisibility(VISIBLE);
+                loadThumb(thumb, entry.thumb);
+            } else {
+                thumb.setImageDrawable(null);
+                thumb.setTag(null);
+                thumb.setVisibility(GONE);
+                glyph.setVisibility(VISIBLE);
+                glyph.setText(entry.glyph == null
+                        ? (entry.directory ? "▣" : entry.video ? "▶" : "▤")
+                        : entry.glyph);
+                glyph.setTextColor(entry.video ? 0xFFF2B880 : 0xFF80D5D2);
+            }
+        }
+    }
+
+    /** Compact row (list mode): 48dp icon + two text lines. */
+    private class RowHolder extends BaseHolder {
+        final ImageView thumb;
+        final TextView glyph;
+        final TextView name;
+        final TextView meta;
+        final TextView badge;
+
+        RowHolder(@NonNull View itemView) {
+            super(itemView);
+            thumb = itemView.findViewById(R.id.rowThumb);
+            glyph = itemView.findViewById(R.id.rowGlyph);
+            name = itemView.findViewById(R.id.rowName);
+            meta = itemView.findViewById(R.id.rowMeta);
+            badge = itemView.findViewById(R.id.rowBadge);
+        }
+
+        @Override
+        void bind(Entry entry) {
+            name.setText(entry.name);
+            meta.setText(entryMeta(entry));
+            badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
+            if (!TextUtils.isEmpty(entry.badge)) {
+                badge.setText(entry.badge);
+            }
             if (entry.thumb != null && entry.thumb.isFile()) {
                 glyph.setVisibility(GONE);
                 thumb.setVisibility(VISIBLE);

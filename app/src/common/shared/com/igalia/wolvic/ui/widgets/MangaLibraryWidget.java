@@ -129,6 +129,7 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private TextView mTitle;
+    private TextView mPanelSource;
     private FrameLayout mPageContainer;
     private LinearLayout mLibraryPage;
     private TextView mEmptyText;
@@ -244,6 +245,7 @@ public class MangaLibraryWidget extends UIWidget {
         LayoutInflater.from(getContext()).inflate(R.layout.manga_library, this, true);
 
         mTitle = findViewById(R.id.libraryTitle);
+        mPanelSource = findViewById(R.id.panelSourceLabel);
         mPageContainer = findViewById(R.id.pageContainer);
         mLibraryPage = findViewById(R.id.libraryPage);
         mEmptyText = findViewById(R.id.emptyText);
@@ -648,9 +650,14 @@ public class MangaLibraryWidget extends UIWidget {
         for (Map.Entry<MangaPage, View> entry : mPageViews.entrySet()) {
             entry.getValue().setVisibility(entry.getKey() == page ? VISIBLE : GONE);
         }
-        // No legacy "漫画 · 本地文件" prefix: the browser header already names
-        // the current location.
-        mTitle.setText(page.label);
+        // The old 28sp title row is gone. The location is now a small centred
+        // label in the empty strip at the bottom of the panel.
+        if (mPanelSource != null) {
+            mPanelSource.setText(sourceLabel(page));
+        }
+        if (mTitle != null) {
+            mTitle.setText(page.label);
+        }
         refreshCurrentPage();
         scrollPageToTop(page);
         // SMB: once configured, auto-connect on entry and show the share as a
@@ -1545,8 +1552,6 @@ public class MangaLibraryWidget extends UIWidget {
         final java.util.Comparator<File> localCmp =
                 SortUtil.comparator(localSort, File::getName, File::lastModified);
         dirs.sort(localCmp);
-        addInfo(content, "媒体文件", "当前目录图片/视频数量：" + media);
-        addInfo(content, "子目录", dirs.isEmpty() ? "无子目录" : "共 " + dirs.size() + " 个");
 
         // Unified browser: folders and media in one card grid with breadcrumb,
         // sortable view modes and size/date metadata.
@@ -1831,10 +1836,25 @@ public class MangaLibraryWidget extends UIWidget {
         return b;
     }
 
+    /** Short location name shown in the bottom strip. */
+    private String sourceLabel(MangaPage page) {
+        switch (page) {
+            case LIBRARY: return "书架";
+            case LOCAL: return "本地文件";
+            case SMB: return "SMB 共享";
+            case WEBDAV: return "网盘";
+            case EXTENSIONS: return "漫画源";
+            case FOLDER: return "文件夹";
+            case SETTINGS: return "设置";
+            default: return page.label;
+        }
+    }
+
     /** Applies the shared sort settings, wires the gear button, then attaches. */
     private void finishBrowser(MangaFileBrowser browser, MangaPage page, Runnable settings) {
         browser.setSortConfig(mSettings.integer(MangaSettings.SORT_MODE),
                 mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+        browser.setThumbRatio(mSettings.integer(MangaSettings.THUMB_RATIO));
         browser.setOnSettingsClick(settings);
         attachBrowser(page, browser);
     }
@@ -2952,7 +2972,12 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         Source source = mSourceEntry.getSource();
-        mTitle.setText("漫画 · " + source.getName());
+        if (mTitle != null) {
+            mTitle.setText(source.getName());
+        }
+        if (mPanelSource != null) {
+            mPanelSource.setText(source.getName());
+        }
         // Compact two-row header: the cover grid must keep the bulk of the
         // window height. A tall header starved the weighted grid to 0px on
         // the small window, which looked like "count shown but no manga".

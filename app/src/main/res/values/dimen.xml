@@ -146,6 +146,7 @@
     <!-- Reader mode shows three rows (status bar + page scrubber + buttons),
          so the tray surface is taller than the browser/manga two-row tray. -->
     <dimen name="tray_height_reader">88dp</dimen>
+    <dimen name="tray_button_size">40dp</dimen>
     <!-- The density of the tray tooltips is the default one. -->
     <item name="tray_tooltip_density" format="float" type="dimen">1.0</item>
     <dimen name="tray_tooltip_padding_h">20dp</dimen>
