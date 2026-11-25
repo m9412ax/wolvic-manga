@@ -27,6 +27,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
+import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.SortUtil;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
@@ -49,19 +50,13 @@ import java.util.concurrent.Executors;
  * from): dark surface, teal accent, rounded thumbnail tiles, a real breadcrumb
  * trail, sortable grid/list modes and a summary line.
  *
- * The widget is dumb on purpose: the host loads entries (network work stays in
- * the existing SMB / 115 code paths) and this class only sorts and draws them.
- * That keeps the rewrite from touching the parts of the app that already work.
+ * The header only keeps ← / title / ⚙. Sort, layout, folder-first, video-first
+ * and thumbnail ratio all live in the floating quick sheet (see
+ * {@link MangaQuickSheet}) so the listing itself gets the whole page.
  */
 public class MangaFileBrowser extends LinearLayout {
 
-    /** How many columns each display mode uses. */
-    private static final int GRID_SPAN = 4;
-    private static final int COMPACT_SPAN = 2;
-
     private static final String PREFS = "manga_browser_prefs";
-    private static final String KEY_SORT = "sort_key";
-    private static final String KEY_ASC = "sort_asc";
     private static final String KEY_MODE = "view_mode";
 
     /** A single row in the browser. */
@@ -112,7 +107,7 @@ public class MangaFileBrowser extends LinearLayout {
         /** Host-provided back action (may be null at the root). */
         default void onBack() { }
 
-        /** User cycled the sort mode; host should persist it to settings. */
+        /** User changed the sort mode; the browser already persisted it. */
         default void onSortChanged(int sortMode) { }
     }
 
@@ -127,25 +122,24 @@ public class MangaFileBrowser extends LinearLayout {
     private TextView mSummary;
     private TextView mStatus;
     private TextView mBack;
-    private TextView mSortButton;
-    private TextView mModeButton;
     private TextView mSettingsButton;
     private LinearLayout mCrumbs;
     private View mCrumbScroll;
 
     private Callback mCallback;
-    @Nullable private Runnable mSettingsClick;
+    @Nullable private ViewGroup mSheetHost;
+    @Nullable private MangaQuickSheet mSheet;
     private String mTitleText = "文件";
     private List<Crumb> mCrumbList = new ArrayList<>();
-    /** Matches MangaSettings.SORT_MODE exactly (0 name asc .. 3 date asc). */
-    private int mSortMode = 0;
+    /** Matches MangaSettings.SORT_MODE (0..5). */
+    private int mSortMode = SortUtil.MODE_NAME_ASC;
     private boolean mVideoFirst;
+    private boolean mFolderFirst = true;
     private boolean mCompact;
     /** 0 = 16:9, 1 = 3:4 (default), 2 = 9:16. */
     private int mThumbRatio = 1;
     /** Target tile width in dp; drives the column count. */
     private int mThumbSize = 160;
-    private boolean mCanGoBack;
 
     public MangaFileBrowser(Context context) {
         super(context);
@@ -167,14 +161,11 @@ public class MangaFileBrowser extends LinearLayout {
         mSummary = findViewById(R.id.browserSummary);
         mStatus = findViewById(R.id.browserStatus);
         mBack = findViewById(R.id.browserBack);
-        mSortButton = findViewById(R.id.browserSort);
-        mModeButton = findViewById(R.id.browserMode);
         mSettingsButton = findViewById(R.id.browserSettings);
         mCrumbs = findViewById(R.id.browserCrumbs);
         mCrumbScroll = findViewById(R.id.browserCrumbScroll);
 
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        mSortMode = prefs.getInt(KEY_SORT, 0);
         mCompact = prefs.getInt(KEY_MODE, 0) == 1;
 
         mAdapter = new Adapter();
@@ -187,33 +178,7 @@ public class MangaFileBrowser extends LinearLayout {
                 mCallback.onBack();
             }
         });
-        mSortButton.setOnClickListener(v -> {
-            // Same 4-state cycle as the settings screen, so the two can never
-            // disagree: name asc / name desc / date new / date old.
-            mSortMode = SortUtil.next(mSortMode);
-            persistSort();
-            refreshSortLabel();
-            sortAndRender();
-            if (mCallback != null) {
-                mCallback.onSortChanged(mSortMode);
-            }
-        });
-        mSettingsButton.setOnClickListener(v -> {
-            if (mSettingsClick != null) {
-                mSettingsClick.run();
-            }
-        });
-        mModeButton.setOnClickListener(v -> {
-            mCompact = !mCompact;
-            getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    .edit().putInt(KEY_MODE, mCompact ? 1 : 0).apply();
-            applyLayoutManager();
-            refreshModeLabel();
-            mAdapter.notifyDataSetChanged();
-        });
-
-        refreshSortLabel();
-        refreshModeLabel();
+        mSettingsButton.setOnClickListener(v -> openQuickSheet());
     }
 
     private void applyLayoutManager() {
@@ -228,30 +193,37 @@ public class MangaFileBrowser extends LinearLayout {
         mList.setLayoutManager(lm);
     }
 
-    private void refreshSortLabel() {
-        String[] labels = {"名称 ↑", "名称 ↓", "日期 ↓", "日期 ↑"};
-        mSortButton.setText(labels[Math.max(0, Math.min(3, mSortMode))]);
-    }
-
-    private void refreshModeLabel() {
-        mModeButton.setText(mCompact ? "▤" : "▦");
-    }
-
-    private void persistSort() {
-        getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putInt(KEY_SORT, mSortMode)
-                .apply();
-    }
-
     public void setCallback(@Nullable Callback callback) {
         mCallback = callback;
     }
 
+    /** Hosts the floating quick sheet (the panel's page container). */
+    public void setSheetHost(@Nullable ViewGroup host) {
+        mSheetHost = host;
+    }
+
+    private ViewGroup sheetHost() {
+        if (mSheetHost != null) {
+            return mSheetHost;
+        }
+        View root = getRootView();
+        View container = root.findViewById(R.id.pageContainer);
+        if (container instanceof ViewGroup) {
+            return (ViewGroup) container;
+        }
+        ViewParent parent = getParent();
+        return parent instanceof ViewGroup ? (ViewGroup) parent : this;
+    }
+
     /** Mirrors MangaSettings.SORT_MODE / SORT_VIDEO_FIRST into the browser. */
     public void setSortConfig(int sortMode, boolean videoFirst) {
-        mSortMode = Math.max(0, Math.min(3, sortMode));
+        setSortConfig(sortMode, videoFirst, true);
+    }
+
+    public void setSortConfig(int sortMode, boolean videoFirst, boolean folderFirst) {
+        mSortMode = Math.max(0, Math.min(SortUtil.MODE_COUNT - 1, sortMode));
         mVideoFirst = videoFirst;
-        refreshSortLabel();
+        mFolderFirst = folderFirst;
         if (!mSorted.isEmpty()) {
             sortAndRender();
         }
@@ -260,7 +232,9 @@ public class MangaFileBrowser extends LinearLayout {
     /** Thumbnail aspect for the grid: 0 = 16:9, 1 = 3:4, 2 = 9:16. */
     public void setThumbRatio(int ratio) {
         mThumbRatio = Math.max(0, Math.min(2, ratio));
-        mAdapter.notifyDataSetChanged();
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
+        }
     }
 
     /** Columns are derived from the configured tile width, so shrinking the
@@ -303,9 +277,10 @@ public class MangaFileBrowser extends LinearLayout {
         mSettingsClick = action;
     }
 
+    @Nullable private Runnable mSettingsClick;
+
     /** True when the host can navigate to a parent folder. */
     public void setCanGoBack(boolean canGoBack) {
-        mCanGoBack = canGoBack;
         // Always visible: dimmed when there is nowhere to go, so the header
         // layout does not jump between folders.
         mBack.setVisibility(VISIBLE);
@@ -379,15 +354,24 @@ public class MangaFileBrowser extends LinearLayout {
         mSorted.clear();
         mSorted.addAll(mEntries);
         // Shared with the settings screen: SortUtil enforces
-        //   1) folders first
+        //   1) folders first (unless the quick sheet turned it off)
         //   2) videos before images when "视频置顶" is on
-        //   3) the configured name/date order inside each group
-        // so ticking the setting actually changes this listing.
-        final Comparator<Entry> cmp = SortUtil.listingComparator(mSortMode, mVideoFirst,
-                e -> e.directory,
-                e -> e.video,
-                e -> e.name,
-                e -> e.modifiedMs);
+        //   3) the configured name/date/size order inside each group
+        final boolean folderFirst = mFolderFirst;
+        final boolean videoFirst = mVideoFirst;
+        final Comparator<Entry> base = SortUtil.comparator(mSortMode,
+                (Entry e) -> e.name,
+                (Entry e) -> e.modifiedMs,
+                (Entry e) -> Math.max(0, e.size));
+        final Comparator<Entry> cmp = (a, b) -> {
+            if (folderFirst && a.directory != b.directory) {
+                return a.directory ? -1 : 1;
+            }
+            if (videoFirst && !a.directory && !b.directory && a.video != b.video) {
+                return a.video ? -1 : 1;
+            }
+            return base.compare(a, b);
+        };
         Collections.sort(mSorted, cmp);
         mAdapter.notifyDataSetChanged();
         updateSummary();
@@ -415,6 +399,132 @@ public class MangaFileBrowser extends LinearLayout {
             sb.append(" · ").append(readableSize(bytes));
         }
         mSummary.setText(sb.toString());
+    }
+
+    // ------------------------------------------------------------ quick sheet
+
+    /** Floating 快捷设置 window: layout, sort, pinned groups, thumb ratio. */
+    private void openQuickSheet() {
+        final int key = SortUtil.keyOf(mSortMode);
+        final boolean ascending = SortUtil.ascendingOf(mSortMode);
+        ViewerDraft draft = new ViewerDraft(this);
+
+        MangaQuickSheet sheet = MangaQuickSheet.open(sheetHost(),
+                "快捷设置",
+                s -> {
+                    s.section("媒体布局");
+                    s.segments(new String[]{"列表", "网格"},
+                            draft.compact ? 0 : 1, i -> draft.compact = i == 0);
+
+                    s.divider();
+                    s.section("排序");
+                    s.roundChips(new String[]{"T", "◷", "▤"},
+                            new String[]{"标题", "日期", "大小"},
+                            SortUtil.keyOf(draft.sortMode), i -> {
+                                draft.sortMode = SortUtil.modeOf(i,
+                                        SortUtil.ascendingOf(draft.sortMode));
+                            });
+                    s.segments(new String[]{"A → Z", "Z → A"},
+                            SortUtil.ascendingOf(draft.sortMode) ? 0 : 1, i -> {
+                                draft.sortMode = SortUtil.modeOf(
+                                        SortUtil.keyOf(draft.sortMode), i == 0);
+                            });
+
+                    s.divider();
+                    s.section("置顶");
+                    s.toggleChips(new String[]{"文件夹置顶", "视频置顶"},
+                            new boolean[]{draft.folderFirst, draft.videoFirst}, i -> {
+                                if (i == 0) {
+                                    draft.folderFirst = !draft.folderFirst;
+                                } else {
+                                    draft.videoFirst = !draft.videoFirst;
+                                }
+                            });
+
+                    s.section("缩略图");
+                    s.segments(new String[]{"16:9", "3:4", "9:16"},
+                            draft.thumbRatio, i -> draft.thumbRatio = i);
+                    s.caption("缩略图大小在「设置 · 来源」里统一调整（影响本地 / SMB / 115 / 扩展源）。");
+
+                    // The header no longer carries a settings button, so the
+                    // per-source config (SMB host, 115 login, WebDAV account)
+                    // stays one tap away from this sheet.
+                    if (mSettingsClick != null) {
+                        s.divider();
+                        s.section("更多");
+                        s.toggleChipsRaw(new String[]{"⚙  本来源的设置 / 登录"},
+                                new boolean[]{false}, i -> {
+                                    Runnable action = mSettingsClick;
+                                    s.dismiss();
+                                    if (action != null) {
+                                        post(action);
+                                    }
+                                });
+                    }
+                },
+                new MangaQuickSheet.DismissListener() {
+                    @Override
+                    public void onConfirm() {
+                        applyDraft(draft);
+                    }
+                });
+        sheet.withFooter(false);
+        mSheet = sheet;
+    }
+
+    /** Mutable copy so 取消 really cancels every switch made in the sheet. */
+    private static final class ViewerDraft {
+        boolean compact;
+        boolean videoFirst;
+        boolean folderFirst;
+        int thumbRatio;
+        int sortMode;
+
+        ViewerDraft(MangaFileBrowser b) {
+            compact = b.mCompact;
+            videoFirst = b.mVideoFirst;
+            folderFirst = b.mFolderFirst;
+            thumbRatio = b.mThumbRatio;
+            sortMode = b.mSortMode;
+        }
+    }
+
+    private void applyDraft(ViewerDraft draft) {
+        boolean layoutChanged = draft.compact != mCompact;
+        boolean thumbChanged = draft.thumbRatio != mThumbRatio;
+        boolean orderChanged = draft.sortMode != mSortMode
+                || draft.videoFirst != mVideoFirst
+                || draft.folderFirst != mFolderFirst;
+
+        mCompact = draft.compact;
+        mSortMode = draft.sortMode;
+        mVideoFirst = draft.videoFirst;
+        mFolderFirst = draft.folderFirst;
+        mThumbRatio = draft.thumbRatio;
+
+        getContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putInt(KEY_MODE, mCompact ? 1 : 0)
+                .apply();
+
+        // Persist into the ONE settings store so the 设置 page, the shelf and
+        // every other source's browser show the same values afterwards.
+        MangaSettings settings = MangaSettings.get(getContext());
+        settings.put(MangaSettings.SORT_MODE, mSortMode);
+        settings.put(MangaSettings.SORT_VIDEO_FIRST, mVideoFirst);
+        settings.put(MangaSettings.SORT_FOLDER_FIRST, mFolderFirst);
+        settings.put(MangaSettings.THUMB_RATIO, mThumbRatio);
+
+        if (layoutChanged) {
+            applyLayoutManager();
+        }
+        if (orderChanged) {
+            sortAndRender();
+        } else if (thumbChanged) {
+            mAdapter.notifyDataSetChanged();
+        }
+        if (mCallback != null) {
+            mCallback.onSortChanged(mSortMode);
+        }
     }
 
     // ------------------------------------------------------------------ items

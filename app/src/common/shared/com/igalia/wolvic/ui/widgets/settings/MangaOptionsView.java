@@ -180,6 +180,11 @@ public class MangaOptionsView extends SettingsView
         switchRow("包含隐藏文件", MangaSettings.SOURCE_INCLUDE_HIDDEN);
         switchRow("视频优先播放", MangaSettings.SOURCE_VIDEO_FIRST);
         switchRow("文件列表中视频置顶", MangaSettings.SORT_VIDEO_FIRST);
+        switchRow("文件列表中文件夹置顶", MangaSettings.SORT_FOLDER_FIRST);
+        radio("文件列表排序（与快捷设置同步）", MangaSettings.SORT_MODE,
+                new String[]{"名称 A→Z", "名称 Z→A", "日期 新→旧",
+                        "日期 旧→新", "大小 大→小", "大小 小→大"},
+                new int[]{0, 1, 2, 3, 4, 5});
         switchRow("递归扫描子目录", MangaSettings.SOURCE_RECURSIVE);
         radio("书架列数", MangaSettings.SOURCE_SPAN_COUNT,
                 new String[]{"2 列", "3 列", "4 列", "5 列", "6 列"},

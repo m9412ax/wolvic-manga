@@ -99,6 +99,9 @@ public final class MangaSettings {
     /** When true, media files in local/SMB/115 folder listings are ordered with
      *  videos pinned to the top regardless of the active name/date sort mode. */
     public static final String SORT_VIDEO_FIRST = "sort_video_first";
+    /** When true (default) directories are pinned above files in every browser
+     *  listing. Toggled from the quick-sheet and from the settings page. */
+    public static final String SORT_FOLDER_FIRST = "sort_folder_first";
     /** Target tile width in dp for every cover grid (file browsers, shelf and
      *  extension sources). Smaller value = more columns = more items per row.
      *  Range 90..280, default 160. */
@@ -257,6 +260,7 @@ public final class MangaSettings {
             case SOURCE_NATURAL_SORT:
             case SOURCE_VIDEO_FIRST:
             case SORT_VIDEO_FIRST:
+            case SORT_FOLDER_FIRST:
             case DOWNLOAD_ONLY_WIFI:
             case PROGRESS_ENABLED:
             case PROGRESS_VIDEO:

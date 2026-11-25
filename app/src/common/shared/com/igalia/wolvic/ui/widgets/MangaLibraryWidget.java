@@ -64,6 +64,7 @@ import com.igalia.wolvic.manga.SmbRemoteManga;
 import com.igalia.wolvic.manga.Netdisk115RemoteManga;
 import com.igalia.wolvic.manga.SortUtil;
 import com.igalia.wolvic.manga.browser.MangaFileBrowser;
+import com.igalia.wolvic.manga.browser.MangaQuickSheet;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 import com.igalia.wolvic.ui.adapters.SourceCoverAdapter;
 import com.igalia.wolvic.ui.views.CustomRecyclerView;
@@ -115,7 +116,6 @@ public class MangaLibraryWidget extends UIWidget {
         SOURCE_BROWSE("图源浏览"),
         SOURCE_MANGA("漫画详情"),
         SOURCE_SETTINGS("图源设置"),
-        SOURCE_FILTERS("筛选"),
         SOURCE_OPTIONS("选择选项"),
         SOURCE_TEXT("输入文本"),
         FOLDER("文件夹"),
@@ -141,6 +141,8 @@ public class MangaLibraryWidget extends UIWidget {
     private final Map<MangaPage, View> mPageViews = new EnumMap<>(MangaPage.class);
     /** Full-height browser host for LOCAL / SMB / 115 (below the header). */
     private final Map<MangaPage, FrameLayout> mPageBrowsers = new EnumMap<>(MangaPage.class);
+    /** Scrollable header above the browser (config forms, login UI, errors). */
+    private final Map<MangaPage, ScrollView> mPageHeaders = new EnumMap<>(MangaPage.class);
     private final Map<MangaPage, LinearLayout> mPageContents = new EnumMap<>(MangaPage.class);
 
     private MangaPage mCurrentPage = MangaPage.LIBRARY;
@@ -470,18 +472,10 @@ public class MangaLibraryWidget extends UIWidget {
             root.addView(host, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
             mPageBrowsers.put(page, host);
+            mPageHeaders.put(page, header);
             mPageContents.put(page, content);
             fillPage(page, content);
             syncHeaderVisibility(content);
-            // Never let the header eat the browser: cap it at 40% of the page.
-            header.post(() -> {
-                int max = root.getHeight() * 2 / 5;
-                if (max > 0 && header.getHeight() > max) {
-                    ViewGroup.LayoutParams lp = header.getLayoutParams();
-                    lp.height = max;
-                    header.setLayoutParams(lp);
-                }
-            });
             return root;
         }
 
@@ -506,6 +500,40 @@ public class MangaLibraryWidget extends UIWidget {
         }
         fillPage(page, content);
         syncHeaderVisibility(content);
+        updateHeaderSize(page);
+    }
+
+    /**
+     * The header above a browser may only take a slice of the page, otherwise
+     * the grid gets squeezed. When there is no browser (config forms, 115 QR
+     * login, SMB settings) the header owns the whole page instead, so long
+     * forms stay usable and scrollable.
+     */
+    private void updateHeaderSize(MangaPage page) {
+        final ScrollView header = mPageHeaders.get(page);
+        final FrameLayout host = mPageBrowsers.get(page);
+        final LinearLayout content = mPageContents.get(page);
+        if (header == null) {
+            return;
+        }
+        header.post(() -> {
+            boolean hasBrowser = host != null && host.getChildCount() > 0;
+            ViewGroup.LayoutParams lp = header.getLayoutParams();
+            int parentH = ((View) header.getParent()).getHeight();
+            int target;
+            if (!hasBrowser) {
+                target = LinearLayout.LayoutParams.MATCH_PARENT;
+            } else {
+                int max = parentH * 2 / 5;
+                int contentH = content == null ? 0 : content.getHeight();
+                target = (max > 0 && contentH > max)
+                        ? max : LinearLayout.LayoutParams.WRAP_CONTENT;
+            }
+            if (lp.height != target) {
+                lp.height = target;
+                header.setLayoutParams(lp);
+            }
+        });
     }
 
     /** Each page keeps its own ScrollView, so hiding and re-showing it used to
@@ -554,9 +582,6 @@ public class MangaLibraryWidget extends UIWidget {
                 break;
             case SOURCE_SETTINGS:
                 fillSourceSettingsPage(content);
-                break;
-            case SOURCE_FILTERS:
-                fillSourceFiltersPage(content);
                 break;
             case SOURCE_OPTIONS:
                 fillSourceOptionsPage(content);
@@ -618,7 +643,7 @@ public class MangaLibraryWidget extends UIWidget {
             return true;
         }
         if (mCurrentPage == MangaPage.SOURCE_BROWSE || mCurrentPage == MangaPage.SOURCE_MANGA
-                || mCurrentPage == MangaPage.SOURCE_SETTINGS || mCurrentPage == MangaPage.SOURCE_FILTERS
+                || mCurrentPage == MangaPage.SOURCE_SETTINGS
                 || mCurrentPage == MangaPage.SOURCE_OPTIONS || mCurrentPage == MangaPage.SOURCE_TEXT) {
             switchPage(MangaPage.EXTENSIONS);
             return true;
@@ -630,6 +655,18 @@ public class MangaLibraryWidget extends UIWidget {
         return false; // already at the bookshelf root
     }
 
+    /** Removes any floating quick sheet (page changes must not keep it). */
+    private void dismissQuickSheet() {
+        if (mPageContainer == null) {
+            return;
+        }
+        for (int i = mPageContainer.getChildCount() - 1; i >= 0; i--) {
+            if (mPageContainer.getChildAt(i) instanceof MangaQuickSheet) {
+                mPageContainer.removeViewAt(i);
+            }
+        }
+    }
+
     private void switchPage(MangaPage page) {
         // Leaving the settings page cancels any in-progress key capture.
         if (mCurrentPage == MangaPage.SETTINGS && page != MangaPage.SETTINGS) {
@@ -638,6 +675,7 @@ public class MangaLibraryWidget extends UIWidget {
                 mSettingsPanel.cancelCapture();
             }
         }
+        dismissQuickSheet();
         mCurrentPage = page;
         if (page == MangaPage.LIBRARY && mGrid != null && mAdapter != null) {
             // Re-derive columns from the shared thumbnail size: changing the
@@ -1746,10 +1784,13 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
 
-        // Minimal header: status only. Browsing, sorting and navigation all
-        // live in the browser below, so there is no duplicate path/sort row.
-        if (mSmbStatus != null && !mSmbStatus.isEmpty()) {
-            addInfo(content, "状态", mSmbStatus);
+        // No header at all when connected: status, path and sorting all live in
+        // the browser (summary line + quick sheet). Only a real failure is
+        // surfaced, and it goes to the browser's own status strip.
+        String smbStatus = null;
+        if (mSmbStatus != null && (mSmbStatus.startsWith("连接失败")
+                || mSmbStatus.startsWith("列出共享失败"))) {
+            smbStatus = mSmbStatus;
         }
 
         // Unified browser: identical cards / breadcrumb / sorting as local files.
@@ -1783,7 +1824,7 @@ public class MangaLibraryWidget extends UIWidget {
         final MangaFileBrowser smbBrowser = new MangaFileBrowser(getContext());
         smbBrowser.setData(entries,
                 mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
-                crumbs, null);
+                crumbs, smbStatus);
         smbBrowser.setCanGoBack(!mSmbPath.isEmpty());
         smbBrowser.setCallback(new MangaFileBrowser.Callback() {
             @Override
@@ -1861,10 +1902,13 @@ public class MangaLibraryWidget extends UIWidget {
     /** Applies the shared sort settings, wires the gear button, then attaches. */
     private void finishBrowser(MangaFileBrowser browser, MangaPage page, Runnable settings) {
         browser.setSortConfig(mSettings.integer(MangaSettings.SORT_MODE),
-                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST));
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
+                mSettings.bool(MangaSettings.SORT_FOLDER_FIRST));
         browser.setThumbRatio(mSettings.integer(MangaSettings.THUMB_RATIO));
         browser.setThumbSize(mSettings.integer(MangaSettings.THUMB_SIZE));
         browser.setOnSettingsClick(settings);
+        // The quick sheet floats over the whole panel, not over the grid only.
+        browser.setSheetHost(mPageContainer);
         attachBrowser(page, browser);
     }
 
@@ -1878,6 +1922,7 @@ public class MangaLibraryWidget extends UIWidget {
         host.addView(browser, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        updateHeaderSize(page);
     }
 
     /** Breadcrumb trail from the manga root down to the current directory. */
@@ -2213,19 +2258,17 @@ public class MangaLibraryWidget extends UIWidget {
     /** Pure 115 directory browser: folders first, then media files, with a
      *  compact action row. No config/login UI lives here. */
     private void fill115Browser(LinearLayout content) {
-        if (mP115DirStatus != null && !mP115DirStatus.isEmpty()) {
-            addInfo(content, "状态", mP115DirStatus);
-        }
-
         final int p115Sort = mSettings.integer(MangaSettings.SORT_MODE);
+        final boolean p115FolderFirst = mSettings.bool(MangaSettings.SORT_FOLDER_FIRST);
         final java.util.Comparator<Manga115Api.DirEntry> p115Base =
                 SortUtil.comparator(p115Sort,
                         (Manga115Api.DirEntry e) -> e.name,
-                        (Manga115Api.DirEntry e) -> e.modifiedMs);
+                        (Manga115Api.DirEntry e) -> e.modifiedMs,
+                        (Manga115Api.DirEntry e) -> Math.max(0, e.size));
         final String[] videoExt = mSettings.videoExtensions();
         mP115Entries.sort((a, b) -> {
-            if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-            if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST) && !a.isDir) {
+            if (p115FolderFirst && a.isDir != b.isDir) return a.isDir ? -1 : 1;
+            if (mSettings.bool(MangaSettings.SORT_VIDEO_FIRST) && !a.isDir && !b.isDir) {
                 boolean va = MangaSettings.hasExtension(a.name, videoExt);
                 boolean vb = MangaSettings.hasExtension(b.name, videoExt);
                 if (va != vb) return va ? -1 : 1;
@@ -2258,8 +2301,10 @@ public class MangaLibraryWidget extends UIWidget {
                     mP115Title == null ? mP115Cid : mP115Title, mP115Cid));
         }
         final MangaFileBrowser p115Browser = new MangaFileBrowser(getContext());
+        String p115Status = (mP115DirStatus != null && mP115DirStatus.startsWith("读取"))
+                ? mP115DirStatus : null;
         p115Browser.setData(entries,
-                mP115Title == null ? "115 网盘" : mP115Title, crumbs, mP115DirStatus);
+                mP115Title == null ? "115 网盘" : mP115Title, crumbs, p115Status);
         p115Browser.setCanGoBack(!"0".equals(mP115Cid));
         p115Browser.setCallback(new MangaFileBrowser.Callback() {
             @Override
@@ -2511,15 +2556,15 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void fillWebDavPage(LinearLayout content) {
-        // Only the sort + settings toggles stay on the page. Everything else
-        // (login forms, WebDAV URL/user/pass, default folders) is in ⚙ 设置.
-        LinearLayout top = addRow(content);
-        addButton(top, mNetdiskSettingsOpen ? "✓ 收起设置" : "⚙ 设置", v -> {
-            mNetdiskSettingsOpen = !mNetdiskSettingsOpen;
-            refreshPage(MangaPage.WEBDAV);
-        });
-
+        // No header row on the browse pages: ⚙ in the browser header opens the
+        // settings fold, so the netdisk page starts directly with its browser.
         if (mNetdiskSettingsOpen) {
+            LinearLayout nav = addRow(content);
+            addButton(nav, "← 返回网盘", v -> {
+                mNetdiskSettingsOpen = false;
+                refreshPage(MangaPage.WEBDAV);
+            });
+
             LinearLayout quick = addRow(content);
             addButton(quick, "▷ 在线阅读当前目录", v -> {
                 mNetdiskSettingsOpen = false;
@@ -2639,10 +2684,6 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Pure WebDAV directory browser (no config UI). */
     private void fillWebDavBrowser(LinearLayout content) {
-        if (mWebDavStatus != null && !mWebDavStatus.isEmpty()) {
-            addInfo(content, "状态", mWebDavStatus);
-        }
-
         if (mWebDavEntries.isEmpty()) {
             addInfo(content, "目录内容", statusOrHint("空目录或尚未连接成功。"));
             return;
@@ -3089,8 +3130,8 @@ public class MangaLibraryWidget extends UIWidget {
         if (mSourceEntry == null) {
             return;
         }
-        if (mSourceFilters != null) {
-            switchPage(MangaPage.SOURCE_FILTERS);
+        if (mSourceFilters != null && mSourceFilters.getList() != null) {
+            showSourceFilterSheet();
             return;
         }
         MangaSourceRepository.INSTANCE.fetchFilters(mSourceEntry.getSource(), (filters, error) -> {
@@ -3100,8 +3141,68 @@ public class MangaLibraryWidget extends UIWidget {
             }
             mSourceFilters = filters;
             applyDefaultSort(filters);
-            switchPage(MangaPage.SOURCE_FILTERS);
+            mMain.post(this::showSourceFilterSheet);
         });
+    }
+
+    /** Floating 筛选 window over the browse page: same sheet language as the
+     *  file-manager quick settings, no extra page in between. */
+    private void showSourceFilterSheet() {
+        if (mSourceEntry == null || mSourceFilters == null || mPageContainer == null) {
+            return;
+        }
+        final FilterList filters = mSourceFilters;
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer,
+                mSourceEntry.getSource().getName() + " · 筛选",
+                s -> {
+                    if (filters.getList().isEmpty()) {
+                        s.hint("该扩展没有提供筛选选项。");
+                    } else {
+                        renderFilterSheet(s, filters.getList());
+                    }
+                },
+                new MangaQuickSheet.DismissListener() {
+                    @Override
+                    public void onConfirm() {
+                        mSourceFiltersActive = true;
+                        mSourcePage = 1;
+                        startSourceBrowse();
+                    }
+
+                    @Override
+                    public void onReset() {
+                        resetFilterStates(filters);
+                        mSourceFiltersActive = false;
+                    }
+                });
+        sheet.withFooter(true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void resetFilterStates(FilterList filters) {
+        for (Object o : filters.getList()) {
+            resetFilterState((Filter) o);
+        }
+        applyDefaultSort(filters);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void resetFilterState(Filter f) {
+        if (f instanceof Filter.Group) {
+            for (Object o : (java.util.List<?>) ((Filter.Group) f).getState()) {
+                resetFilterState((Filter) o);
+            }
+        } else if (f instanceof Filter.Select) {
+            ((Filter.Select) f).setState(0);
+        } else if (f instanceof Filter.CheckBox) {
+            ((Filter.CheckBox) f).setState(false);
+        } else if (f instanceof Filter.TriState) {
+            ((Filter.TriState) f).setState(Filter.TriState.STATE_IGNORE);
+        } else if (f instanceof Filter.Text) {
+            ((Filter.Text) f).setState("");
+        } else if (f instanceof Filter.Sort) {
+            ((Filter.Sort) f).setState(new Filter.Sort.Selection(0, true));
+        }
     }
 
     /** User default: every catalogue sorts newest-first unless the extension
@@ -3143,113 +3244,107 @@ public class MangaLibraryWidget extends UIWidget {
         }
     }
 
-    private void fillSourceFiltersPage(LinearLayout content) {
-        if (mSourceEntry == null || mSourceFilters == null) {
-            addInfo(content, "无筛选", "请先到图源浏览页点“筛选”。");
-            return;
-        }
-        addInfo(content, mSourceEntry.getSource().getName() + " · 筛选",
-                "选项来自扩展内置分类，可跨组多选；应用后回到浏览并按筛选刷新。");
-        LinearLayout nav = addRow(content);
-        addButton(nav, "← 返回浏览", v -> switchPage(MangaPage.SOURCE_BROWSE));
-        addButton(nav, "应用筛选", v -> {
-            mSourceFiltersActive = true;
-            mSourcePage = 1;
-            switchPage(MangaPage.SOURCE_BROWSE);
-            startSourceBrowse();
-        });
-        addButton(nav, "重置", v -> {
-            mSourceFilters = null;
-            mSourceFiltersActive = false;
-            openSourceFilters();
-        });
-        if (mSourceFilters.getList().isEmpty()) {
-            addInfo(content, "无内置筛选", "该扩展没有提供筛选选项。");
-        }
-        renderFilters(mSourceFilters.getList(), content);
-    }
-
     @SuppressWarnings("unchecked")
-    private void renderFilters(List<?> filters, LinearLayout content) {
+    private void renderFilterSheet(MangaQuickSheet s, java.util.List<?> filters) {
+        java.util.List<Filter> toggles = new ArrayList<>();
         for (Object o : filters) {
             Filter f = (Filter) o;
+            if (f instanceof Filter.CheckBox || f instanceof Filter.TriState) {
+                toggles.add(f);
+                continue;
+            }
+            flushToggleChips(s, toggles);
             if (f instanceof Filter.Group) {
-                endChips();
-                addInfo(content, f.getName(), null);
-                renderFilters((List<?>) ((Filter.Group) f).getState(), content);
-                endChips();
-            } else if (f instanceof Filter.Select) {
-                endChips();
-                Filter.Select sel = (Filter.Select) f;
-                addInfo(content, f.getName(), null);
-                Object[] vals = sel.getValues();
-                int state = (Integer) sel.getState();
-                for (int i = 0; i < vals.length; i++) {
-                    final int idx = i;
-                    addChip(content, String.valueOf(vals[i]) + (i == state ? " ✓" : ""), v -> {
-                        sel.setState(idx);
-                        refreshPage(MangaPage.SOURCE_FILTERS);
-                    });
-                }
-                endChips();
-            } else if (f instanceof Filter.CheckBox) {
-                boolean st = (Boolean) f.getState();
-                addChip(content, f.getName() + (st ? " ✓" : ""), v -> {
-                    f.setState(!st);
-                    refreshPage(MangaPage.SOURCE_FILTERS);
-                });
-            } else if (f instanceof Filter.TriState) {
-                int st = (Integer) f.getState();
-                String suffix = st == Filter.TriState.STATE_INCLUDE ? " ✓"
-                        : st == Filter.TriState.STATE_EXCLUDE ? " ✗" : "";
-                addChip(content, f.getName() + suffix, v -> {
-                    f.setState((st + 1) % 3);
-                    refreshPage(MangaPage.SOURCE_FILTERS);
-                });
-            } else if (f instanceof Filter.Sort) {
-                endChips();
-                Filter.Sort sort = (Filter.Sort) f;
-                addInfo(content, f.getName(), null);
-                Filter.Sort.Selection sel = (Filter.Sort.Selection) sort.getState();
-                String[] vals = sort.getValues();
-                for (int i = 0; i < vals.length; i++) {
-                    final int idx = i;
-                    boolean on = sel != null && sel.getIndex() == i;
-                    addChip(content, vals[i] + (on ? (sel.getAscending() ? " ↑" : " ↓") : ""), v -> {
-                        Filter.Sort.Selection cur = (Filter.Sort.Selection) sort.getState();
-                        boolean asc = cur != null && cur.getIndex() == idx && !cur.getAscending();
-                        sort.setState(new Filter.Sort.Selection(idx, asc));
-                        refreshPage(MangaPage.SOURCE_FILTERS);
-                    });
-                }
-                endChips();
-            } else if (f instanceof Filter.Text) {
-                endChips();
-                Filter.Text text = (Filter.Text) f;
-                LinearLayout row = addRow(content);
-                EditText input = new EditText(getContext());
-                input.setHint(f.getName());
-                input.setText((String) text.getState());
-                input.setTextColor(0xFFFFFFFF);
-                input.setHintTextColor(0xFF808088);
-                input.setTextSize(17f);
-                row.addView(input, new LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-                addButton(row, "设", v -> {
-                    text.setState(input.getText().toString());
-                    refreshPage(MangaPage.SOURCE_FILTERS);
-                });
+                s.divider();
+                s.section(f.getName());
+                renderFilterSheet(s, (java.util.List<?>) ((Filter.Group) f).getState());
             } else if (f instanceof Filter.Header) {
-                endChips();
-                addInfo(content, f.getName(), null);
+                s.divider();
+                s.section(f.getName());
             } else if (f instanceof Filter.Separator) {
-                endChips();
-                View spacer = new View(getContext());
-                content.addView(spacer, new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, dp(8)));
+                s.divider();
+            } else if (f instanceof Filter.Select) {
+                Filter.Select sel = (Filter.Select) f;
+                Object[] vals = sel.getValues();
+                String[] labels = new String[vals.length];
+                for (int i = 0; i < vals.length; i++) {
+                    labels[i] = String.valueOf(vals[i]);
+                }
+                int state = (Integer) sel.getState();
+                s.section(f.getName());
+                s.segments(labels,
+                        Math.max(0, Math.min(state, Math.max(0, labels.length - 1))),
+                        sel::setState);
+            } else if (f instanceof Filter.Sort) {
+                renderSortFilter(s, (Filter.Sort) f);
+            } else if (f instanceof Filter.Text) {
+                Filter.Text text = (Filter.Text) f;
+                s.section(f.getName());
+                s.textRow(f.getName(), (String) text.getState(), text::setState);
             }
         }
-        endChips();
+        flushToggleChips(s, toggles);
+    }
+
+    /** Consecutive checkbox / tristate filters become one wrapping 字段 row. */
+    private void flushToggleChips(MangaQuickSheet s, java.util.List<Filter> toggles) {
+        if (toggles.isEmpty()) {
+            return;
+        }
+        String[] texts = new String[toggles.size()];
+        boolean[] on = new boolean[toggles.size()];
+        for (int i = 0; i < toggles.size(); i++) {
+            Filter f = toggles.get(i);
+            if (f instanceof Filter.CheckBox) {
+                boolean checked = Boolean.TRUE.equals(((Filter.CheckBox) f).getState());
+                texts[i] = f.getName();
+                on[i] = checked;
+            } else {
+                int st = (Integer) f.getState();
+                texts[i] = (st == Filter.TriState.STATE_INCLUDE ? "✓ "
+                        : st == Filter.TriState.STATE_EXCLUDE ? "✗ " : "○ ") + f.getName();
+                on[i] = st != Filter.TriState.STATE_IGNORE;
+            }
+        }
+        java.util.List<Filter> snapshot = new ArrayList<>(toggles);
+        toggles.clear();
+        s.toggleChipsRaw(texts, on, i -> {
+            Filter f = snapshot.get(i);
+            if (f instanceof Filter.CheckBox) {
+                ((Filter.CheckBox) f).setState(
+                        !Boolean.TRUE.equals(((Filter.CheckBox) f).getState()));
+            } else {
+                int st = (Integer) f.getState();
+                ((Filter.TriState) f).setState((st + 1) % 3);
+            }
+        });
+    }
+
+    /** Sort filters follow NextPlayer: round key chips + an ascending pair. */
+    private void renderSortFilter(MangaQuickSheet s, Filter.Sort sort) {
+        String[] vals = sort.getValues();
+        if (vals == null || vals.length == 0) {
+            return;
+        }
+        Filter.Sort.Selection sel = sort.getState();
+        int idx = sel == null ? 0 : Math.max(0, Math.min(sel.getIndex(), vals.length - 1));
+        boolean asc = sel == null || sel.getAscending();
+        String[] glyphs = new String[vals.length];
+        for (int i = 0; i < vals.length; i++) {
+            glyphs[i] = vals[i] == null || vals[i].isEmpty()
+                    ? "?" : vals[i].substring(0, 1);
+        }
+        s.section(sort.getName());
+        s.roundChips(glyphs, vals, idx, i -> {
+            Filter.Sort.Selection cur = sort.getState();
+            boolean a = cur == null || cur.getAscending();
+            sort.setState(new Filter.Sort.Selection(i, a));
+        });
+        s.segments(new String[]{"↑ 升序", "↓ 降序"}, asc ? 0 : 1, i -> {
+            Filter.Sort.Selection cur = sort.getState();
+            int index = cur == null ? 0 : cur.getIndex();
+            sort.setState(new Filter.Sort.Selection(index, i == 0));
+        });
     }
 
     private ChipFlowLayout mChipRow;

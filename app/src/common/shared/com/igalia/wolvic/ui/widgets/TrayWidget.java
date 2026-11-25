@@ -697,7 +697,8 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                 reader ? R.dimen.tray_height_reader : R.dimen.tray_height);
 
         // Fit the frame to the row that is actually visible: reader mode has
-        // nine 40dp buttons, which used to overflow the fixed 340dp quad.
+        // nine 40dp buttons, which used to overflow the fixed 340dp quad and
+        // had their outermost buttons clipped.
         int width = baseWidth;
         View row = null;
         if (mBinding != null) {
@@ -713,8 +714,12 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                     visible++;
                 }
             }
+            // Outer tray padding (10+10) + row padding (8+8) + a little slack,
+            // so the rounded background always contains every button.
+            float density = context.getResources().getDisplayMetrics().density;
+            int chrome = Math.round(40 * density);
             int needed = visible * WidgetPlacement.dpDimension(context, R.dimen.tray_button_size)
-                    + WidgetPlacement.dpDimension(context, R.dimen.tray_icon_padding_min) * 3;
+                    + chrome;
             width = Math.max(baseWidth, needed);
         }
 

@@ -21,13 +21,13 @@
              visible row for BROWSER / MANGA / READER. -->
         <LinearLayout
             android:id="@+id/tray_rows"
-            android:layout_width="@dimen/tray_width"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_centerHorizontal="true"
             android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:paddingLeft="8dp"
-            android:paddingRight="8dp"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
             android:paddingBottom="12dp">
 
             <RelativeLayout
@@ -238,11 +238,14 @@
                 <!-- Original browser controls. -->
                 <LinearLayout
                     android:id="@+id/tray_buttons"
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
                     android:gravity="center_horizontal"
                     android:background="@drawable/tray_background_bottom"
-                    android:orientation="horizontal">
+                    android:orientation="horizontal"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp">
 
                     <com.igalia.wolvic.ui.views.UIButton
                         android:id="@+id/addwindowButton"
@@ -347,11 +350,14 @@
                 <!-- Manga page tabs: same tray UI, different actions. -->
                 <LinearLayout
                     android:id="@+id/manga_buttons"
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
                     android:gravity="center_horizontal"
                     android:background="@drawable/tray_background_bottom"
                     android:orientation="horizontal"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp"
                     android:visibility="gone">
 
                     <com.igalia.wolvic.ui.views.UIButton
@@ -422,11 +428,14 @@
                      of its own, all actions live in Wolvic's original tray. -->
                 <LinearLayout
                     android:id="@+id/reader_buttons"
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_horizontal"
                     android:gravity="center_horizontal"
                     android:background="@drawable/tray_background_bottom"
                     android:orientation="horizontal"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp"
                     android:visibility="gone">
 
                     <com.igalia.wolvic.ui.views.UIButton

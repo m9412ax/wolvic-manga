@@ -45,7 +45,8 @@ public final class MangaFileCore {
                 e -> e.directory,
                 e -> !e.directory && MangaSettings.hasExtension(e.name, videoExt),
                 e -> e.name,
-                e -> e.modifiedMs));
+                e -> e.modifiedMs,
+                e -> Math.max(0, e.size)));
         return out;
     }
 
