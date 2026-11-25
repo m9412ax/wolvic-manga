@@ -4330,7 +4330,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mPendingVideoPage = page;
                 return;
             }
-            player.getVLCVout().setVideoSurface(mVideoSurfaceTexture);
+            player.getVLCVout().setVideoView(mVideoTexture);
             player.getVLCVout().attachViews();
             player.play();
             Log.i(TAG, "VLC play " + mrl);
