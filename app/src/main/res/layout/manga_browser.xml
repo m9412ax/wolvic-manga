@@ -116,7 +116,7 @@
         android:layout_weight="1"
         android:paddingLeft="10dp"
         android:paddingRight="10dp"
-        android:paddingBottom="12dp"
+        android:paddingBottom="6dp"
         android:clipToPadding="false"
         android:scrollbars="vertical" />
 

@@ -9,7 +9,10 @@
     android:orientation="vertical"
     android:background="@drawable/manga_panel_bg"
     android:clipToOutline="true"
-    android:padding="16dp">
+    android:paddingLeft="16dp"
+    android:paddingRight="16dp"
+    android:paddingTop="16dp"
+    android:paddingBottom="4dp">
 
     <FrameLayout
         android:id="@+id/pageContainer"
@@ -17,7 +20,7 @@
         android:layout_height="0dp"
         android:layout_weight="1"
         android:layout_marginTop="6dp"
-        android:layout_marginBottom="6dp"
+        android:layout_marginBottom="0dp"
         android:background="@drawable/manga_inner_bg"
         android:clipToOutline="true">
 
@@ -26,7 +29,10 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
-            android:padding="16dp">
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:paddingTop="16dp"
+            android:paddingBottom="4dp">
 
             <TextView
                 android:id="@+id/emptyText"
@@ -53,10 +59,11 @@
     <TextView
         android:id="@+id/panelSourceLabel"
         android:layout_width="match_parent"
-        android:layout_height="22dp"
+        android:layout_height="15dp"
         android:gravity="center"
+        android:includeFontPadding="false"
         android:textColor="#FF7A8B89"
-        android:textSize="13sp"
+        android:textSize="11sp"
         android:text="书架" />
 
     <!-- The grab bar is now a separate floating widget (MangaDragBarWidget)

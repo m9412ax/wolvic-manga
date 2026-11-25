@@ -441,7 +441,9 @@ public class MangaLibraryWidget extends UIWidget {
         LinearLayout content = new LinearLayout(getContext());
         content.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(20);
-        content.setPadding(pad, pad, pad, pad);
+        // Bottom padding is kept minimal: the grid should use every pixel down
+        // to the small source label under the panel.
+        content.setPadding(pad, pad, pad, dp(6));
 
         if (page == MangaPage.SOURCE_BROWSE) {
             // Cover grid needs the whole page height; a ScrollView wrapper

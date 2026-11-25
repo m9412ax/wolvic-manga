@@ -688,9 +688,6 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
      *  restores the normal height otherwise. mBaseTrayHeight is kept in sync
      *  because onMangaParentResized() re-pins to it during canvas zoom. */
     private void setTrayHeightForMode(boolean reader) {
-        if (mWidgetManager == null) {
-            return;
-        }
         Context context = getContext();
         int baseWidth = WidgetPlacement.dpDimension(context, R.dimen.tray_width);
         int height = WidgetPlacement.dpDimension(context,
@@ -700,6 +697,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         // nine 40dp buttons, which used to overflow the fixed 340dp quad and
         // had their outermost buttons clipped.
         int width = baseWidth;
+        int bandWidth = baseWidth - dp(context, 12);
         View row = null;
         if (mBinding != null) {
             row = mMangaMode == MODE_BROWSER ? mBinding.trayButtons
@@ -714,15 +712,22 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
                     visible++;
                 }
             }
-            // Outer tray padding (10+10) + row padding (8+8) + a little slack,
-            // so the rounded background always contains every button.
-            float density = context.getResources().getDisplayMetrics().density;
-            int chrome = Math.round(40 * density);
-            int needed = visible * WidgetPlacement.dpDimension(context, R.dimen.tray_button_size)
-                    + chrome;
-            width = Math.max(baseWidth, needed);
+            if (visible > 0) {
+                // Buttons themselves + the row's 8dp side padding. Every row of
+                // the tray (status bar, page scrubber, buttons) is forced to
+                // this ONE width below, otherwise the top half is wider than
+                // the bottom half and the whole bar looks crooked.
+                bandWidth = visible
+                        * WidgetPlacement.dpDimension(context, R.dimen.tray_button_size)
+                        + dp(context, 16);
+                width = Math.max(baseWidth, bandWidth + dp(context, 29));
+            }
         }
+        applyTrayRowsWidth(bandWidth);
 
+        if (mWidgetManager == null) {
+            return;
+        }
         WidgetPlacement p = getPlacement();
         if (p.height == height && p.width == width && mBaseTrayHeight == height
                 && mBaseTrayWidth == width) {
@@ -750,6 +755,41 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         mBaseTrayWidth = width;
         mBaseTrayWorldWidth = p.worldWidth;
         mWidgetManager.updateWidget(this);
+    }
+
+    private static int dp(Context context, int value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Every tray row must share ONE width: the status bar and the page scrubber
+     * are match_parent, so while tray_rows filled the whole quad they were much
+     * wider than the button row and the control bar looked crooked (a wide top
+     * half over a narrow bottom half). tray_rows now hugs the button band and
+     * the two stretched rows inherit exactly that width.
+     */
+    private void applyTrayRowsWidth(int bandPx) {
+        View rows = findViewById(R.id.tray_rows);
+        if (rows == null) {
+            return;
+        }
+        int target = bandPx + dp(getContext(), 20); // tray_rows 10dp side padding
+        ViewGroup.LayoutParams lp = rows.getLayoutParams();
+        if (lp != null && lp.width != target) {
+            lp.width = target;
+            rows.setLayoutParams(lp);
+        }
+        for (int id : new int[]{R.id.status_bar, R.id.reader_progress_row}) {
+            View child = rows.findViewById(id);
+            if (child == null) {
+                continue;
+            }
+            ViewGroup.LayoutParams childLp = child.getLayoutParams();
+            if (childLp != null && childLp.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                childLp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                child.setLayoutParams(childLp);
+            }
+        }
     }
 
     private void applyMangaMode() {
