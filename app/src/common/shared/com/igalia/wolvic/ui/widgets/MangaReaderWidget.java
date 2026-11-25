@@ -80,6 +80,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  Keep a wide margin. This is a DRAW limit, not a decode limit - pages
      *  above it are decoded at 1:1 into tiles, so no detail is lost. */
     private static final long SINGLE_BITMAP_LIMIT = 72L * 1024 * 1024;
+    /** Budget for the first (window-filling) decode pass. A 4K page decodes at
+     *  sample=2 -> ~10 MB instead of 42 MB, cutting a page turn from ~3-6 s to
+     *  well under a second. The visible page is upgraded to native resolution
+     *  afterwards by restorePageDetail(). */
+    private static final long PREVIEW_BITMAP_BYTES = 16L * 1024 * 1024;
     /** Each region tile must also stay far below the draw limit. */
     private static final long TILE_BYTES_LIMIT = 40L * 1024 * 1024;
     /** Above this size, holding every 1:1 tile at once would exhaust memory;
@@ -390,7 +395,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     (v, l, t, r, b, ol, ot, or_, ob) -> updateStripTransform());
         }
         setupReaderDrag();
-        mVideoTexture.setOpaque(false);
+        // Opaque (not alpha-blended): the video layer is full-bleed and very
+        // large (5704x3373 px on Pico Neo 3), so blending it cost enough GPU
+        // time per frame to drop the VR compositor below its frame budget.
+        // setOpaque() is only valid before the SurfaceTexture exists, hence it
+        // is set here once and never toggled.
+        mVideoTexture.setOpaque(true);
         mVideoTexture.setSurfaceTextureListener(this);
         mVideoTexture.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or_, ob) -> {
             if (isVideoPage()) {
@@ -897,17 +907,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // + sort) ON THE MAIN THREAD for every page that lands -- with a 4K video
         // downloading alongside, that starved the main thread, triggered
         // Activity pause/stop timeouts and froze all input ("cannot return").
-        // Skip it entirely for video pages; the video marker page is already in
-        // mPages, so nothing is lost.
-        if (isVideoPage() || mVideoPage != null) {
-            return;
-        }
-        // Throttle: each landed image otherwise re-scans + re-sorts the whole
-        // folder on the main thread; with many files that starves input and
-        // decode ("pages after the video won't load"). One refresh per 1.5 s is
-        // plenty for progressive download.
+        //
+        // BUT it must still grow at all: SMB/115 write the video marker first,
+        // so opening the chapter used to leave mPages at exactly ONE page and
+        // paging was impossible until the chapter was reopened ("115 图片完全
+        // 无法切换"). Keep the list growing, just slowly and gated on a cheap
+        // directory count so nothing heavy runs while decoding.
+        final boolean videoMode = isVideoPage() || mVideoPage != null;
         long now = System.currentTimeMillis();
-        if (now - mLastChapterListRefreshMs < 1500L) {
+        if (videoMode) {
+            if (now - mLastChapterListRefreshMs < 3000L) {
+                return;
+            }
+            File[] quick = mFolder.listFiles();
+            if (quick == null || quick.length <= mPages.size()) {
+                return;   // nothing new landed yet
+            }
+        } else if (now - mLastChapterListRefreshMs < 1500L) {
             return;
         }
         mLastChapterListRefreshMs = now;
@@ -1354,9 +1370,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private void restorePageDetail(Bitmap preview) {
-        if (pageCacheBudget() >= SINGLE_BITMAP_LIMIT) {
-            return;
-        }
         // Already showing the cached detail pass - nothing to upgrade.
         if (preview == mCache.get(detailKey(mIndex))) {
             return;
@@ -1757,8 +1770,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (load == null) {
             File second = mDoublePage && !isContinuous() && startsTwoPageSpread(index)
                     ? mPages.get(index + 1) : null;
+            // Two-pass decode: this pass only has to fill the window, so it
+            // targets a display-sized bitmap (~4x less work on a 4K page).
+            // restorePageDetail() then upgrades the visible page to native
+            // resolution in the background. Decoding every page at 4096x2600
+            // (42 MB, 2.5-5.8 s each) was why a page turn always showed a
+            // loading overlay.
+            long budget = isContinuous() ? pageCacheBudget() : PREVIEW_BITMAP_BYTES;
             load = new PageLoad(key, index, mPages.get(index), second,
-                    pageCacheBudget(), mSettings.bool(MangaSettings.READER_CROP_BORDERS));
+                    budget, mSettings.bool(MangaSettings.READER_CROP_BORDERS));
             mPendingPages.put(key, load);
         }
         ordered.add(load);
@@ -4379,6 +4399,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                     new androidx.media3.exoplayer.ExoPlayer.Builder(getContext())
                             .setMediaSourceFactory(
                                     new androidx.media3.exoplayer.source.DefaultMediaSourceFactory(factory))
+                            // A 4K LAN stream needs a much deeper buffer than the
+                            // 50 s / 64 MB default: with the default the loader
+                            // sat right at the bitrate and any smbj hiccup showed
+                            // up as a rebuffer ("一直在缓冲"). 30 s minimum,
+                            // 180 s max, 192 MB target.
+                            .setLoadControl(new androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                                    .setBufferDurationsMs(30000, 180000, 2000, 5000)
+                                    .setTargetBufferBytes(192 * 1024 * 1024)
+                                    .build())
                             .build();
             mExoPlayer = exo;
             mExoListener = new androidx.media3.common.Player.Listener() {
