@@ -244,25 +244,14 @@ public class MangaLibraryWidget extends UIWidget {
         mSettings.ensureDefaultBindings();
         LayoutInflater.from(getContext()).inflate(R.layout.manga_library, this, true);
 
-        mTitle = findViewById(R.id.libraryTitle);
+        // The old 28sp title row and its shortcut button are gone.
+        mTitle = null;
         mPanelSource = findViewById(R.id.panelSourceLabel);
         mPageContainer = findViewById(R.id.pageContainer);
         mLibraryPage = findViewById(R.id.libraryPage);
         mEmptyText = findViewById(R.id.emptyText);
         mGrid = findViewById(R.id.mangaGrid);
         mDragBar = findViewById(R.id.dragBar);
-
-        // Opens the stock settings dialog straight into the manga tab. There is
-        // only one settings surface now; the shelf no longer has its own page.
-        View settingsShortcut = findViewById(R.id.settingsShortcutButton);
-        if (settingsShortcut != null) {
-            settingsShortcut.setOnClickListener(v -> {
-                Context context = getContext();
-                if (context instanceof VRBrowserActivity) {
-                    ((VRBrowserActivity) context).showMangaSettingsTab();
-                }
-            });
-        }
 
         mFolderThumbScale = Math.max(0.5f, Math.min(2.0f,
                 mSettings.getFloat(MangaSettings.FOLDER_THUMB_SCALE, 1.0f)));
