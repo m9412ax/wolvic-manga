@@ -19,6 +19,7 @@ import android.view.ViewParent;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
@@ -77,6 +78,14 @@ public class MangaFileBrowser extends LinearLayout {
         @Nullable public String badge;
         /** Original object, handed back to the host on click. */
         @Nullable public Object tag;
+        /** Read state: 0 none, 1 in progress (blue), 2 finished (green). */
+        public int state;
+        /** Multi-select mark. */
+        public boolean selected;
+        /** Shows the trailing "⋯" action (历史 rows). */
+        public boolean menuable;
+        /** 0..100 reading progress for the list row; -1 hides the bar. */
+        public int percent = -1;
 
         public Entry(String name, String path, boolean directory) {
             this.name = name == null ? "" : name;
@@ -108,6 +117,11 @@ public class MangaFileBrowser extends LinearLayout {
         }
     }
 
+    /** Host performs the actual deletion once the user confirmed. */
+    public interface DeleteRequest {
+        void onDelete(List<Entry> entries);
+    }
+
     public interface Callback {
         /** A file was tapped. */
         void onOpen(Entry entry);
@@ -120,6 +134,9 @@ public class MangaFileBrowser extends LinearLayout {
 
         /** User changed the sort mode; the browser already persisted it. */
         default void onSortChanged(int sortMode) { }
+
+        /** The trailing "⋯" of a row was tapped (历史 page row menu). */
+        default void onMenu(Entry entry) { }
     }
 
     private final List<Entry> mEntries = new ArrayList<>();
@@ -134,6 +151,13 @@ public class MangaFileBrowser extends LinearLayout {
     private TextView mStatus;
     private TextView mBack;
     private TextView mSettingsButton;
+    private LinearLayout mSelectionBar;
+    private TextView mSelectAll;
+    private TextView mSelectInfo;
+    private TextView mSelectCancel;
+    private TextView mDeleteButton;
+    private boolean mSelectionMode;
+    @Nullable private DeleteRequest mDeleteRequest;
     private LinearLayout mActionBar;
     private LinearLayout mCrumbs;
     private View mCrumbScroll;
@@ -186,7 +210,26 @@ public class MangaFileBrowser extends LinearLayout {
         applyLayoutManager();
         mList.setHasFixedSize(false);
 
+        mSelectionBar = findViewById(R.id.browserSelection);
+        mSelectAll = findViewById(R.id.browserSelectAll);
+        mSelectInfo = findViewById(R.id.browserSelectInfo);
+        mSelectCancel = findViewById(R.id.browserSelectCancel);
+        mDeleteButton = findViewById(R.id.browserDelete);
+        if (mSelectAll != null) {
+            mSelectAll.setOnClickListener(v -> selectAll());
+        }
+        if (mSelectCancel != null) {
+            mSelectCancel.setOnClickListener(v -> setSelectionMode(false));
+        }
+        if (mDeleteButton != null) {
+            mDeleteButton.setOnClickListener(v -> requestDelete());
+        }
+
         mBack.setOnClickListener(v -> {
+            if (mSelectionMode) {
+                setSelectionMode(false);
+                return;
+            }
             if (mCallback != null) {
                 mCallback.onBack();
             }
@@ -208,6 +251,92 @@ public class MangaFileBrowser extends LinearLayout {
 
     public void setCallback(@Nullable Callback callback) {
         mCallback = callback;
+    }
+
+    public void setOnDeleteRequested(@Nullable DeleteRequest request) {
+        mDeleteRequest = request;
+    }
+
+    public boolean isSelectionMode() {
+        return mSelectionMode;
+    }
+
+    /** Enters/leaves multi-select. Leaving clears every mark. */
+    public void setSelectionMode(boolean on) {
+        if (mSelectionMode == on) {
+            return;
+        }
+        mSelectionMode = on;
+        if (!on) {
+            for (Entry entry : mEntries) {
+                entry.selected = false;
+            }
+        }
+        if (mSelectionBar != null) {
+            mSelectionBar.setVisibility(on ? VISIBLE : GONE);
+        }
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
+        }
+        updateSelectionBar();
+    }
+
+    private void selectAll() {
+        boolean allSelected = !mSorted.isEmpty();
+        for (Entry entry : mSorted) {
+            if (!entry.selected) {
+                allSelected = false;
+                break;
+            }
+        }
+        for (Entry entry : mSorted) {
+            entry.selected = !allSelected;
+        }
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
+        }
+        updateSelectionBar();
+    }
+
+    public List<Entry> selectedEntries() {
+        List<Entry> out = new ArrayList<>();
+        for (Entry entry : mSorted) {
+            if (entry.selected) {
+                out.add(entry);
+            }
+        }
+        return out;
+    }
+
+    private void updateSelectionBar() {
+        if (mSelectInfo == null) {
+            return;
+        }
+        int count = selectedEntries().size();
+        mSelectInfo.setText(count == 0 ? "点选文件或文件夹" : ("已选 " + count + " 项"));
+        boolean any = !mSorted.isEmpty();
+        if (mSelectAll != null) {
+            mSelectAll.setText(any && count == mSorted.size() ? "取消全选" : "全选");
+        }
+        if (mDeleteButton != null) {
+            mDeleteButton.setText(count > 0 ? ("🗑 删除 (" + count + ")") : "🗑 删除");
+            mDeleteButton.setAlpha(count > 0 ? 1f : 0.4f);
+        }
+    }
+
+    private void requestDelete() {
+        List<Entry> selected = selectedEntries();
+        if (selected.isEmpty()) {
+            return;
+        }
+        if (mDeleteRequest != null) {
+            mDeleteRequest.onDelete(selected);
+        }
+    }
+
+    /** Host-side hook: called after a deletion succeeded. */
+    public void onEntriesDeleted() {
+        setSelectionMode(false);
     }
 
     /**
@@ -271,6 +400,18 @@ public class MangaFileBrowser extends LinearLayout {
         mFolderFirst = folderFirst;
         if (!mSorted.isEmpty()) {
             sortAndRender();
+        }
+    }
+
+    /** Forces grid or list layout regardless of the saved view preference. */
+    public void setListMode(boolean list) {
+        if (mCompact == list) {
+            return;
+        }
+        mCompact = list;
+        applyLayoutManager();
+        if (mAdapter != null) {
+            mAdapter.notifyDataSetChanged();
         }
     }
 
@@ -340,6 +481,9 @@ public class MangaFileBrowser extends LinearLayout {
         mEntries.clear();
         if (entries != null) {
             mEntries.addAll(entries);
+        }
+        if (mSelectionMode) {
+            setSelectionMode(false);
         }
         if (title != null) {
             mTitleText = title;
@@ -618,6 +762,20 @@ public class MangaFileBrowser extends LinearLayout {
         BaseHolder(@NonNull View itemView) {
             super(itemView);
             itemView.setOnClickListener(v -> openAt(getBindingAdapterPosition()));
+            itemView.setOnLongClickListener(v -> {
+                int pos = getBindingAdapterPosition();
+                if (pos == RecyclerView.NO_POSITION || pos >= mSorted.size()) {
+                    return false;
+                }
+                if (!mSelectionMode) {
+                    setSelectionMode(true);
+                }
+                Entry entry = mSorted.get(pos);
+                entry.selected = !entry.selected;
+                mAdapter.notifyItemChanged(pos);
+                updateSelectionBar();
+                return true;
+            });
             itemView.setOnFocusChangeListener((v, hasFocus) -> {
                 // Dim non-focused rows instead of repainting the background:
                 // setBackgroundColor would square off the rounded card.
@@ -628,11 +786,19 @@ public class MangaFileBrowser extends LinearLayout {
         }
 
         void openAt(int pos) {
-            if (pos == RecyclerView.NO_POSITION || pos >= mSorted.size()
-                    || mCallback == null) {
+            if (pos == RecyclerView.NO_POSITION || pos >= mSorted.size()) {
                 return;
             }
             Entry entry = mSorted.get(pos);
+            if (mSelectionMode) {
+                entry.selected = !entry.selected;
+                mAdapter.notifyItemChanged(pos);
+                updateSelectionBar();
+                return;
+            }
+            if (mCallback == null) {
+                return;
+            }
             if (entry.directory) {
                 mCallback.onNavigate(entry.path);
             } else {
@@ -664,6 +830,7 @@ public class MangaFileBrowser extends LinearLayout {
 
         @Override
         void bind(Entry entry) {
+            itemView.setBackgroundResource(cardBackground(entry));
             name.setText(entry.name);
             meta.setText(entryMeta(entry));
 
@@ -702,6 +869,7 @@ public class MangaFileBrowser extends LinearLayout {
         final TextView name;
         final TextView meta;
         final TextView badge;
+        final ProgressBar progress;
 
         RowHolder(@NonNull View itemView) {
             super(itemView);
@@ -710,10 +878,12 @@ public class MangaFileBrowser extends LinearLayout {
             name = itemView.findViewById(R.id.rowName);
             meta = itemView.findViewById(R.id.rowMeta);
             badge = itemView.findViewById(R.id.rowBadge);
+            progress = itemView.findViewById(R.id.rowProgress);
         }
 
         @Override
         void bind(Entry entry) {
+            itemView.setBackgroundResource(cardBackground(entry));
             name.setText(entry.name);
             meta.setText(entryMeta(entry));
             // Row height follows the same size slider as the grid, so shrinking
@@ -722,9 +892,30 @@ public class MangaFileBrowser extends LinearLayout {
             lp.height = Math.max(dp(48), Math.round(mThumbSize * 0.42f
                     * getResources().getDisplayMetrics().density));
             itemView.setLayoutParams(lp);
-            badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
-            if (!TextUtils.isEmpty(entry.badge)) {
-                badge.setText(entry.badge);
+            if (entry.menuable) {
+                badge.setVisibility(VISIBLE);
+                badge.setText("⋯");
+                badge.setClickable(true);
+                badge.setOnClickListener(v -> {
+                    if (mCallback != null) {
+                        mCallback.onMenu(entry);
+                    }
+                });
+            } else {
+                badge.setClickable(false);
+                badge.setOnClickListener(null);
+                badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
+                if (!TextUtils.isEmpty(entry.badge)) {
+                    badge.setText(entry.badge);
+                }
+            }
+            if (progress != null) {
+                if (entry.percent >= 0) {
+                    progress.setVisibility(VISIBLE);
+                    progress.setProgress(Math.max(0, Math.min(100, entry.percent)));
+                } else {
+                    progress.setVisibility(GONE);
+                }
             }
             if (entry.thumb != null && entry.thumb.isFile()) {
                 glyph.setVisibility(GONE);
@@ -741,6 +932,20 @@ public class MangaFileBrowser extends LinearLayout {
                 glyph.setTextColor(entry.video ? 0xFFF2B880 : 0xFF80D5D2);
             }
         }
+    }
+
+    /** Read progress frames: blue = in progress, green = finished. */
+    private int cardBackground(Entry entry) {
+        if (mSelectionMode && entry.selected) {
+            return R.drawable.manga_card_selected;
+        }
+        if (entry.state == 2) {
+            return R.drawable.manga_card_done;
+        }
+        if (entry.state == 1) {
+            return R.drawable.manga_card_reading;
+        }
+        return R.drawable.manga_card_bg;
     }
 
     private String entryMeta(Entry entry) {

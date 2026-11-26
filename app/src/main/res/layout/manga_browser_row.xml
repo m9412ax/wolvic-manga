@@ -60,6 +60,19 @@
             android:ellipsize="end"
             android:textColor="#FF8FA19E"
             android:textSize="12sp" />
+
+        <!-- Reading progress of a 历史 row; hidden for plain file rows. -->
+        <ProgressBar
+            android:id="@+id/rowProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="5dp"
+            android:layout_marginTop="4dp"
+            android:max="100"
+            android:progress="0"
+            android:progressTint="#FF80D5D2"
+            android:progressBackgroundTint="#33FFFFFF"
+            android:visibility="gone" />
     </LinearLayout>
 
     <TextView

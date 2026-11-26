@@ -276,6 +276,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         // manga modes are one UI instead of two separate applications.
         bindMangaButton(mBinding.mangaHomeButton, "MANGA");
         bindMangaButton(mBinding.mangaShelfButton, "LIBRARY");
+        bindMangaButton(mBinding.mangaHistoryButton, "HISTORY");
         bindMangaButton(mBinding.mangaLocalButton, "LOCAL");
         bindMangaButton(mBinding.mangaSmbButton, "SMB");
         bindMangaButton(mBinding.mangaWebDavButton, "WEBDAV");
@@ -290,6 +291,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         bindMangaButton(mBinding.readerDirectionButton, "READER_DIRECTION");
         bindMangaButton(mBinding.readerBrightnessButton, "READER_BRIGHTNESS");
         bindMangaButton(mBinding.readerAutoButton, "READER_AUTO");
+        bindMangaButton(mBinding.readerDeleteButton, "READER_DELETE");
         bindMangaButton(mBinding.readerDoubleButton, "READER_DOUBLE");
         setupReaderProgress();
         applyMangaMode();
@@ -782,6 +784,7 @@ public class TrayWidget extends UIWidget implements WidgetManagerDelegate.Update
         }
 
         mBinding.mangaShelfButton.setActiveMode("LIBRARY".equals(mMangaPage));
+        mBinding.mangaHistoryButton.setActiveMode("HISTORY".equals(mMangaPage));
         mBinding.mangaLocalButton.setActiveMode("LOCAL".equals(mMangaPage));
         mBinding.mangaSmbButton.setActiveMode("SMB".equals(mMangaPage));
         mBinding.mangaWebDavButton.setActiveMode("WEBDAV".equals(mMangaPage));

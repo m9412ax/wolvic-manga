@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Folder/file with reading progress in it: blue frame (中国区习惯：在读=蓝). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FF16211F" />
+    <corners android:radius="12dp" />
+    <stroke android:width="2dp" android:color="#FF4C9AFF" />
+</shape>

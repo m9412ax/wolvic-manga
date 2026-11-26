@@ -41,6 +41,21 @@ public interface RemoteManga {
      *  download worker thread. */
     void fetchPage(PageInfo page, File dest) throws Exception;
 
+    /**
+     * Canonical key of a chapter, shared with {@link MangaReadingState} and the
+     * file browser. Implementations return the key the SAME folder would get
+     * when opened directly (see {@link #key()}), so read marks line up whoever
+     * opened it first.
+     */
+    default String chapterKey(ChapterInfo chapter) {
+        return key() + "|" + chapter.id;
+    }
+
+    /** Deletes a chapter at the source. Returns true when it is gone. */
+    default boolean deleteChapter(ChapterInfo chapter) throws Exception {
+        return false;
+    }
+
     /** Like fetchPage but reports byte progress of the CURRENT file.
      *  Default falls back to plain fetchPage (no per-file detail). */
     default void fetchPage(PageInfo page, File dest, ProgressListener listener) throws Exception {

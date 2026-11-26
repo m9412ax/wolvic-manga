@@ -367,6 +367,16 @@
                         app:tooltipLayout="@layout/tooltip_tray"
                         android:src="@drawable/ic_manga_shelf" />
 
+                    <!-- 历史记录: opened mangas with progress, next to the shelf. -->
+                    <com.igalia.wolvic.ui.views.UIButton
+                        android:id="@+id/mangaHistoryButton"
+                        style="@style/trayButtonMiddleTheme"
+                        android:tooltipText="历史记录"
+                        app:tooltipDensity="@dimen/tray_tooltip_density"
+                        app:tooltipPosition="bottom"
+                        app:tooltipLayout="@layout/tooltip_tray"
+                        android:src="@drawable/ic_icon_history" />
+
                     <com.igalia.wolvic.ui.views.UIButton
                         android:id="@+id/mangaLocalButton"
                         style="@style/trayButtonMiddleTheme"
@@ -509,12 +519,22 @@
 
                     <com.igalia.wolvic.ui.views.UIButton
                         android:id="@+id/readerAutoButton"
-                        style="@style/trayButtonEndTheme"
+                        style="@style/trayButtonMiddleTheme"
                         android:tooltipText="自动翻页"
                         app:tooltipDensity="@dimen/tray_tooltip_density"
                         app:tooltipPosition="bottom"
                         app:tooltipLayout="@layout/tooltip_tray"
                         android:src="@drawable/ic_icon_media_play" />
+
+                    <!-- Deletes the chapter on screen (media + its progress). -->
+                    <com.igalia.wolvic.ui.views.UIButton
+                        android:id="@+id/readerDeleteButton"
+                        style="@style/trayButtonEndTheme"
+                        android:tooltipText="删除本章"
+                        app:tooltipDensity="@dimen/tray_tooltip_density"
+                        app:tooltipPosition="bottom"
+                        app:tooltipLayout="@layout/tooltip_tray"
+                        android:src="@drawable/ic_icon_trash" />
                 </LinearLayout>
 
             </FrameLayout>

@@ -58,19 +58,26 @@ public class MangaChapterSession {
     public final String startFilePath;
     public final String progressKey;
     public final ChapterProvider provider;
+    /** Canonical key of every chapter (see MangaReadingState). */
+    public final List<String> chapterKeys;
+    /** Source id of every chapter (SMB path / 115 folder id), for deletion. */
+    public final List<String> chapterIds;
     /** Non-null for SMB/115 online sessions; used by the reader to stream
      *  video marker files instead of decoding them as images. */
     public final RemoteManga remoteManga;
 
     private MangaChapterSession(List<File> dirs, int index, int page, float frac,
                                 String startFilePath, String progressKey,
-                                ChapterProvider provider) {
-        this(dirs, index, page, frac, startFilePath, progressKey, provider, null);
+                                ChapterProvider provider, List<String> chapterKeys,
+                                List<String> chapterIds) {
+        this(dirs, index, page, frac, startFilePath, progressKey, provider, null,
+                chapterKeys, chapterIds);
     }
 
     private MangaChapterSession(List<File> dirs, int index, int page, float frac,
                                 String startFilePath, String progressKey,
-                                ChapterProvider provider, RemoteManga remoteManga) {
+                                ChapterProvider provider, RemoteManga remoteManga,
+                                List<String> chapterKeys, List<String> chapterIds) {
         this.dirs = dirs;
         this.index = index;
         this.page = page;
@@ -79,12 +86,26 @@ public class MangaChapterSession {
         this.progressKey = progressKey;
         this.provider = provider;
         this.remoteManga = remoteManga;
+        this.chapterKeys = chapterKeys == null ? new ArrayList<String>() : chapterKeys;
+        this.chapterIds = chapterIds == null ? new ArrayList<String>() : chapterIds;
+    }
+
+    /** Canonical key of the chapter at [i], or null when unknown. */
+    public String chapterKeyAt(int i) {
+        if (chapterKeys == null || i < 0 || i >= chapterKeys.size()) {
+            return null;
+        }
+        return chapterKeys.get(i);
     }
 
     public static MangaChapterSession local(File root, List<File> chapters, int index,
                                             int page, float frac, String startFilePath) {
+        List<String> keys = new ArrayList<>();
+        for (File chapter : chapters) {
+            keys.add(chapter == null ? "" : chapter.getAbsolutePath());
+        }
         return new MangaChapterSession(chapters, index, page, frac, startFilePath,
-                "local:" + root.getAbsolutePath(), null);
+                "local:" + root.getAbsolutePath(), null, keys, null);
     }
 
     public static MangaChapterSession source(Context context, Source source, SManga manga,
@@ -120,8 +141,16 @@ public class MangaChapterSession {
                         chapters.get(i), 3);
             }
         };
+        List<String> keys = new ArrayList<>();
+        for (SChapter chapter : chapters) {
+            keys.add("src:" + source.getId() + ":" + manga.getUrl() + "|" + chapter.getUrl());
+        }
+        List<String> ids = new ArrayList<>();
+        for (SChapter chapter : chapters) {
+            ids.add(chapter.getUrl());
+        }
         return new MangaChapterSession(dirs, index, page, frac, null,
-                "src:" + source.getId() + ":" + manga.getUrl(), provider);
+                "src:" + source.getId() + ":" + manga.getUrl(), provider, keys, ids);
     }
 
     /** Builds a session for an ONLINE remote manga (SMB / 115). Each chapter
@@ -151,7 +180,13 @@ public class MangaChapterSession {
                 RemoteChapterLoader.prefetch(manga, chapters.get(i), dirs.get(i), 3);
             }
         };
+        List<String> keys = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        for (RemoteManga.ChapterInfo chapter : chapters) {
+            keys.add(manga.chapterKey(chapter));
+            ids.add(chapter.id);
+        }
         return new MangaChapterSession(dirs, index, page, frac, null,
-                "remote:" + manga.key(), provider, manga);
+                "remote:" + manga.key(), provider, manga, keys, ids);
     }
 }

@@ -56,6 +56,37 @@ public final class Netdisk115RemoteManga implements RemoteManga {
     @Override
     public String title() { return title; }
 
+    /** Read marks for 115 are keyed by the folder id itself. */
+    @Override
+    public String chapterKey(ChapterInfo chapter) {
+        return "115:" + chapter.id;
+    }
+
+    @Override
+    public boolean deleteChapter(ChapterInfo chapter) throws Exception {
+        String id = chapter == null ? null : chapter.id;
+        if (id == null || id.trim().isEmpty()) {
+            return false;
+        }
+        // A chapter that IS this folder (loose images) must not delete the
+        // folder itself, only the media inside it.
+        if (id.equals(cid)) {
+            List<PageInfo> pages = listPages(chapter);
+            List<String> fileIds = new ArrayList<>();
+            for (PageInfo page : pages) {
+                if (page.id != null && !page.id.isEmpty()) {
+                    fileIds.add(page.id);
+                }
+            }
+            Manga115Api.deleteFiles(cookie, cid, fileIds);
+            return true;
+        }
+        List<String> one = new ArrayList<>();
+        one.add(id);
+        Manga115Api.deleteFiles(cookie, cid, one);
+        return true;
+    }
+
     @Override
     public List<ChapterInfo> listChapters() throws Exception {
         List<Manga115Api.DirEntry> entries = Manga115Api.listDir(cookie, cid);

@@ -223,6 +223,57 @@ public final class MangaSmb {
         list(auth, "");
     }
 
+    /**
+     * Deletes files and/or whole folders on the share. Folders are emptied
+     * first because SMB refuses to remove a non-empty directory.
+     *
+     * @param relativePaths paths relative to the share root, as returned by
+     *                      {@link #list(Auth, String)}.
+     */
+    public static void delete(Auth auth, java.util.List<String> relativePaths) throws Exception {
+        if (relativePaths == null || relativePaths.isEmpty()) {
+            return;
+        }
+        SMBClient client = newClient();
+        Connection connection = null;
+        try {
+            connection = client.connect(auth.host);
+            Session session = connection.authenticate(new AuthenticationContext(
+                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
+                    auth.domain == null ? "" : auth.domain));
+            DiskShare share = (DiskShare) session.connectShare(auth.share);
+            for (String rel : relativePaths) {
+                String path = normalizePath(rel);
+                if (path.isEmpty()) {
+                    continue;
+                }
+                deleteIn(share, path);
+                Log.i(TAG, "deleted " + path);
+            }
+        } finally {
+            closeQuietly(connection);
+            closeQuietly(client);
+        }
+    }
+
+    private static void deleteIn(DiskShare share, String path) throws Exception {
+        boolean folder = share.folderExists(path);
+        if (!folder) {
+            if (share.fileExists(path)) {
+                share.rm(path);
+            }
+            return;
+        }
+        for (FileIdBothDirectoryInformation info : share.list(path)) {
+            String name = info.getFileName();
+            if (name == null || name.equals(".") || name.equals("..")) {
+                continue;
+            }
+            deleteIn(share, join(path, name));
+        }
+        share.rmdir(path);
+    }
+
     /** Enumerates ALL shares on a host via jcifs-ng (smbj has no NetShareEnum).
      *  Returns share names; the caller fills SMB_SHARE with the chosen one.
      *  Uses SMB2 by default so it works on hosts that disabled SMB1. */

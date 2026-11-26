@@ -54,6 +54,46 @@ public final class SmbRemoteManga implements RemoteManga {
         return title;
     }
 
+    /** Canonical key of a folder on this share, identical to the {@link #key()}
+     *  it would get when opened directly. Used for read marks. */
+    public static String keyFor(String host, String share, String relativePath) {
+        String p = relativePath == null ? "" : relativePath.replace('\\', '/').trim();
+        while (p.startsWith("/")) {
+            p = p.substring(1);
+        }
+        while (p.endsWith("/") && p.length() > 1) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return "smb://" + host + "/" + share + "/" + p;
+    }
+
+    @Override
+    public String chapterKey(ChapterInfo chapter) {
+        return keyFor(auth.host, auth.share, chapter.id);
+    }
+
+    @Override
+    public boolean deleteChapter(ChapterInfo chapter) throws Exception {
+        String path = chapter == null ? null : chapter.id;
+        if (path == null || path.trim().isEmpty()) {
+            return false;
+        }
+        java.util.List<String> targets = new ArrayList<>();
+        if (path.equals(remotePath)) {
+            // This folder itself is the chapter (loose images): delete only the
+            // media inside it, never the folder the user is standing in.
+            for (PageInfo page : listPages(chapter)) {
+                if (page.id != null && !page.id.isEmpty()) {
+                    targets.add(page.id);
+                }
+            }
+        } else {
+            targets.add(path);
+        }
+        MangaSmb.delete(auth, targets);
+        return true;
+    }
+
     @Override
     public List<ChapterInfo> listChapters() throws Exception {
         List<MangaSmb.Entry> entries = MangaSmb.list(auth, remotePath);

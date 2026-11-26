@@ -34,6 +34,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.Nullable;
 import androidx.core.content.FileProvider;
 
 import androidx.preference.EditTextPreference;
@@ -51,7 +52,9 @@ import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.browser.api.WSession;
 import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaDownloader;
+import com.igalia.wolvic.manga.MangaFileCore;
 import com.igalia.wolvic.manga.MangaKeyCapture;
+import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSmb;
 import com.igalia.wolvic.manga.Manga115Api;
 import com.igalia.wolvic.manga.MangaSettings;
@@ -109,6 +112,7 @@ public class MangaLibraryWidget extends UIWidget {
 
     public enum MangaPage {
         LIBRARY("书架"),
+        HISTORY("历史记录"),
         LOCAL("本地文件夹"),
         SMB("SMB 共享"),
         WEBDAV("网盘 WebDAV"),
@@ -141,6 +145,10 @@ public class MangaLibraryWidget extends UIWidget {
     private final Map<MangaPage, View> mPageViews = new EnumMap<>(MangaPage.class);
     /** Full-height browser host for LOCAL / SMB / 115 (below the header). */
     private final Map<MangaPage, FrameLayout> mPageBrowsers = new EnumMap<>(MangaPage.class);
+    /** Browser currently attached, so header actions can drive its selection. */
+    private MangaFileBrowser mCurrentBrowser;
+    /** 历史 page category: 0 全部, 1 本地, 2 SMB, 3 115, 4 扩展图源. */
+    private int mHistoryTab;
     /** Scrollable header above the browser (config forms, login UI, errors). */
     private final Map<MangaPage, ScrollView> mPageHeaders = new EnumMap<>(MangaPage.class);
     private final Map<MangaPage, LinearLayout> mPageContents = new EnumMap<>(MangaPage.class);
@@ -460,7 +468,7 @@ public class MangaLibraryWidget extends UIWidget {
         // below. A RecyclerView nested in a ScrollView fights it for scrolling,
         // so these pages get their own two-part layout.
         if (page == MangaPage.LOCAL || page == MangaPage.SMB
-                || page == MangaPage.WEBDAV) {
+                || page == MangaPage.WEBDAV || page == MangaPage.HISTORY) {
             LinearLayout root = new LinearLayout(getContext());
             root.setOrientation(LinearLayout.VERTICAL);
             final ScrollView header = new ScrollView(getContext());
@@ -564,6 +572,9 @@ public class MangaLibraryWidget extends UIWidget {
 
     private void fillPage(MangaPage page, LinearLayout content) {
         switch (page) {
+            case HISTORY:
+                fillHistoryPage(content);
+                break;
             case LOCAL:
                 fillLocalPage(content);
                 break;
@@ -928,6 +939,10 @@ public class MangaLibraryWidget extends UIWidget {
         }
         MangaChapterSession session = MangaChapterSession.local(
                 root, chapters, index, page, frac, startFilePath);
+        if (!chapters.isEmpty() && index < chapters.size()) {
+            noteHistory(HIST_LOCAL, "local:" + root.getAbsolutePath(), root.getName(),
+                    root.getAbsolutePath(), chapters.get(index).getAbsolutePath());
+        }
         ((VRBrowserActivity) context).openMangaReaderSession(session);
         Log.i(TAG, "openLocalSession root=" + root.getAbsolutePath()
                 + " chapters=" + chapters.size() + " index=" + index + " page=" + page);
@@ -1165,6 +1180,11 @@ public class MangaLibraryWidget extends UIWidget {
                 mMain.post(() -> {
                     MangaChapterSession session = MangaChapterSession.remote(
                             getContext(), manga, chapters, dirs, fi, fp, ff);
+                    if (fi >= 0 && fi < chapters.size()) {
+                        noteHistory(manga.key().startsWith("115:") ? HIST_115 : HIST_SMB,
+                                manga.key(), manga.title(), manga.key(),
+                                manga.chapterKey(chapters.get(fi)));
+                    }
                     ((VRBrowserActivity) getContext()).openMangaReaderSession(session);
                     Log.i(TAG, "openRemoteManga " + manga.key()
                             + " chapters=" + chapters.size() + " index=" + fi);
@@ -1651,6 +1671,8 @@ public class MangaLibraryWidget extends UIWidget {
                 entries.add(e);
             }
         }
+        applyReadStates(entries, mLocalDir == null ? null : mLocalDir.getAbsolutePath(),
+                path -> path);
         final MangaFileBrowser localBrowser = new MangaFileBrowser(getContext());
         localBrowser.setData(entries,
                 mLocalDir == null ? "本地" : mLocalDir.getName(),
@@ -1831,9 +1853,12 @@ public class MangaLibraryWidget extends UIWidget {
                 crumbs.add(new MangaFileBrowser.Crumb(part, acc.toString()));
             }
         }
+        final String smbHost = mSettings.text(MangaSettings.SMB_HOST);
+        applyReadStates(entries, SmbRemoteManga.keyFor(smbHost, share, mSmbPath),
+                path -> SmbRemoteManga.keyFor(smbHost, share, path));
         final MangaFileBrowser smbBrowser = new MangaFileBrowser(getContext());
         smbBrowser.setData(entries,
-                mSettings.text(MangaSettings.SMB_HOST) + " / " + share,
+                smbHost + " / " + share,
                 crumbs, smbStatus);
         smbBrowser.setCanGoBack(!mSmbPath.isEmpty());
         smbBrowser.setCallback(new MangaFileBrowser.Callback() {
@@ -1868,6 +1893,498 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
+    // ------------------------------------------------------------ history
+
+    private static final String HIST_ALL = "";
+    private static final String HIST_LOCAL = "LOCAL";
+    private static final String HIST_SMB = "SMB";
+    private static final String HIST_115 = "115";
+    private static final String HIST_EXT = "EXT";
+
+    private String historyTabKey() {
+        switch (mHistoryTab) {
+            case 1: return HIST_LOCAL;
+            case 2: return HIST_SMB;
+            case 3: return HIST_115;
+            case 4: return HIST_EXT;
+            default: return HIST_ALL;
+        }
+    }
+
+    /**
+     * 历史记录: every manga that was opened, grouped by source. The 扩展图源
+     * category lives in its own tab that only appears when selected, exactly
+     * like the other source sub-pages. Rows are plain list rows so the reading
+     * progress bar has room; layout and header buttons match the file browser.
+     */
+    private void fillHistoryPage(LinearLayout content) {
+        LinearLayout tabs = addRow(content);
+        String[] labels = {"全部", "本地文件", "SMB", "115", "扩展图源"};
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            addButton(tabs, (mHistoryTab == i ? "✓ " : "") + labels[i], v -> {
+                mHistoryTab = index;
+                refreshPage(MangaPage.HISTORY);
+            });
+        }
+
+        final MangaReadingState state = MangaReadingState.get(getContext());
+        final String want = historyTabKey();
+        List<MangaFileBrowser.Entry> entries = new ArrayList<>();
+        for (MangaReadingState.Record record : state.records()) {
+            if (!want.isEmpty() && !want.equals(record.source)) {
+                continue;
+            }
+            MangaFileBrowser.Entry entry = new MangaFileBrowser.Entry(
+                    record.title, record.id, false);
+            entry.menuable = true;
+            entry.percent = record.percent();
+            entry.glyph = historyGlyph(record.source);
+            entry.meta = historyMeta(record);
+            entry.tag = record;
+            entries.add(entry);
+        }
+        final MangaFileBrowser browser = new MangaFileBrowser(getContext());
+        browser.setListMode(true);
+        browser.setData(entries, "历史记录", null,
+                entries.isEmpty() ? "还没有打开过漫画。" : null);
+        browser.setCanGoBack(false);
+        browser.setCallback(new MangaFileBrowser.Callback() {
+            @Override
+            public void onOpen(MangaFileBrowser.Entry entry) {
+                if (entry.tag instanceof MangaReadingState.Record) {
+                    openHistoryRecord((MangaReadingState.Record) entry.tag);
+                }
+            }
+
+            @Override
+            public void onMenu(MangaFileBrowser.Entry entry) {
+                if (entry.tag instanceof MangaReadingState.Record) {
+                    showHistoryMenu((MangaReadingState.Record) entry.tag, browser);
+                }
+            }
+        });
+        browser.setOnDeleteRequested(list -> {
+            List<String> ids = new ArrayList<>();
+            for (MangaFileBrowser.Entry entry : list) {
+                ids.add(entry.path);
+            }
+            state.removeRecords(ids);
+            browser.onEntriesDeleted();
+            Toast.makeText(getContext(), "已移除 " + ids.size() + " 条记录",
+                    Toast.LENGTH_SHORT).show();
+            refreshPage(MangaPage.HISTORY);
+        });
+        List<MangaFileBrowser.Action> actions = new ArrayList<>();
+        actions.add(new MangaFileBrowser.Action("🗑 清除全部", () -> confirmClearHistory(state)));
+        actions.add(new MangaFileBrowser.Action("☑ 多选",
+                () -> browser.setSelectionMode(true)));
+        browser.setHeaderActions(actions);
+        browser.setSheetHost(mPageContainer);
+        attachBrowser(MangaPage.HISTORY, browser);
+    }
+
+    private String historyGlyph(String source) {
+        if (HIST_SMB.equals(source)) {
+            return "▤";
+        }
+        if (HIST_115.equals(source)) {
+            return "☁";
+        }
+        if (HIST_EXT.equals(source)) {
+            return "◎";
+        }
+        return "▣";
+    }
+
+    private String historySourceName(String source) {
+        if (HIST_LOCAL.equals(source)) {
+            return "本地文件";
+        }
+        if (HIST_SMB.equals(source)) {
+            return "SMB";
+        }
+        if (HIST_115.equals(source)) {
+            return "115 网盘";
+        }
+        if (HIST_EXT.equals(source)) {
+            return "扩展图源";
+        }
+        return "漫画";
+    }
+
+    private String historyMeta(MangaReadingState.Record record) {
+        StringBuilder sb = new StringBuilder(historySourceName(record.source));
+        if (record.total > 0) {
+            sb.append(" · ").append(record.percent()).append('%')
+                    .append(" · ").append(Math.min(record.page + 1, record.total))
+                    .append('/').append(record.total).append(" 页");
+        } else if (record.page > 0) {
+            sb.append(" · 第 ").append(record.page + 1).append(" 页");
+        }
+        if (record.ts > 0) {
+            sb.append(" · ").append(MangaFileBrowser.formatDate(record.ts));
+        }
+        return sb.toString();
+    }
+
+    /** Records (or refreshes) the 历史 row of a manga about to be opened. */
+    private void noteHistory(String source, String id, String title, String path,
+                             String chapterKey) {
+        if (id == null || id.isEmpty() || chapterKey == null) {
+            return;
+        }
+        MangaReadingState state = MangaReadingState.get(getContext());
+        MangaReadingState.Record record = new MangaReadingState.Record();
+        record.id = id;
+        record.title = title == null || title.isEmpty() ? id : title;
+        record.source = source;
+        record.path = path == null ? "" : path;
+        record.chapterKey = chapterKey;
+        MangaReadingState.Chapter chapter = state.chapter(chapterKey);
+        if (chapter != null) {
+            record.page = chapter.page;
+            record.total = chapter.total;
+        }
+        state.noteRecord(record);
+    }
+
+    private void openHistoryRecord(MangaReadingState.Record record) {
+        if (HIST_LOCAL.equals(record.source)) {
+            File dir = new File(record.path);
+            if (!dir.isDirectory()) {
+                Toast.makeText(getContext(), "文件夹不存在：" + record.path,
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            openLocalSession(dir, null, false);
+            return;
+        }
+        if (HIST_SMB.equals(record.source)) {
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (!record.path.startsWith(prefix)) {
+                Toast.makeText(getContext(), "SMB 主机或共享已改变，请重新连接。",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            openRemoteManga(smbManga(smbAuth(), record.path.substring(prefix.length())),
+                    null, false);
+            return;
+        }
+        if (HIST_115.equals(record.source)) {
+            String cid = record.path.startsWith("115:")
+                    ? record.path.substring(4) : record.path;
+            String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+            openRemoteManga(p115Manga(cookie, cid, record.title), null, false);
+            return;
+        }
+        Toast.makeText(getContext(), "扩展图源的漫画请从「漫画源扩展」进入。",
+                Toast.LENGTH_LONG).show();
+    }
+
+    private void openHistoryFolder(MangaReadingState.Record record) {
+        if (HIST_LOCAL.equals(record.source)) {
+            File dir = new File(record.path);
+            if (dir.isDirectory()) {
+                mLocalDir = dir;
+                mSettings.setLastDir(dir.getAbsolutePath());
+                switchPage(MangaPage.LOCAL);
+            }
+            return;
+        }
+        if (HIST_SMB.equals(record.source)) {
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (record.path.startsWith(prefix)) {
+                mSmbPath = record.path.substring(prefix.length());
+                mSmbAutoConnected = true;
+                switchPage(MangaPage.SMB);
+                connectSmb();
+            }
+            return;
+        }
+        if (HIST_115.equals(record.source)) {
+            String cid = record.path.startsWith("115:")
+                    ? record.path.substring(4) : record.path;
+            mNetdiskMode = "115";
+            mNetdiskAtRoot = false;
+            mP115Cid = cid;
+            mP115Title = record.title;
+            mP115ParentStack.clear();
+            switchPage(MangaPage.WEBDAV);
+            listP115Dir(cid);
+        }
+    }
+
+    private void showHistoryMenu(final MangaReadingState.Record record,
+                                 final MangaFileBrowser browser) {
+        if (mPageContainer == null) {
+            return;
+        }
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, record.title, s -> {
+            s.section("进度");
+            s.caption(historyMeta(record));
+            s.divider();
+            s.toggleChipsRaw(new String[]{"▶  继续阅读"}, new boolean[]{false}, i -> {
+                s.dismiss();
+                mMain.post(() -> openHistoryRecord(record));
+            });
+            s.toggleChipsRaw(new String[]{"📂  打开所在文件夹"}, new boolean[]{false}, i -> {
+                s.dismiss();
+                mMain.post(() -> openHistoryFolder(record));
+            });
+            s.toggleChipsRaw(new String[]{"🗑  删除记录（不删文件）"}, new boolean[]{false}, i -> {
+                s.dismiss();
+                MangaReadingState.get(getContext()).removeRecord(record.id);
+                mMain.post(() -> refreshPage(MangaPage.HISTORY));
+            });
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+            }
+        });
+        sheet.withFooter(false);
+    }
+
+    private void confirmClearHistory(final MangaReadingState state) {
+        if (mPageContainer == null) {
+            return;
+        }
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, "清除全部记录", s -> {
+            s.section("历史记录");
+            s.caption("共 " + state.records().size() + " 条");
+            s.divider();
+            s.hint("只清空这个列表，不会删除任何文件，也不会清除阅读进度。");
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+                state.clearRecords();
+                refreshPage(MangaPage.HISTORY);
+            }
+        });
+        sheet.withFooter(false);
+    }
+
+    // ------------------------------------------------ read state & deletion
+
+    /** Maps a browser path to the canonical read-state key. */
+    private interface PathKey {
+        String key(String path);
+    }
+
+    /**
+     * Frames every card: folders take the aggregate of the chapters inside
+     * them (blue = still reading, green = everything finished), files are green
+     * once the reader has passed them. The file order is the reader's own
+     * (videos first + the shared sort), so the mark matches what "read" means.
+     */
+    private void applyReadStates(List<MangaFileBrowser.Entry> entries,
+                                 @Nullable String chapterKey, PathKey keyer) {
+        if (entries == null || entries.isEmpty()) {
+            return;
+        }
+        MangaReadingState state = MangaReadingState.get(getContext());
+        for (MangaFileBrowser.Entry entry : entries) {
+            if (entry.directory) {
+                String key = keyer == null ? entry.path : keyer.key(entry.path);
+                entry.state = state.stateOfFolder(key);
+            }
+        }
+        if (chapterKey == null) {
+            return;
+        }
+        MangaReadingState.Chapter chapter = state.chapter(chapterKey);
+        if (chapter == null) {
+            return;
+        }
+        List<MangaFileCore.Entry> media = new ArrayList<>();
+        for (MangaFileBrowser.Entry entry : entries) {
+            if (!entry.directory) {
+                media.add(new MangaFileCore.Entry(entry.name, entry.path, false,
+                        entry.size, entry.modifiedMs));
+            }
+        }
+        media = MangaFileCore.sortForListing(media,
+                mSettings.integer(MangaSettings.SORT_MODE),
+                mSettings.bool(MangaSettings.SORT_VIDEO_FIRST),
+                mSettings.videoExtensions());
+        java.util.Set<String> read = new java.util.HashSet<>();
+        for (int i = 0; i < media.size() && i <= chapter.page; i++) {
+            read.add(media.get(i).id);
+        }
+        for (MangaFileBrowser.Entry entry : entries) {
+            if (!entry.directory && entry.state == 0 && read.contains(entry.path)) {
+                entry.state = MangaReadingState.DONE;
+            }
+        }
+    }
+
+    /**
+     * The reader closed after the user changed chapters: park the browser on
+     * the chapter that was actually on screen instead of the entry folder.
+     */
+    public void onReaderClosed(@Nullable String chapterKey) {
+        if (chapterKey == null || chapterKey.isEmpty()) {
+            return;
+        }
+        if (chapterKey.startsWith("smb://")) {
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (!chapterKey.startsWith(prefix)) {
+                return;
+            }
+            mSmbPath = chapterKey.substring(prefix.length());
+            mSmbAutoConnected = true;
+            switchPage(MangaPage.SMB);
+            connectSmb();
+            return;
+        }
+        if (chapterKey.startsWith("115:")) {
+            String cid = chapterKey.substring(4);
+            if (cid.isEmpty() || "0".equals(cid)) {
+                return;
+            }
+            mNetdiskMode = "115";
+            mNetdiskAtRoot = false;
+            mP115Cid = cid;
+            mP115Title = cid;
+            switchPage(MangaPage.WEBDAV);
+            listP115Dir(cid);
+            return;
+        }
+        File dir = new File(chapterKey);
+        if (!dir.isDirectory()) {
+            dir = dir.getParentFile();
+        }
+        if (dir != null && dir.isDirectory()) {
+            mLocalDir = dir;
+            mSettings.setLastDir(dir.getAbsolutePath());
+            switchPage(MangaPage.LOCAL);
+        }
+    }
+
+    /** Top-right 选择: switches the visible browser into multi-select. */
+    private void startSelection() {
+        if (mCurrentBrowser != null) {
+            mCurrentBrowser.setSelectionMode(true);
+        }
+    }
+
+    /** Wires the browser's multi-select delete to this page's source. */
+    private void attachDelete(final MangaFileBrowser browser, final MangaPage page) {
+        browser.setOnDeleteRequested(entries -> confirmDelete(browser, page, entries));
+    }
+
+    private void confirmDelete(final MangaFileBrowser browser, final MangaPage page,
+                               final List<MangaFileBrowser.Entry> entries) {
+        if (entries == null || entries.isEmpty() || mPageContainer == null) {
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < entries.size() && i < 4; i++) {
+            if (i > 0) {
+                names.append("、");
+            }
+            names.append(entries.get(i).name);
+        }
+        if (entries.size() > 4) {
+            names.append(" 等 ").append(entries.size()).append(" 项");
+        }
+        final boolean remote = page == MangaPage.SMB || page == MangaPage.WEBDAV;
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, "删除", s -> {
+            s.section("将删除");
+            s.caption(names.toString());
+            s.divider();
+            s.hint(remote ? "会同时从 SMB / 网盘上删除，且无法恢复。"
+                    : "会从本地存储删除，且无法恢复。");
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+                performDelete(browser, page, entries);
+            }
+        });
+        sheet.withFooter(false);
+    }
+
+    private void performDelete(final MangaFileBrowser browser, final MangaPage page,
+                               final List<MangaFileBrowser.Entry> entries) {
+        final Context context = getContext();
+        mIoExecutor.execute(() -> {
+            int done = 0;
+            String error = null;
+            try {
+                if (page == MangaPage.LOCAL) {
+                    for (MangaFileBrowser.Entry entry : entries) {
+                        if (deleteRecursiveLocal(new File(entry.path))) {
+                            done++;
+                        }
+                        MangaReadingState.get(context).forgetPrefix(entry.path);
+                    }
+                } else if (page == MangaPage.SMB) {
+                    List<String> paths = new ArrayList<>();
+                    for (MangaFileBrowser.Entry entry : entries) {
+                        paths.add(entry.path);
+                    }
+                    MangaSmb.delete(smbAuth(), paths);
+                    done = entries.size();
+                    for (MangaFileBrowser.Entry entry : entries) {
+                        MangaReadingState.get(context).forgetPrefix(
+                                SmbRemoteManga.keyFor(mSettings.text(MangaSettings.SMB_HOST),
+                                        mSettings.text(MangaSettings.SMB_SHARE), entry.path));
+                    }
+                } else if (page == MangaPage.WEBDAV && "115".equals(mNetdiskMode)) {
+                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                    List<String> ids = new ArrayList<>();
+                    for (MangaFileBrowser.Entry entry : entries) {
+                        if (entry.tag instanceof Manga115Api.DirEntry) {
+                            Manga115Api.DirEntry dir = (Manga115Api.DirEntry) entry.tag;
+                            ids.add(!dir.fileId.isEmpty() ? dir.fileId : dir.cid);
+                        } else {
+                            ids.add(entry.path);
+                        }
+                    }
+                    Manga115Api.deleteFiles(cookie, mP115Cid, ids);
+                    done = entries.size();
+                    for (String id : ids) {
+                        MangaReadingState.get(context).forgetPrefix("115:" + id);
+                    }
+                }
+            } catch (Exception e) {
+                error = e.getMessage();
+                Log.w(TAG, "delete failed: " + error);
+            }
+            final int deleted = done;
+            final String failure = error;
+            mMain.post(() -> {
+                if (failure != null) {
+                    Toast.makeText(getContext(), "删除失败：" + failure, Toast.LENGTH_LONG).show();
+                } else {
+                    Toast.makeText(getContext(), "已删除 " + deleted + " 项", Toast.LENGTH_SHORT).show();
+                }
+                if (browser != null) {
+                    browser.onEntriesDeleted();
+                }
+                refreshPage(page);
+            });
+        });
+    }
+
+    private static boolean deleteRecursiveLocal(File file) {
+        if (file == null || !file.exists()) {
+            return true;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursiveLocal(child);
+                }
+            }
+        }
+        return file.delete();
+    }
+
     private Button newButton(String text) {
         Button b = new Button(getContext());
         b.setText(text);
@@ -1882,6 +2399,7 @@ public class MangaLibraryWidget extends UIWidget {
     private String sourceLabel(MangaPage page) {
         switch (page) {
             case LIBRARY: return "书架";
+            case HISTORY: return "历史记录";
             case LOCAL: return "本地文件";
             case SMB: return "SMB 共享";
             case WEBDAV: return "网盘";
@@ -1919,6 +2437,10 @@ public class MangaLibraryWidget extends UIWidget {
         browser.setOnSettingsClick(settings);
         // The quick sheet floats over the whole panel, not over the grid only.
         browser.setSheetHost(mPageContainer);
+        if (page == MangaPage.LOCAL || page == MangaPage.SMB
+                || (page == MangaPage.WEBDAV && "115".equals(mNetdiskMode))) {
+            attachDelete(browser, page);
+        }
         browser.setHeaderActions(browserHeaderActions(page));
         attachBrowser(page, browser);
     }
@@ -1944,6 +2466,7 @@ public class MangaLibraryWidget extends UIWidget {
             out.add(new MangaFileBrowser.Action("▶ 开始阅读",
                     () -> openLocalSession(cur, null, false)));
             out.add(new MangaFileBrowser.Action("▶▶ 继续阅读", () -> continueReading(cur)));
+            out.add(new MangaFileBrowser.Action("☑ 选择", this::startSelection));
             return out;
         }
         if (page == MangaPage.SMB) {
@@ -1956,6 +2479,7 @@ public class MangaLibraryWidget extends UIWidget {
                     () -> openRemoteManga(smbManga(smbAuth(), mSmbPath), null, true)));
             out.add(new MangaFileBrowser.Action("▶▶ 继续阅读",
                     () -> openRemoteManga(smbManga(smbAuth(), mSmbPath), null, false)));
+            out.add(new MangaFileBrowser.Action("☑ 选择", this::startSelection));
             return out;
         }
         if (page == MangaPage.WEBDAV) {
@@ -1974,6 +2498,7 @@ public class MangaLibraryWidget extends UIWidget {
                     String cookie = mSettings.text(MangaSettings.P115_COOKIE);
                     openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), null, false);
                 }));
+                out.add(new MangaFileBrowser.Action("☑ 选择", this::startSelection));
             } else {
                 out.add(new MangaFileBrowser.Action("★ 默认位置", () -> {
                     mSettings.setDefaultDir("WEBDAV", mWebDavUrl);
@@ -2062,6 +2587,9 @@ public class MangaLibraryWidget extends UIWidget {
         host.addView(browser, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
+        if (browser instanceof MangaFileBrowser) {
+            mCurrentBrowser = (MangaFileBrowser) browser;
+        }
         updateHeaderSize(page);
     }
 
@@ -2440,6 +2968,7 @@ public class MangaLibraryWidget extends UIWidget {
             crumbs.add(new MangaFileBrowser.Crumb(
                     mP115Title == null ? mP115Cid : mP115Title, mP115Cid));
         }
+        applyReadStates(entries, "115:" + mP115Cid, path -> "115:" + path);
         final MangaFileBrowser p115Browser = new MangaFileBrowser(getContext());
         String p115Status = (mP115DirStatus != null && mP115DirStatus.startsWith("读取"))
                 ? mP115DirStatus : null;
@@ -3934,6 +4463,12 @@ public class MangaLibraryWidget extends UIWidget {
         }
         MangaChapterSession session = MangaChapterSession.source(context,
                 mSourceEntry.getSource(), mSourceManga, chapters, index, page, frac);
+        if (index >= 0 && index < session.chapterKeys.size()) {
+            noteHistory(HIST_EXT, "src:" + mSourceEntry.getSource().getId() + ":"
+                            + mSourceManga.getUrl(),
+                    mSourceManga.getTitle(), srcProgressKey(),
+                    session.chapterKeys.get(index));
+        }
         ((VRBrowserActivity) context).openMangaReaderSession(session);
     }
 

@@ -39,13 +39,17 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.Nullable;
+
 import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
 import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.manga.MangaChapterSession;
+import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.manga.RemoteManga;
+import com.igalia.wolvic.manga.browser.MangaQuickSheet;
 import com.igalia.wolvic.manga.PrefetchVideoDataSource;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
 
@@ -128,6 +132,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private File mFolder;
     private int mIndex;
     private List<File> mChapterDirs;
+    private List<String> mChapterKeys;
+    private List<String> mChapterIds;
+    /** Chapter the session was opened at, to detect 换章 on exit. */
+    private int mEntryChapterIndex = -1;
     private int mChapterIndex;
     private String mChapterProgressKey;
     private MangaChapterSession.ChapterProvider mChapterProvider;
@@ -640,6 +648,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mChapterSession++;
             mChapterLoading = false;
             mChapterDirs = null;
+            mChapterKeys = null;
+            mChapterIds = null;
+            mEntryChapterIndex = -1;
             mChapterProvider = null;
             mChapterProgressKey = null;
             mPendingStripFrac = 0f;
@@ -758,10 +769,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mExecutor.getQueue().removeIf(task -> task instanceof PageLoad);
         clearStripSegments();
         mChapterDirs = session.dirs;
+        mChapterKeys = session.chapterKeys;
+        mChapterIds = session.chapterIds;
         mChapterProvider = session.provider;
         mRemoteManga = session.remoteManga;
         mChapterProgressKey = session.progressKey;
         mChapterIndex = session.index;
+        mEntryChapterIndex = session.index;
         Log.i(TAG, "setChapters chapters=" + session.dirs.size() + " index=" + session.index
                 + " page=" + session.page + " frac=" + session.frac);
         notifyTrayProgress();
@@ -1077,6 +1091,154 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         progressPrefs().edit()
                 .putString("chap:" + mChapterProgressKey, mChapterIndex + "|" + mIndex + "|" + frac)
                 .apply();
+        MangaReadingState.get(getContext()).noteChapter(
+                currentChapterKey(), mIndex, pageTotal());
+    }
+
+    /** Canonical key of the chapter on screen (see MangaReadingState). */
+    @Nullable
+    public String currentChapterKey() {
+        if (mChapterKeys != null && mChapterIndex >= 0
+                && mChapterIndex < mChapterKeys.size()) {
+            String key = mChapterKeys.get(mChapterIndex);
+            if (key != null && !key.isEmpty()) {
+                return key;
+            }
+        }
+        return mFolder == null ? null : mFolder.getAbsolutePath();
+    }
+
+    /** Folder the reader is showing right now (chapter folder when the manga
+     *  is a chapter playlist). The bookshelf navigates here on exit. */
+    @Nullable
+    public File currentChapterDir() {
+        if (mChapterDirs != null && mChapterIndex >= 0 && mChapterIndex < mChapterDirs.size()) {
+            return mChapterDirs.get(mChapterIndex);
+        }
+        return mFolder;
+    }
+
+    /** True when the user crossed into another chapter since opening. */
+    public boolean chapterChangedSinceEntry() {
+        return mEntryChapterIndex >= 0 && mChapterIndex != mEntryChapterIndex;
+    }
+
+    /** Toolbar 删除本章: confirms, then removes this chapter's media and its
+     *  read progress. Neighbouring chapters are untouched. */
+    public void requestDeleteChapter() {
+        if (mChapterDirs == null || mChapterIndex < 0 || mChapterIndex >= mChapterDirs.size()) {
+            showHint("当前没有可删除的章节");
+            return;
+        }
+        final int index = mChapterIndex;
+        final File dir = mChapterDirs.get(index);
+        final String name = dir == null ? "本章" : dir.getName();
+        final String remote = mRemoteManga == null ? "" : "并同步删除 SMB / 网盘上的文件，";
+        final int total = mChapterDirs.size();
+        MangaQuickSheet.open(this, "删除本章", sheet -> {
+            sheet.section("章节");
+            sheet.caption("第 " + (index + 1) + " / " + total + " 章 · " + name);
+            sheet.divider();
+            sheet.hint("将删除该章节的图片与视频，" + remote
+                    + "并清除这一章的阅读进度。其他章节不受影响。");
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+                deleteChapterAt(index);
+            }
+        }).withFooter(false);
+    }
+
+    private void deleteChapterAt(final int index) {
+        if (mChapterDirs == null || index < 0 || index >= mChapterDirs.size()) {
+            return;
+        }
+        final File dir = mChapterDirs.get(index);
+        final String key = mChapterKeys != null && index < mChapterKeys.size()
+                ? mChapterKeys.get(index)
+                : (dir == null ? null : dir.getAbsolutePath());
+        final String id = mChapterIds != null && index < mChapterIds.size()
+                ? mChapterIds.get(index) : null;
+        final boolean remote = mRemoteManga != null && id != null && !id.isEmpty();
+        final File target = currentChapterDir();
+        final String parentKey = deletedChapterParentKey();
+        showHint("正在删除第 " + (index + 1) + " 章…");
+        new Thread(() -> {
+            String error = null;
+            try {
+                if (dir != null && dir.isDirectory()) {
+                    deleteRecursive(dir);
+                }
+                if (remote && mRemoteManga != null) {
+                    String chapterName = dir == null ? "chapter" : dir.getName();
+                    mRemoteManga.deleteChapter(
+                            new RemoteManga.ChapterInfo(id, chapterName));
+                }
+            } catch (Exception e) {
+                error = e.getMessage();
+                Log.w(TAG, "deleteChapter failed: " + error);
+            }
+            if (key != null) {
+                MangaReadingState.get(getContext()).forget(key);
+            }
+            if (target != null) {
+                MangaReadingState.get(getContext()).forgetPrefix(target.getAbsolutePath());
+            }
+            final String failed = error;
+            mMainHandler.post(() -> {
+                if (mDestroyed) {
+                    return;
+                }
+                if (failed != null) {
+                    showHint("删除失败：" + failed);
+                    return;
+                }
+                showHint("已删除本章");
+                Context context = getContext();
+                if (context instanceof VRBrowserActivity) {
+                    ((VRBrowserActivity) context).closeMangaReaderToChapter(parentKey);
+                }
+            });
+        }, "manga-delete-chapter").start();
+    }
+
+    /** Where the bookshelf should go after this chapter is deleted: its parent. */
+    @Nullable
+    private String deletedChapterParentKey() {
+        String key = currentChapterKey();
+        if (key == null) {
+            return null;
+        }
+        if (key.startsWith("smb://")) {
+            int cut = key.lastIndexOf('/');
+            int schemeEnd = key.indexOf("://");
+            if (cut > (schemeEnd < 0 ? 0 : schemeEnd + 3)) {
+                return key.substring(0, cut);
+            }
+            return key;
+        }
+        if (key.startsWith("115:")) {
+            // Unknown parent folder id: keep the current 115 folder on screen.
+            return null;
+        }
+        File dir = currentChapterDir();
+        File parent = dir == null ? null : dir.getParentFile();
+        return parent == null ? null : parent.getAbsolutePath();
+    }
+
+    private static boolean deleteRecursive(File file) {
+        if (file == null || !file.exists()) {
+            return true;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        return file.delete();
     }
 
     /** Parses "chapter|page|frac" saved by saveChapterProgress(); null if absent. */

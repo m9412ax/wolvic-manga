@@ -228,8 +228,34 @@ public final class Manga115Api {
         return out;
     }
 
-    private static String first(JSONObject o, String... keys) {
-        for (String k : keys) {
+    /**
+     * Moves files/folders to the recycle bin (115 deletes folders recursively
+     * on the server). [parentCid] is the folder they live in; [ids] are the
+     * file_id / cid values returned by {@link #listDir(String, String)}.
+     */
+    public static void deleteFiles(String cookie, String parentCid,
+                                   java.util.List<String> ids) throws Exception {
+        if (ids == null || ids.isEmpty()) {
+            return;
+        }
+        if (parentCid == null || parentCid.isEmpty()) {
+            parentCid = "0";
+        }
+        StringBuilder form = new StringBuilder();
+        form.append("pid=").append(enc(parentCid));
+        for (int i = 0; i < ids.size(); i++) {
+            form.append("&fid[").append(i).append("]=").append(enc(ids.get(i)));
+        }
+        String json = httpPost("https://webapi.115.com/rb/delete", form.toString(), cookie);
+        JSONObject root = new JSONObject(json);
+        boolean ok = root.optBoolean("state", false) || root.optInt("errno", -1) == 0;
+        if (!ok) {
+            throw new IllegalStateException("115 删除失败 " + root.optString("error"));
+        }
+        Log.i(TAG, "deleteFiles " + parentCid + " -> " + ids.size());
+    }
+
+    private static String first(JSONObject o, String... keys) {        for (String k : keys) {
             String v = o.optString(k, "");
             if (v != null && !v.isEmpty()) return v;
         }

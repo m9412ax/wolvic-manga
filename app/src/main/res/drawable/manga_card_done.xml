@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Finished (last page reached): green frame. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FF16211F" />
+    <corners android:radius="12dp" />
+    <stroke android:width="2dp" android:color="#FF4CD98A" />
+</shape>

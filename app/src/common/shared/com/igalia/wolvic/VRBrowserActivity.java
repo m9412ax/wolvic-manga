@@ -2647,6 +2647,7 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         switch (action) {
             case "MANGA":
             case "LIBRARY":
+            case "HISTORY":
             case "LOCAL":
             case "SMB":
             case "WEBDAV":
@@ -2713,6 +2714,11 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
                     mMangaReader.toggleAutoAdvance();
                 }
                 break;
+            case "READER_DELETE":
+                if (mMangaReader != null) {
+                    mMangaReader.requestDeleteChapter();
+                }
+                break;
             case "READER_DOUBLE":
                 if (mMangaReader != null) {
                     mMangaReader.toggleDoublePage();
@@ -2764,10 +2770,31 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     }
 
     public void closeMangaReader() {
+        String chapterKey = null;
+        if (mMangaReader != null) {
+            // 换章后退出：把文件管理器带到当前章节目录，而不是进来时的目录，
+            // so the user can manage progress where they actually stopped.
+            if (mMangaReader.chapterChangedSinceEntry()) {
+                chapterKey = mMangaReader.currentChapterKey();
+            }
+            mMangaReader.persistState();
+        }
+        setUiMode(UI_LIBRARY);
+        if (chapterKey != null && mMangaLibrary != null) {
+            mMangaLibrary.onReaderClosed(chapterKey);
+        }
+    }
+
+    /** Closes the reader and parks the file browser on [chapterKey] (used after
+     *  the current chapter was deleted, so we land on its parent folder). */
+    public void closeMangaReaderToChapter(String chapterKey) {
         if (mMangaReader != null) {
             mMangaReader.persistState();
         }
         setUiMode(UI_LIBRARY);
+        if (chapterKey != null && mMangaLibrary != null) {
+            mMangaLibrary.onReaderClosed(chapterKey);
+        }
     }
 
     /** Opens the reader on a chapter playlist (local sub-folders or online
