@@ -2217,13 +2217,19 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         if (found == null) {
-            Toast.makeText(getContext(), "这条记录所属的图源没有加载（扩展被卸载？）",
-                    Toast.LENGTH_LONG).show();
+            if (!MangaSourceManager.INSTANCE.isInitialized()) {
+                requestSourceScan();
+                Toast.makeText(getContext(), "图源还在加载，请稍后再点一次",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(getContext(), "这条记录所属的图源没有加载（扩展被卸载？）",
+                        Toast.LENGTH_LONG).show();
+            }
             return;
         }
         final MangaSourceManager.LoadedSource entry = found;
         mSourceEntry = entry;
-        SManga stub = new SManga();
+        SManga stub = new eu.kanade.tachiyomi.source.model.SMangaImpl();
         stub.setUrl(mangaUrl);
         stub.setTitle(record.title == null ? mangaUrl : record.title);
         mSourceManga = stub;
