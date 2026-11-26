@@ -335,12 +335,23 @@ object MangaSourceRepository {
     }
 
     /** Request headers the extension itself would send with this page. */
-    private fun headersOf(source: Source): Map<String, String> =
-        try {
-            if (source is HttpSource) source.headers else emptyMap()
+    private fun headersOf(source: Source): Map<String, String> {
+        if (source !is HttpSource) {
+            return emptyMap()
+        }
+        return try {
+            // okhttp3.Headers is not a Map; flatten it to first value per name.
+            val out = LinkedHashMap<String, String>()
+            source.headers.toMultimap().forEach { (name, values) ->
+                if (values.isNotEmpty()) {
+                    out[name] = values.first()
+                }
+            }
+            out
         } catch (e: Throwable) {
             emptyMap()
         }
+    }
 
     private fun writeVideoMarker(
         source: Source,
