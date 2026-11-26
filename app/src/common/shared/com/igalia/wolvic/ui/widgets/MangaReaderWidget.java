@@ -4661,8 +4661,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         .setAllowCrossProtocolRedirects(true)
                         .setConnectTimeoutMs(20000)
                         .setReadTimeoutMs(30000);
-        if (stream.headers != null && !stream.headers.isEmpty()) {
-            http.setDefaultRequestProperties(stream.headers);
+        final java.util.Map<String, String> headers = new java.util.HashMap<>();
+        if (stream.headers != null) {
+            headers.putAll(stream.headers);
+        }
+        // Membership clips are served only to a logged-in session. Extensions
+        // share the WebView cookie jar, so the login the user already did in
+        // the browser applies here too - ExoPlayer just needs it as a header.
+        try {
+            String cookie = android.webkit.CookieManager.getInstance().getCookie(stream.url);
+            if (cookie != null && !cookie.isEmpty()) {
+                headers.put("Cookie", cookie);
+            }
+        } catch (Throwable ignored) { }
+        if (!headers.isEmpty()) {
+            http.setDefaultRequestProperties(headers);
         }
         startExoWithFactory(page, stream.url, http);
     }
