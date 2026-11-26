@@ -48,6 +48,17 @@ public class MangaChapterSession {
 
         /** Disk-only pre-cache of the chapter head for instant switching. */
         void prefetchChapter(int index);
+
+        /**
+         * Fetches ONE page of a chapter on demand. Used when the bulk download
+         * gave up on a page (its retries failed) and the reader is now sitting
+         * on it: better one targeted retry than a page that never opens.
+         */
+        default void fetchPage(int index, int pageIndex, DirCallback callback) {
+            if (callback != null) {
+                callback.onDir(null, "该来源不支持按页补下载");
+            }
+        }
     }
 
     public final List<File> dirs;
@@ -139,6 +150,23 @@ public class MangaChapterSession {
                 // chapter's own images crawl. A few pages keeps it cheap.
                 MangaSourceRepository.INSTANCE.prefetchChapter(context, source, manga,
                         chapters.get(i), 3);
+            }
+
+            @Override
+            public void fetchPage(int i, int pageIndex, DirCallback callback) {
+                if (i < 0 || i >= chapters.size()) {
+                    if (callback != null) {
+                        callback.onDir(null, "章节序号越界");
+                    }
+                    return;
+                }
+                MangaSourceRepository.INSTANCE.fetchSinglePage(context, source, manga,
+                        chapters.get(i), pageIndex,
+                        (dir, error) -> {
+                            if (callback != null) {
+                                callback.onDir(dir, error);
+                            }
+                        });
             }
         };
         List<String> keys = new ArrayList<>();

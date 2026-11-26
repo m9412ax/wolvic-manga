@@ -893,9 +893,18 @@ public class MangaFileBrowser extends LinearLayout {
                     * getResources().getDisplayMetrics().density));
             itemView.setLayoutParams(lp);
             if (entry.menuable) {
+                // Big, forgiving tap target: aiming at a 13sp glyph inside a VR
+                // panel was the reason the row menu felt unusable.
                 badge.setVisibility(VISIBLE);
                 badge.setText("⋯");
+                badge.setTextSize(24f);
+                badge.setGravity(android.view.Gravity.CENTER);
+                badge.setPadding(dp(16), dp(10), dp(16), dp(10));
+                badge.setMinWidth(dp(56));
+                badge.setMinHeight(dp(48));
+                badge.setBackgroundResource(R.drawable.manga_pill_bg);
                 badge.setClickable(true);
+                badge.setFocusable(true);
                 badge.setOnClickListener(v -> {
                     if (mCallback != null) {
                         mCallback.onMenu(entry);
@@ -903,7 +912,14 @@ public class MangaFileBrowser extends LinearLayout {
                 });
             } else {
                 badge.setClickable(false);
+                badge.setFocusable(false);
                 badge.setOnClickListener(null);
+                badge.setBackground(null);
+                badge.setTextSize(13f);
+                badge.setGravity(android.view.Gravity.END | android.view.Gravity.BOTTOM);
+                badge.setPadding(0, 0, 0, 0);
+                badge.setMinWidth(0);
+                badge.setMinHeight(0);
                 badge.setVisibility(TextUtils.isEmpty(entry.badge) ? GONE : VISIBLE);
                 if (!TextUtils.isEmpty(entry.badge)) {
                     badge.setText(entry.badge);

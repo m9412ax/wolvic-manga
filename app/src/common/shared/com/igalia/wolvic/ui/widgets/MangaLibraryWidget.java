@@ -912,16 +912,29 @@ public class MangaLibraryWidget extends UIWidget {
                 chapters.add(folder);
             }
         }
+        // A folder that directly contains pages IS a chapter of the manga, not
+        // the manga itself. Opening it must stay inside that chapter and only
+        // restore its own page - jumping to whichever chapter the whole book
+        // was left at is exactly what made "继续阅读" open the wrong chapter.
+        final boolean folderIsChapter = hasDirectMedia(folder);
         int index = Math.max(0, chapters.indexOf(folder));
         int page = 0;
         float frac = 0f;
         if (resume) {
             float[] saved = MangaReaderWidget.readChapterProgress(
                     progressPrefs(), "local:" + root.getAbsolutePath());
-            if (saved != null) {
+            if (saved != null && !folderIsChapter) {
                 index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
                 page = (int) saved[1];
                 frac = saved[2];
+            } else if (saved != null) {
+                if ((int) saved[0] == index) {
+                    page = (int) saved[1];
+                    frac = saved[2];
+                } else {
+                    page = progressPrefs().getInt(
+                            "page:" + chapters.get(index).getAbsolutePath(), 0);
+                }
             } else {
                 page = progressPrefs().getInt(
                         "page:" + chapters.get(index).getAbsolutePath(), 0);
@@ -946,6 +959,23 @@ public class MangaLibraryWidget extends UIWidget {
         ((VRBrowserActivity) context).openMangaReaderSession(session);
         Log.i(TAG, "openLocalSession root=" + root.getAbsolutePath()
                 + " chapters=" + chapters.size() + " index=" + index + " page=" + page);
+    }
+
+    /** True when [dir] holds image/video files itself (so it is a chapter). */
+    private boolean hasDirectMedia(File dir) {
+        File[] files = dir == null ? null : dir.listFiles();
+        if (files == null) {
+            return false;
+        }
+        String[] images = mSettings.imageExtensions();
+        String[] videos = mSettings.videoExtensions();
+        for (File file : files) {
+            if (file.isFile() && (MangaSettings.hasExtension(file.getName(), images)
+                    || MangaSettings.hasExtension(file.getName(), videos))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<File> mediaSubDirs(File dir) {
@@ -2062,7 +2092,7 @@ public class MangaLibraryWidget extends UIWidget {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            openLocalSession(dir, null, false);
+            openLocalSession(dir, null, true);
             return;
         }
         if (HIST_SMB.equals(record.source)) {

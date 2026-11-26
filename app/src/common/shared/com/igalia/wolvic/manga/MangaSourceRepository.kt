@@ -23,6 +23,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -218,10 +219,11 @@ object MangaSourceRepository {
                     if (i < 0 || i >= total || !reported.add(i)) return
                     try {
                         if (existingPage(dir, pages[i].index) == null) {
-                            fetchPage(source, pages[i], dir)
+                            fetchPageWithRetry(source, pages[i], dir)
                         }
                     } catch (e: Throwable) {
-                        Log.w(TAG, "page $i failed: ${e.message}")
+                        Log.w(TAG, "page ${i + 1}/$total gave up: ${e.message}"
+                            + " url=${pages[i].imageUrl ?: pages[i].url}")
                     } finally {
                         val d = done.incrementAndGet()
                         main.post { progress.onProgress(d, total) }
@@ -288,7 +290,7 @@ object MangaSourceRepository {
                 for (page in pages) {
                     if (done >= maxPages) break
                     if (existingPage(dir, page.index) == null) {
-                        fetchPage(source, page, dir)
+                        fetchPageWithRetry(source, page, dir)
                     }
                     done++
                 }
@@ -321,6 +323,69 @@ object MangaSourceRepository {
             }
             if (tmp.length() == 0L) throw IllegalStateException("第 ${page.index + 1} 页下载为空")
             tmp.renameTo(out)
+        }
+    }
+
+    /**
+     * Pages fail intermittently (CDN hiccups, rate limits, transient 5xx).
+     * Without a retry the last page or two of a chapter simply never landed,
+     * which the reader could not distinguish from "still downloading" - the
+     * user saw the chapter end two pages early and could not turn further.
+     */
+    private suspend fun fetchPageWithRetry(
+        source: Source,
+        page: eu.kanade.tachiyomi.source.model.Page,
+        dir: File,
+        attempts: Int = 3,
+    ) {
+        var last: Throwable? = null
+        for (n in 0 until attempts) {
+            try {
+                fetchPage(source, page, dir)
+                return
+            } catch (e: Throwable) {
+                last = e
+                if (n < attempts - 1) {
+                    Log.w(TAG, "page ${page.index + 1} retry ${n + 1}: ${e.message}")
+                    delay(400L * (n + 1))
+                }
+            }
+        }
+        throw last ?: IllegalStateException("第 ${page.index + 1} 页下载失败")
+    }
+
+    /**
+     * Fetches ONE page on demand. The reader calls this when it lands on a page
+     * that the bulk pass gave up on, instead of waiting forever for progress
+     * that will never come.
+     */
+    fun fetchSinglePage(
+        context: Context,
+        source: Source,
+        manga: SManga,
+        chapter: SChapter,
+        pageIndex: Int,
+        cb: Callback<File>,
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val pages = cachedPageList(source, chapter)
+                if (pageIndex < 0 || pageIndex >= pages.size) {
+                    main.post { cb.onResult(null, "页码越界") }
+                    return@launch
+                }
+                val dir = chapterDir(context, source, manga, chapter)
+                dir.mkdirs()
+                val page = pages[pageIndex]
+                if (existingPage(dir, page.index) == null) {
+                    fetchPageWithRetry(source, page, dir)
+                }
+                Log.i(TAG, "single page ${pageIndex + 1}/${pages.size} ok -> $dir")
+                main.post { cb.onResult(dir, null) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "single page ${pageIndex + 1} failed: ${e.message}")
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
         }
     }
 

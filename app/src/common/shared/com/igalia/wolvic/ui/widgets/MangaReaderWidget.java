@@ -126,6 +126,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  truth. Used for the page counter denominator and chapter boundaries so
      *  a partially-downloaded chapter never looks like it ended early. */
     private int mPageTotal = -1;
+    /** Last page asked for explicit on-demand download, to throttle retries. */
+    private int mSingleFetchPage = -1;
+    private long mSingleFetchAt;
     /** A next-page request that arrived while the target page was still
      *  downloading. Re-issued automatically once that page lands. */
     private int mPendingTargetPage = -1;
@@ -888,6 +891,36 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    /** One targeted retry for a page the bulk download gave up on. */
+    private void requestSinglePage(final int index) {
+        if (mChapterProvider == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (mSingleFetchPage == index && now - mSingleFetchAt < 5000L) {
+            return;
+        }
+        mSingleFetchPage = index;
+        mSingleFetchAt = now;
+        final int session = mChapterSession;
+        final int chapterIndex = mChapterIndex;
+        mChapterProvider.fetchPage(chapterIndex, index, (dir, error) -> mMainHandler.post(() -> {
+            if (mDestroyed || session != mChapterSession || chapterIndex != mChapterIndex) {
+                return;
+            }
+            if (dir == null) {
+                showHint("第 " + (index + 1) + " 张加载失败"
+                        + (error == null || error.isEmpty() ? "" : "：" + error));
+                return;
+            }
+            mLastChapterListRefreshMs = 0L;
+            refreshChapterPageList(true);
+            if (mPendingTargetPage >= 0 && mPendingTargetPage < mPages.size()) {
+                showPage(mPendingTargetPage);
+            }
+        }));
+    }
+
     /** Counts only readable image/video files, ignoring .tmp and 0-byte files
      *  left by an interrupted download (a folder of those is NOT "ready"). */
     private int countImageFiles(File dir) {
@@ -915,6 +948,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  finished downloading after the folder was first opened. Keeps the
      *  current page index, so progressive download never yanks the view. */
     private void refreshChapterPageList() {
+        refreshChapterPageList(false);
+    }
+
+    /** [force] skips the throttle: used right after a single page was fetched
+     *  on demand, where waiting 1.5 s would look like nothing happened. */
+    private void refreshChapterPageList(boolean force) {
         if (mDestroyed || mFolder == null || mChapterDirs == null || mChapterIndex < 0
                 || mChapterIndex >= mChapterDirs.size()) {
             return;
@@ -933,14 +972,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final boolean videoMode = isVideoPage() || mVideoPage != null;
         long now = System.currentTimeMillis();
         if (videoMode) {
-            if (now - mLastChapterListRefreshMs < 3000L) {
+            if (!force && now - mLastChapterListRefreshMs < 3000L) {
                 return;
             }
             File[] quick = mFolder.listFiles();
             if (quick == null || quick.length <= mPages.size()) {
                 return;   // nothing new landed yet
             }
-        } else if (now - mLastChapterListRefreshMs < 1500L) {
+        } else if (!force && now - mLastChapterListRefreshMs < 1500L) {
             return;
         }
         mLastChapterListRefreshMs = now;
@@ -1312,9 +1351,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mPageCounter.setText("0 / 0");
                 showHint("该目录没有可阅读的图片或视频");
             } else if (index >= mPages.size() && index < total) {
-                // Page belongs to this chapter but has not landed yet.
+                // Page belongs to this chapter but has not landed yet. Ask for
+                // it explicitly: the bulk pass already gave up on it, so
+                // waiting for progress would leave the reader stuck here for
+                // ever ("最后几页永远打不开").
                 mPendingTargetPage = index;
                 showHint("加载第 " + (index + 1) + " 张…");
+                requestSinglePage(index);
             }
             return;
         }
