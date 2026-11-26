@@ -61,7 +61,19 @@ object MangaSourceRepository {
         if (cached != null && System.currentTimeMillis() - cached.at < PAGE_LIST_TTL_MS) {
             return cached.pages
         }
-        val pages = source.getPageList(chapter)
+        var pages = source.getPageList(chapter)
+        if (pages.size <= 4) {
+            // A handful of pages is suspicious: an anti-bot / challenge page or
+            // a truncated response parses into a few stray <img> tags, and the
+            // chapter then looks like it "only has 4 images". One retry costs
+            // a single request and often returns the real list.
+            delay(600)
+            val again = runCatching { source.getPageList(chapter) }.getOrNull()
+            if (again != null && again.size > pages.size) {
+                Log.i(TAG, "page list retry: ${pages.size} -> ${again.size}")
+                pages = again
+            }
+        }
         pageListCache[key] = PageListEntry(System.currentTimeMillis(), pages)
         // Kept in release builds on purpose: when a chapter comes back with a
         // suspiciously short page list this line is the only way to tell a
