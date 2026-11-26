@@ -63,6 +63,13 @@ object MangaSourceRepository {
         }
         val pages = source.getPageList(chapter)
         pageListCache[key] = PageListEntry(System.currentTimeMillis(), pages)
+        // Kept in release builds on purpose: when a chapter comes back with a
+        // suspiciously short page list this line is the only way to tell a
+        // truncated source response from a failed download.
+        val head = pages.take(3).joinToString(" | ") { it.imageUrl ?: it.url }
+        val tail = if (pages.isNotEmpty()) (pages.last().imageUrl ?: pages.last().url) else ""
+        Log.i(TAG, "page list ${source.name} '${chapter.name}' n=${pages.size}"
+            + " first=[$head] last=[$tail]")
         return pages
     }
 
@@ -207,6 +214,17 @@ object MangaSourceRepository {
                 if (pages.isEmpty()) throw IllegalStateException("章节页面列表为空")
                 val dir = chapterDir(context, source, manga, chapter)
                 dir.mkdirs()
+                // Interrupted downloads used to leave tens of megabytes of
+                // .tmp behind (a stalled video kept being restarted from zero).
+                // Drop stale ones; a live download is younger than a minute.
+                runCatching {
+                    val staleBefore = System.currentTimeMillis() - 60_000L
+                    dir.listFiles()?.forEach { f ->
+                        if (f.name.endsWith(".tmp") && f.lastModified() < staleBefore) {
+                            f.delete()
+                        }
+                    }
+                }
                 val total = pages.size
                 val start = startPage.coerceIn(0, total - 1)
                 Log.i(TAG, "download ${source.name} '${chapter.name}' pages=$total start=$start -> $dir")
@@ -304,9 +322,43 @@ object MangaSourceRepository {
         }
     }
 
+    /** Request headers the extension itself would send with this page. */
+    private fun headersOf(source: Source): Map<String, String> =
+        try {
+            if (source is HttpSource) source.headers else emptyMap()
+        } catch (e: Throwable) {
+            emptyMap()
+        }
+
+    private fun writeVideoMarker(
+        source: Source,
+        page: eu.kanade.tachiyomi.source.model.Page,
+        dir: File,
+        url: String,
+    ) {
+        val dest = File(dir, "%04d.%s".format(page.index, SourceVideo.extensionFor(url)))
+        if (dest.isFile && dest.length() > 0) return
+        SourceVideo.write(dest, url, headersOf(source))
+        Log.i(TAG, "video page ${page.index + 1} -> stream $url")
+    }
+
     private suspend fun fetchPage(source: Source, page: eu.kanade.tachiyomi.source.model.Page, dir: File) {
+        // Direct media URL (some sources put the clip in page.url): never fetch
+        // a multi-megabyte file just to decide what it is.
+        if (SourceVideo.isVideoUrl(page.url) && page.imageUrl == null) {
+            writeVideoMarker(source, page, dir, page.url)
+            return
+        }
         if (page.imageUrl == null && source is HttpSource) {
             page.imageUrl = source.getImageUrl(page)
+        }
+        val resolved = page.imageUrl ?: page.url
+        // A video page is NOT downloaded: the reader streams it with ExoPlayer,
+        // which is faster, seekable, and - most important - no longer blocks
+        // the rest of the chapter behind a huge file that never finishes.
+        if (SourceVideo.isVideoUrl(resolved)) {
+            writeVideoMarker(source, page, dir, resolved)
+            return
         }
         val response = when {
             source is HttpSource && page.imageUrl != null -> source.getImage(page)

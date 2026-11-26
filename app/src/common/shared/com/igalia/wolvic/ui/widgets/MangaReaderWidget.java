@@ -49,6 +49,7 @@ import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.manga.RemoteManga;
+import com.igalia.wolvic.manga.SourceVideo;
 import com.igalia.wolvic.manga.browser.MangaQuickSheet;
 import com.igalia.wolvic.manga.PrefetchVideoDataSource;
 import com.igalia.wolvic.ui.adapters.MangaCoverAdapter;
@@ -4571,6 +4572,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // path needed a "wait until this region is downloaded" lock for every
         // seek, and repeated seeks thrashed that lock until the UI looked
         // frozen. Streaming has no such lock - a seek just reopens the stream.
+        // Extension-source video page: a marker holding the direct stream URL.
+        // Streaming it keeps mixed chapters (clip + photo set) usable instead of
+        // waiting forever for a multi-megabyte download of page 0.
+        if (mRemoteManga == null && SourceVideo.isMarker(page)) {
+            try { player.reset(); player.release(); } catch (Throwable ignored) { }
+            if (mMediaPlayer == player) mMediaPlayer = null;
+            startExoSourceVideo(page);
+            return;
+        }
         if (mRemoteManga != null && RemoteManga.isVideoMarker(page)) {
             RemoteManga.PageInfo pi = RemoteManga.readVideoMarker(page);
             try { player.reset(); player.release(); } catch (Throwable ignored) { }
@@ -4607,7 +4617,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  playback engine. ExoPlayer handles network buffering, seeking, A/V sync
      *  and MediaCodec decoding; the only custom part is the byte transport
      *  (SMB random-access reader / 115 HTTP Range). */
-    private void startExoVideo(final File page, final RemoteManga.PageInfo pi) {
+    /** Resets every playback flag and waits for the SurfaceTexture. Returns
+     *  false when the surface is not ready yet (the watchdog retries). */
+    private boolean beginExoPage(final File page) {
         stopVideo(false);
         mVideoPrepared = false;
         mVideoPlayFailed = false;
@@ -4619,17 +4631,50 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mVideoKickstartDone = true;   // ExoPlayer does not need the frame kick
         mExoResumeApplied = false;
         updateVideoControls();
-        if (pi == null) {
-            mVideoPlayFailed = true;
-            hideLoading();
-            showHint("视频信息读取失败：" + page.getName());
-            return;
-        }
         if (mVideoSurface == null) {
             // SurfaceTexture not ready yet; the watchdog retries shortly.
             mPendingVideoPage = page;
             Log.i(TAG, "startExoVideo deferred: surface not ready");
             scheduleVideoWatchdog();
+            return false;
+        }
+        return true;
+    }
+
+    /** Plays a video page of an extension source straight from its URL. */
+    private void startExoSourceVideo(final File page) {
+        if (!beginExoPage(page)) {
+            return;
+        }
+        final SourceVideo.Stream stream = SourceVideo.read(page);
+        if (stream == null) {
+            mVideoPlayFailed = true;
+            hideLoading();
+            showHint("视频信息读取失败：" + page.getName());
+            return;
+        }
+        showLoading("正在连接视频…", -1, -1, -1, -1);
+        androidx.media3.datasource.DefaultHttpDataSource.Factory http =
+                new androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                        .setUserAgent("Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36"
+                                + " (KHTML, like Gecko) Chrome/120 Mobile Safari/537.36")
+                        .setAllowCrossProtocolRedirects(true)
+                        .setConnectTimeoutMs(20000)
+                        .setReadTimeoutMs(30000);
+        if (stream.headers != null && !stream.headers.isEmpty()) {
+            http.setDefaultRequestProperties(stream.headers);
+        }
+        startExoWithFactory(page, stream.url, http);
+    }
+
+    private void startExoVideo(final File page, final RemoteManga.PageInfo pi) {
+        if (!beginExoPage(page)) {
+            return;
+        }
+        if (pi == null) {
+            mVideoPlayFailed = true;
+            hideLoading();
+            showHint("视频信息读取失败：" + page.getName());
             return;
         }
         showLoading("正在连接视频…", -1, -1, -1, -1);
@@ -4657,6 +4702,21 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 }
                 factory = http;
             }
+            startExoWithFactory(page, stream.uri, factory);
+        } catch (Throwable e) {
+            Log.e(TAG, "ExoPlayer create failed: " + e.getMessage(), e);
+            releaseExo();
+            mVideoPlayFailed = true;
+            hideLoading();
+            showHint("视频打开失败：" + e.getMessage());
+        }
+    }
+
+    /** Creates ExoPlayer over [factory] and plays [uri]; shared by SMB/115 and
+     *  extension-source videos so both get the same buffer / seek tuning. */
+    private void startExoWithFactory(final File page, final String uri,
+                                     final androidx.media3.datasource.DataSource.Factory factory) {
+        try {
             final androidx.media3.exoplayer.ExoPlayer exo =
                     new androidx.media3.exoplayer.ExoPlayer.Builder(getContext())
                             .setMediaSourceFactory(
@@ -4759,12 +4819,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             };
             exo.addListener(mExoListener);
             exo.setVideoSurface(mVideoSurface);
-            exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(stream.uri));
+            exo.setMediaItem(androidx.media3.common.MediaItem.fromUri(uri));
             exo.setPlayWhenReady(true);
             exo.prepare();
             mMainHandler.removeCallbacks(mVideoWatchdog);
             mVideoDataSource = null;
-            Log.i(TAG, "ExoPlayer open " + stream.uri);
+            Log.i(TAG, "ExoPlayer open " + uri);
         } catch (Throwable e) {
             Log.e(TAG, "ExoPlayer create failed: " + e.getMessage(), e);
             releaseExo();
