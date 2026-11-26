@@ -80,8 +80,8 @@ object MangaSourceRepository {
         // truncated source response from a failed download.
         val head = pages.take(3).joinToString(" | ") { it.imageUrl ?: it.url }
         val tail = if (pages.isNotEmpty()) (pages.last().imageUrl ?: pages.last().url) else ""
-        Log.i(TAG, "page list ${source.name} '${chapter.name}' n=${pages.size}"
-            + " first=[$head] last=[$tail]")
+        Log.i(TAG, "page list ${source.name} '${chapter.name}' url=${chapter.url}"
+            + " n=${pages.size} first=[$head] last=[$tail]")
         return pages
     }
 
@@ -188,7 +188,7 @@ object MangaSourceRepository {
         GlobalScope.launch(Dispatchers.IO) {
             try {
                 val update = source.getMangaUpdate(manga, emptyList(), true, true)
-                Log.i(TAG, "details ${source.name}: ${update.manga.title} chapters=${update.chapters.size}")
+                Log.i(TAG, "details ${source.name}: ${update.manga.title} url=${manga.url} chapters=${update.chapters.size}")
                 main.post { cb.onResult(update, null) }
             } catch (e: Throwable) {
                 Log.e(TAG, "details failed: ${source.name}", e)

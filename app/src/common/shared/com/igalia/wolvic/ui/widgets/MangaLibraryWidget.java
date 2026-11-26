@@ -234,6 +234,10 @@ public class MangaLibraryWidget extends UIWidget {
     private final Runnable mP115Poll = new Runnable() {
         @Override public void run() { poll115Qr(); }
     };
+    /** True while the (expensive) extension scan runs in the background. */
+    private boolean mSourceScanning;
+    /** Guards against a retry loop when a scan keeps failing. */
+    private int mSourceScanTries;
     private final ExecutorService mIoExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-io");
         thread.setDaemon(true);
@@ -288,6 +292,17 @@ public class MangaLibraryWidget extends UIWidget {
         mLocalDir = (!last.isEmpty() && new File(last).isDirectory())
                 ? new File(last) : Environment.getExternalStorageDirectory();
         mWebDavUrl = mSettings.text(MangaSettings.WEBDAV_URL);
+
+        // Loading 8 extension APKs is a DexClassLoader pass that takes seconds;
+        // doing it when the 扩展 page is first opened made the "home" look hung.
+        // Warm it up here, off the main thread, so the page is instant.
+        mIoExecutor.execute(() -> {
+            try {
+                MangaSourceManager.INSTANCE.init(getContext());
+            } catch (Throwable t) {
+                Log.w(TAG, "source warm-up failed: " + t);
+            }
+        });
 
         mPageViews.put(MangaPage.LIBRARY, mLibraryPage);
         for (MangaPage page : MangaPage.values()) {
@@ -655,9 +670,18 @@ public class MangaLibraryWidget extends UIWidget {
             switchPage(MangaPage.LIBRARY);
             return true;
         }
-        if (mCurrentPage == MangaPage.SOURCE_BROWSE || mCurrentPage == MangaPage.SOURCE_MANGA
-                || mCurrentPage == MangaPage.SOURCE_SETTINGS
+        // Back from a manga detail belongs to that source's catalogue, not to
+        // the extension list - otherwise every back tap skipped a whole level.
+        if (mCurrentPage == MangaPage.SOURCE_MANGA) {
+            switchPage(MangaPage.SOURCE_BROWSE);
+            return true;
+        }
+        if (mCurrentPage == MangaPage.SOURCE_SETTINGS
                 || mCurrentPage == MangaPage.SOURCE_OPTIONS || mCurrentPage == MangaPage.SOURCE_TEXT) {
+            switchPage(MangaPage.EXTENSIONS);
+            return true;
+        }
+        if (mCurrentPage == MangaPage.SOURCE_BROWSE) {
             switchPage(MangaPage.EXTENSIONS);
             return true;
         }
@@ -2114,8 +2138,11 @@ public class MangaLibraryWidget extends UIWidget {
             openRemoteManga(p115Manga(cookie, cid, record.title), null, false);
             return;
         }
-        Toast.makeText(getContext(), "扩展图源的漫画请从「漫画源扩展」进入。",
-                Toast.LENGTH_LONG).show();
+        if (HIST_EXT.equals(record.source)) {
+            openExtensionHistory(record, false);
+            return;
+        }
+        Toast.makeText(getContext(), "未知记录来源", Toast.LENGTH_LONG).show();
     }
 
     private void openHistoryFolder(MangaReadingState.Record record) {
@@ -2149,7 +2176,122 @@ public class MangaLibraryWidget extends UIWidget {
             mP115ParentStack.clear();
             switchPage(MangaPage.WEBDAV);
             listP115Dir(cid);
+            return;
         }
+        if (HIST_EXT.equals(record.source)) {
+            openExtensionHistory(record, true);
+        }
+    }
+
+    /**
+     * Re-opens an extension-source record. [detailsOnly] parks the panel on the
+     * manga's detail page inside its own source (what 打开所在文件夹 means for a
+     * remote catalogue); otherwise it goes straight back to the saved chapter
+     * and page. record.path is "src:&lt;sourceId&gt;:&lt;mangaUrl&gt;".
+     */
+    private void openExtensionHistory(final MangaReadingState.Record record,
+                                      final boolean detailsOnly) {
+        String path = record.path == null ? "" : record.path;
+        if (!path.startsWith("src:")) {
+            Toast.makeText(getContext(), "记录已损坏，请在扩展源里重新打开", Toast.LENGTH_LONG).show();
+            return;
+        }
+        int cut = path.indexOf(':', 4);
+        if (cut < 0) {
+            Toast.makeText(getContext(), "记录已损坏，请在扩展源里重新打开", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final long sourceId;
+        try {
+            sourceId = Long.parseLong(path.substring(4, cut));
+        } catch (NumberFormatException e) {
+            Toast.makeText(getContext(), "记录里的图源 id 无效", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final String mangaUrl = path.substring(cut + 1);
+        MangaSourceManager.LoadedSource found = null;
+        for (MangaSourceManager.LoadedSource candidate : MangaSourceManager.INSTANCE.getSources()) {
+            if (candidate.getSource().getId() == sourceId) {
+                found = candidate;
+                break;
+            }
+        }
+        if (found == null) {
+            Toast.makeText(getContext(), "这条记录所属的图源没有加载（扩展被卸载？）",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        final MangaSourceManager.LoadedSource entry = found;
+        mSourceEntry = entry;
+        SManga stub = new SManga();
+        stub.setUrl(mangaUrl);
+        stub.setTitle(record.title == null ? mangaUrl : record.title);
+        mSourceManga = stub;
+        mSourceChapters.clear();
+        mSourceMangaStatus = "加载详情…";
+        if (detailsOnly) {
+            switchPage(MangaPage.SOURCE_MANGA);
+        }
+        MangaSourceRepository.INSTANCE.details(entry.getSource(), stub, (update, error) -> {
+            if (update == null) {
+                mSourceMangaStatus = "详情加载失败：" + error;
+                mMain.post(() -> {
+                    if (mCurrentPage == MangaPage.SOURCE_MANGA) {
+                        refreshPage(MangaPage.SOURCE_MANGA);
+                    }
+                });
+                return;
+            }
+            mSourceManga = update.getManga();
+            mSourceChapters.clear();
+            mSourceChapters.addAll(update.getChapters());
+            mSourceMangaStatus = mSourceChapters.size() + " 个章节";
+            if (detailsOnly) {
+                mMain.post(() -> {
+                    if (mCurrentPage == MangaPage.SOURCE_MANGA) {
+                        refreshPage(MangaPage.SOURCE_MANGA);
+                    }
+                });
+                return;
+            }
+            mMain.post(() -> openExtensionHistorySession(record));
+        });
+    }
+
+    /** Opens the reader at the chapter/page saved for this record. */
+    private void openExtensionHistorySession(MangaReadingState.Record record) {
+        List<SChapter> list = sortedChapters();
+        if (list.isEmpty()) {
+            Toast.makeText(getContext(), "这部漫画暂无章节", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int index = -1;
+        String key = record.chapterKey;
+        int bar = key == null ? -1 : key.lastIndexOf('|');
+        if (bar >= 0) {
+            String chapterUrl = key.substring(bar + 1);
+            for (int i = 0; i < list.size(); i++) {
+                if (chapterUrl.equals(list.get(i).getUrl())) {
+                    index = i;
+                    break;
+                }
+            }
+        }
+        int page = 0;
+        float frac = 0f;
+        float[] saved = MangaReaderWidget.readChapterProgress(progressPrefs(), srcProgressKey());
+        if (saved != null) {
+            page = (int) saved[1];
+            frac = saved[2];
+            if (index < 0) {
+                index = (int) saved[0];
+            }
+        }
+        if (index < 0) {
+            index = 0;
+        }
+        index = Math.max(0, Math.min(index, list.size() - 1));
+        openSourceSession(list, index, page, frac);
     }
 
     private void showHistoryMenu(final MangaReadingState.Record record,
@@ -2165,7 +2307,9 @@ public class MangaLibraryWidget extends UIWidget {
                 s.dismiss();
                 mMain.post(() -> openHistoryRecord(record));
             });
-            s.toggleChipsRaw(new String[]{"📂  打开所在文件夹"}, new boolean[]{false}, i -> {
+            String openLabel = HIST_EXT.equals(record.source)
+                    ? "📖  打开漫画详情" : "📂  打开所在文件夹";
+            s.toggleChipsRaw(new String[]{openLabel}, new boolean[]{false}, i -> {
                 s.dismiss();
                 mMain.post(() -> openHistoryFolder(record));
             });
@@ -3581,14 +3725,23 @@ public class MangaLibraryWidget extends UIWidget {
     private void fillExtensionsPage(LinearLayout content) {
         addInfo(content, "自定义漫画源 / 扩展应用",
                 "已安装的 Mihon/Tachiyomi 扩展自动信任加载（lib 1.4/1.6）。单源应用直接列出；多源应用点名称展开。源名优先显示扩展内置名称。");
-        List<MangaSourceManager.LoadedSource> sources;
-        try {
-            sources = MangaSourceManager.INSTANCE.init(getContext());
-        } catch (Throwable t) {
-            Log.e("MangaLibrary", "source manager init failed", t);
-            addInfo(content, "加载失败", String.valueOf(t));
-            sources = new ArrayList<>();
+        if (!MangaSourceManager.INSTANCE.isInitialized()) {
+            if (mSourceScanning) {
+                addInfo(content, "已加载图源", "正在扫描扩展…完成后自动刷新");
+            } else if (mSourceScanTries >= 2) {
+                addInfo(content, "已加载图源", "扫描未完成，点下方“重新扫描”重试");
+                LinearLayout retry = addRow(content);
+                addButton(retry, "重新扫描", v -> {
+                    mSourceScanTries = 0;
+                    requestSourceScan();
+                });
+            } else {
+                addInfo(content, "已加载图源", "准备扫描扩展…");
+                requestSourceScan();
+            }
+            return;
         }
+        List<MangaSourceManager.LoadedSource> sources = MangaSourceManager.INSTANCE.getSources();
         Map<String, List<MangaSourceManager.LoadedSource>> groups = new LinkedHashMap<>();
         for (MangaSourceManager.LoadedSource entry : sources) {
             List<MangaSourceManager.LoadedSource> list = groups.get(entry.getPkgName());
@@ -3673,6 +3826,7 @@ public class MangaLibraryWidget extends UIWidget {
         }
         LinearLayout actions = addRow(content);
         addButton(actions, "重新扫描", v -> {
+            mSourceScanTries = 0;
             mIoExecutor.execute(() -> {
                 MangaSourceManager.INSTANCE.reload(getContext());
                 mMain.post(() -> refreshPage(MangaPage.EXTENSIONS));
@@ -3680,18 +3834,51 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
+    /** Runs one extension scan on the IO thread, then repaints the page. */
+    private void requestSourceScan() {
+        if (mSourceScanning) {
+            return;
+        }
+        mSourceScanning = true;
+        mSourceScanTries++;
+        mIoExecutor.execute(() -> {
+            try {
+                MangaSourceManager.INSTANCE.init(getContext());
+            } catch (Throwable t) {
+                Log.e(TAG, "source scan failed", t);
+            }
+            mMain.post(() -> {
+                mSourceScanning = false;
+                if (mCurrentPage == MangaPage.EXTENSIONS) {
+                    refreshPage(MangaPage.EXTENSIONS);
+                }
+            });
+        });
+    }
+
     // ------------------------------------------- extension source browsing
 
     private void openSourceBrowse(MangaSourceManager.LoadedSource entry) {
+        final boolean sameSource = mSourceEntry != null
+                && mSourceEntry.getSource().getId() == entry.getSource().getId();
         mSourceEntry = entry;
         mSourceQuery = "";
         mSourcePage = 1;
         mSourceLatest = false;
-        mSourceMangas.clear();
-        mSourceHasNext = false;
-        mSourceFilters = null;
         mSourceFiltersActive = false;
+        if (!sameSource) {
+            mSourceMangas.clear();
+            mSourceHasNext = false;
+            mSourceFilters = null;
+        }
         switchPage(MangaPage.SOURCE_BROWSE);
+        if (sameSource && !mSourceMangas.isEmpty()) {
+            // Coming back to a source we already listed: paint the cached grid
+            // immediately and refresh behind it, instead of blocking on the
+            // network with an empty page ("首页打开很慢").
+            mSourceStatus = "第 1 页 · " + mSourceMangas.size() + " 部";
+            refreshPage(MangaPage.SOURCE_BROWSE);
+        }
         startSourceBrowse();
     }
 

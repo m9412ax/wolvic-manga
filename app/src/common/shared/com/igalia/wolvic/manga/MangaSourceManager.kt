@@ -83,7 +83,12 @@ object MangaSourceManager {
     @Synchronized
     fun init(context: Context): List<LoadedSource> {
         if (initialized) return loaded.toList()
-        initialized = true
+        // `initialized` is only set once the scan really finished. It used to be
+        // set up-front, so an interrupted/failed scan left the app convinced it
+        // had zero sources - the extension home page then stayed empty no matter
+        // how many times the app was restarted ("退出重开首页无法加载").
+        loaded.clear()
+        failures.clear()
         val appContext = context.applicationContext
 
         if (LogcatLogger.loggers.isEmpty()) {
@@ -140,8 +145,13 @@ object MangaSourceManager {
             }
         }
         Log.i(TAG, "init done: ${loaded.size} sources from ${packages.count { isExtension(it) }} extension packages, failures=${failures.size}")
+        initialized = true
         return loaded.toList()
     }
+
+    /** True once a scan has completed; the UI uses this to avoid blocking the
+     *  main thread on the very first (expensive) extension load. */
+    fun isInitialized(): Boolean = initialized
 
     fun getSources(): List<LoadedSource> = synchronized(this) { loaded.toList() }
 
