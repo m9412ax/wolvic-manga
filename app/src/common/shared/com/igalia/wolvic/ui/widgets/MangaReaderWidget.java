@@ -129,6 +129,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Last page asked for explicit on-demand download, to throttle retries. */
     private int mSingleFetchPage = -1;
     private long mSingleFetchAt;
+    /** Throttles page-list refreshes triggered by "next" at the last page. */
+    private long mLastListRefreshRequest;
     /** A next-page request that arrived while the target page was still
      *  downloading. Re-issued automatically once that page lands. */
     private int mPendingTargetPage = -1;
@@ -891,6 +893,41 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
+    /**
+     * A source chapter can look like it ends a few pages early when its first
+     * page list was truncated (pre-login HTML / partial JSON). Instead of a
+     * dead "已是最后一页", ask the source once more and continue if the list
+     * grew. Throttled so auto-advance cannot hammer the site.
+     */
+    private boolean retryChapterList(int delta) {
+        if (mChapterProvider == null || delta <= 0) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        if (now - mLastListRefreshRequest < 20000L) {
+            return false;
+        }
+        mLastListRefreshRequest = now;
+        final int session = mChapterSession;
+        final int chapterIndex = mChapterIndex;
+        showHint("正在刷新章节页面…");
+        mChapterProvider.refreshPageList(chapterIndex, (dir, error) -> mMainHandler.post(() -> {
+            if (mDestroyed || session != mChapterSession || chapterIndex != mChapterIndex) {
+                return;
+            }
+            mLastChapterListRefreshMs = 0L;
+            int before = mPages.size();
+            refreshChapterPageList(true);
+            if (mPages.size() > before) {
+                showPage(before);
+            } else {
+                showHint(error == null || error.isEmpty()
+                        ? "已是最后一页" : ("刷新失败：" + error));
+            }
+        }));
+        return true;
+    }
+
     /** One targeted retry for a page the bulk download gave up on. */
     private void requestSinglePage(final int index) {
         if (mChapterProvider == null) {
@@ -1086,13 +1123,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private void advanceChapter(int delta) {
         chapterLoadingGuard();
-        if (mChapterDirs == null || mChapterDirs.size() <= 1 || mChapterLoading) {
+        if (mChapterDirs == null || mChapterLoading) {
             showHint(delta > 0 ? "已到最后一页" : "已到第一页");
+            return;
+        }
+        if (mChapterDirs.size() <= 1) {
+            // Single-chapter manga: "end of chapter" may simply be a page list
+            // that came back short. Try to extend it before giving up.
+            if (!retryChapterList(delta)) {
+                showHint(delta > 0 ? "已到最后一页" : "已到第一页");
+            }
             return;
         }
         int index = mChapterIndex + delta;
         if (!hasChapter(index)) {
-            showHint(index < 0 ? "已是第一章" : "已是最后一章");
+            if (!retryChapterList(delta)) {
+                showHint(index < 0 ? "已是第一章" : "已是最后一章");
+            }
             return;
         }
         saveChapterProgress();
@@ -1358,6 +1405,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mPendingTargetPage = index;
                 showHint("加载第 " + (index + 1) + " 张…");
                 requestSinglePage(index);
+            } else if (index >= mPages.size()) {
+                // Nothing left to show. A source chapter whose page list came
+                // back truncated ends exactly like this, so give the list one
+                // more chance before claiming the chapter is over.
+                if (!retryChapterList(1)) {
+                    showHint("已是最后一页");
+                }
             }
             return;
         }

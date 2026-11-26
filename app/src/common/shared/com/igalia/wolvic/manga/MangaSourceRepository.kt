@@ -355,6 +355,48 @@ object MangaSourceRepository {
     }
 
     /**
+     * Drops the cached page list and re-runs the download pass. Used when a
+     * chapter LOOKS like it ends early: the first list can be a truncated
+     * response (pre-login HTML, partial JSON) and a fresh request sometimes
+     * returns the full chapter. Files already on disk are skipped.
+     */
+    fun refreshChapter(
+        context: Context,
+        source: Source,
+        manga: SManga,
+        chapter: SChapter,
+        cb: Callback<File>,
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                pageListCache.remove(pageListKey(source, chapter))
+                val pages = cachedPageList(source, chapter)
+                if (pages.isEmpty()) throw IllegalStateException("章节页面列表为空")
+                val dir = chapterDir(context, source, manga, chapter)
+                dir.mkdirs()
+                Log.i(TAG, "refresh list: ${source.name} '${chapter.name}' pages=${pages.size}")
+                // Land the FIRST missing page so the reader immediately sees a
+                // longer chapter and can keep turning; the remaining pages come
+                // on demand through fetchSinglePage.
+                for (page in pages) {
+                    if (existingPage(dir, page.index) == null) {
+                        try {
+                            fetchPageWithRetry(source, page, dir)
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "refresh page ${page.index + 1} failed: ${e.message}")
+                        }
+                        break
+                    }
+                }
+                main.post { cb.onResult(dir, null) }
+            } catch (e: Throwable) {
+                Log.w(TAG, "refresh list failed: ${e.message}")
+                main.post { cb.onResult(null, e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    /**
      * Fetches ONE page on demand. The reader calls this when it lands on a page
      * that the bulk pass gave up on, instead of waiting forever for progress
      * that will never come.
@@ -369,7 +411,13 @@ object MangaSourceRepository {
     ) {
         GlobalScope.launch(Dispatchers.IO) {
             try {
-                val pages = cachedPageList(source, chapter)
+                var pages = cachedPageList(source, chapter)
+                if (pageIndex >= pages.size) {
+                    // The cached list may be a truncated response: drop it and
+                    // ask the source once more before giving up.
+                    pageListCache.remove(pageListKey(source, chapter))
+                    pages = cachedPageList(source, chapter)
+                }
                 if (pageIndex < 0 || pageIndex >= pages.size) {
                     main.post { cb.onResult(null, "页码越界") }
                     return@launch

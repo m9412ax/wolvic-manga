@@ -59,6 +59,17 @@ public class MangaChapterSession {
                 callback.onDir(null, "该来源不支持按页补下载");
             }
         }
+
+        /**
+         * Re-fetches a chapter's page list (bypassing the short-lived cache)
+         * and pulls whatever pages are still missing. Used when a chapter ends
+         * a few pages early, which usually means the first list was truncated.
+         */
+        default void refreshPageList(int index, DirCallback callback) {
+            if (callback != null) {
+                callback.onDir(null, "该来源不支持刷新列表");
+            }
+        }
     }
 
     public final List<File> dirs;
@@ -162,6 +173,23 @@ public class MangaChapterSession {
                 }
                 MangaSourceRepository.INSTANCE.fetchSinglePage(context, source, manga,
                         chapters.get(i), pageIndex,
+                        (dir, error) -> {
+                            if (callback != null) {
+                                callback.onDir(dir, error);
+                            }
+                        });
+            }
+
+            @Override
+            public void refreshPageList(int i, DirCallback callback) {
+                if (i < 0 || i >= chapters.size()) {
+                    if (callback != null) {
+                        callback.onDir(null, "章节序号越界");
+                    }
+                    return;
+                }
+                MangaSourceRepository.INSTANCE.refreshChapter(context, source, manga,
+                        chapters.get(i),
                         (dir, error) -> {
                             if (callback != null) {
                                 callback.onDir(dir, error);
