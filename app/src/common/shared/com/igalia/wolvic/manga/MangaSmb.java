@@ -271,7 +271,7 @@ public final class MangaSmb {
             }
             deleteIn(share, join(path, name));
         }
-        share.rmdir(path);
+        share.rmdir(path, true);
     }
 
     /** Enumerates ALL shares on a host via jcifs-ng (smbj has no NetShareEnum).

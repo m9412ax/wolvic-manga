@@ -1958,6 +1958,11 @@ public class MangaLibraryWidget extends UIWidget {
             }
 
             @Override
+            public void onNavigate(String path) {
+                // 历史 rows never navigate; folders are opened from the menu.
+            }
+
+            @Override
             public void onMenu(MangaFileBrowser.Entry entry) {
                 if (entry.tag instanceof MangaReadingState.Record) {
                     showHistoryMenu((MangaReadingState.Record) entry.tag, browser);
