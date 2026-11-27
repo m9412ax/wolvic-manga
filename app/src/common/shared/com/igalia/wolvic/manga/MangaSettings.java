@@ -512,8 +512,18 @@ public final class MangaSettings {
         }
         try {
             JSONArray arr = new JSONArray(raw);
+            boolean changed = false;
             for (int i = 0; i < arr.length(); i++) {
-                out.add(arr.getString(i));
+                String saved = arr.getString(i);
+                String fixed = saved.startsWith("remote:smb:") || saved.startsWith("smb:/")
+                        ? MangaSync.repairSmbKey(saved, this) : saved;
+                if (!fixed.equals(saved)) {
+                    changed = true;
+                }
+                out.add(fixed);
+            }
+            if (changed) {
+                writeBookshelf(out);
             }
         } catch (JSONException ignored) {
         }

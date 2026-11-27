@@ -3738,6 +3738,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private void updateChapterDownloadProgress(File dir, int done, int total,
                                                String curName, long curDone, long curTotal) {
         if (hasVisibleContent()) {
+            // The page the user opened is already on screen. A background
+            // download of the REST of the chapter must not leave a stale
+            // "已下载 x / y 个文件" bar hanging over readable content.
+            hideLoading();
             return;
         }
         // A page is decoding (cache miss) - the overlay must say "正在加载图片",

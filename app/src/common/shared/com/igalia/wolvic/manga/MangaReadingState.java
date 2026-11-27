@@ -107,12 +107,14 @@ public final class MangaReadingState {
         }
     }
 
+    private final Context mContext;
     private final SharedPreferences mPrefs;
     private final LinkedHashMap<String, Chapter> mChapters = new LinkedHashMap<>();
     private final List<Record> mHistory = new ArrayList<>();
     private boolean mLoaded;
 
     private MangaReadingState(Context context) {
+        mContext = context;
         mPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
@@ -169,7 +171,13 @@ public final class MangaReadingState {
             return null;
         }
         load();
-        return mChapters.get(key);
+        Chapter c = mChapters.get(key);
+        if (c != null) {
+            return c;
+        }
+        // Fall back to a normalised form so stale bad keys still resolve.
+        String fixed = MangaSync.repairSmbKey(key, MangaSettings.get(mContext));
+        return fixed.equals(key) ? null : mChapters.get(fixed);
     }
 
     public int stateOf(String key) {
@@ -485,6 +493,7 @@ public final class MangaReadingState {
             return;
         }
         mLoaded = true;
+        final MangaSettings settings = MangaSettings.get(mContext);
         String raw = mPrefs.getString(KEY_CHAPTERS, "");
         if (!TextUtils.isEmpty(raw)) {
             for (String line : raw.split("\n")) {
@@ -496,11 +505,15 @@ public final class MangaReadingState {
                     continue;
                 }
                 try {
-                    Chapter chapter = new Chapter(parts[0]);
+                    Chapter chapter = new Chapter(MangaSync.repairSmbKey(parts[0], settings));
                     chapter.page = Integer.parseInt(parts[1]);
                     chapter.total = Integer.parseInt(parts[2]);
                     chapter.ts = Long.parseLong(parts[3]);
-                    mChapters.put(chapter.key, chapter);
+                    Chapter old = mChapters.get(chapter.key);
+                    // Keep the newer mark when two legacy keys collapse into one.
+                    if (old == null || chapter.ts > old.ts) {
+                        mChapters.put(chapter.key, chapter);
+                    }
                 } catch (NumberFormatException ignored) {
                 }
             }
@@ -519,8 +532,10 @@ public final class MangaReadingState {
                 record.id = parts[0];
                 record.title = parts[1];
                 record.source = parts[2];
-                record.path = parts[3];
-                record.chapterKey = parts[4];
+                record.path = parts[3].startsWith("smb:/")
+                        ? MangaSync.repairSmbKey(parts[3], settings) : parts[3];
+                record.chapterKey = parts[4].startsWith("smb:/")
+                        ? MangaSync.repairSmbKey(parts[4], settings) : parts[4];
                 try {
                     record.index = Integer.parseInt(parts[5]);
                     record.page = Integer.parseInt(parts[6]);

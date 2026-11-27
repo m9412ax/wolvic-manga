@@ -3102,12 +3102,18 @@ public class MangaLibraryWidget extends UIWidget {
         if (HIST_SMB.equals(record.source)) {
             String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
                     + mSettings.text(MangaSettings.SMB_SHARE) + "/";
-            if (!record.path.startsWith(prefix)) {
+            String path = MangaSync.repairSmbKey(record.path, mSettings);
+            if (!path.startsWith(prefix)) {
+                path = MangaSync.repairSmbKey(path, mSettings);
+            }
+            if (!path.startsWith(prefix)) {
                 Toast.makeText(getContext(), "SMB 主机或共享已改变，请重新连接。",
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            openRemoteManga(smbManga(smbAuth(), record.path.substring(prefix.length())),
+            // Book-level history points at the manga folder; open the whole
+            // manga at its saved chapter/page so page turns keep working.
+            openRemoteManga(smbManga(smbAuth(), path.substring(prefix.length())),
                     null, false);
             return;
         }
@@ -3138,11 +3144,15 @@ public class MangaLibraryWidget extends UIWidget {
         if (HIST_SMB.equals(record.source)) {
             String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
                     + mSettings.text(MangaSettings.SMB_SHARE) + "/";
-            if (record.path.startsWith(prefix)) {
-                mSmbPath = record.path.substring(prefix.length());
+            String path = MangaSync.repairSmbKey(record.path, mSettings);
+            if (path.startsWith(prefix)) {
+                mSmbPath = path.substring(prefix.length());
                 mSmbAutoConnected = true;
                 switchPage(MangaPage.SMB);
                 connectSmb();
+            } else {
+                Toast.makeText(getContext(), "SMB 主机或共享已改变，请重新连接。",
+                        Toast.LENGTH_SHORT).show();
             }
             return;
         }

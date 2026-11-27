@@ -217,6 +217,74 @@ public final class MangaNeeViewSync {
         return MangaSync.norm(vr.isEmpty() ? canonical(pcPath) : vr);
     }
 
+    // ------------------------------------------------------- full history
+
+    /**
+     * Imports every NeeView history row whose path maps onto the VR manga
+     * share so folder/file frames survive a sync. Each folder is listed once
+     * (cached by path) to keep 12k rows cheap; the first [skip] row is handled
+     * separately by {@link #sync} and is left alone here.
+     */
+    private static int importHistoryMarks(Context context, MangaSettings settings,
+                                          MangaReadingState state, JSONArray items,
+                                          int skip) {
+        int imported = 0;
+        java.util.Map<String, List<String>> nameCache = new java.util.HashMap<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        // Cap both the rows scanned and the folders listed: a sync runs on a
+        // background thread but the user expects it to finish in seconds.
+        int limit = Math.min(items.length(), 500);
+        for (int i = skip; i < limit; i++) {
+            JSONObject row = items.optJSONObject(i);
+            if (row == null) {
+                continue;
+            }
+            String pcPath = canonical(row.optString("Path", ""));
+            String pageName = row.optString("Page", "");
+            if (!isDrivePath(pcPath)) {
+                continue;
+            }
+            String vrChapter = MangaSync.fromSyncId(context, settings, pcPath);
+            if (vrChapter.isEmpty() || vrChapter.startsWith("smb:/ ")
+                    || !vrChapter.startsWith("smb://")) {
+                continue;
+            }
+            // NeeView uses "<folder>\movie.mp4" for a per-file row; collapse
+            // it onto the parent folder the reader actually opens.
+            String folder = vrChapter;
+            int slash = folder.lastIndexOf('/');
+            String tail = slash > 0 ? folder.substring(slash + 1) : folder;
+            if (!pageName.isEmpty() && pageName.equals(tail) && slash > 0) {
+                folder = folder.substring(0, slash);
+            }
+            if (!seen.add(folder)) {
+                continue;
+            }
+            List<String> names = nameCache.get(folder);
+            if (names == null) {
+                names = pageNames(settings, folder);
+                nameCache.put(folder, names);
+            }
+            if (names.isEmpty()) {
+                continue;
+            }
+            int page = pageName.isEmpty() ? 0 : names.indexOf(pageName);
+            if (page < 0) {
+                // Video / unmatched row: treat as the chapter's last page.
+                page = names.size() - 1;
+            }
+            long ts = parseStamp(row.optString("LastAccessTime", ""));
+            if (state.importChapter(folder, page, names.size(), ts)) {
+                imported++;
+            }
+            if (nameCache.size() >= 150) {
+                break;
+            }
+        }
+        Log.i(TAG, "imported " + imported + " history marks from " + items.length() + " rows");
+        return imported;
+    }
+
     // ----------------------------------------------------------------- sync
 
     /** Reads PC History.json, applies its newest row to VR, then writes VR's
@@ -233,6 +301,12 @@ public final class MangaNeeViewSync {
             if (items == null || items.length() == 0) {
                 return MangaSync.Result.fail("NeeView 历史为空");
             }
+
+            // --- PC -> VR: whole history paints the blue/green frames ------
+            // The 历史 page only shows one row, but NeeView's other thousands
+            // of rows are real reading marks: import them so folders and files
+            // keep their frames. List each chapter folder at most once.
+            int imported = importHistoryMarks(context, settings, state, items, 1);
 
             // --- PC -> VR: newest row wins ---------------------------------
             JSONObject newest = items.optJSONObject(0);

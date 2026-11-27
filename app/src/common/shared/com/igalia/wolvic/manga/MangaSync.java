@@ -106,6 +106,40 @@ public final class MangaSync {
         return prefix + s;
     }
 
+    /** Repairs an SMB key: collapses "smb:/host/share/…" (old bug) to a proper
+     *  "smb://host/share/…" and re-points a stale host/share to the values the
+     *  user last configured in 文件管理 → SMB. Only the relative path survives. */
+    public static String repairSmbKey(String key, MangaSettings settings) {
+        if (key == null || key.isEmpty()) {
+            return key;
+        }
+        String s = key.trim().replace('\\', '/');
+        int at = s.indexOf("smb:/");
+        if (at < 0) {
+            return key;
+        }
+        String rest = s.substring(at + 5);   // after "smb:/" (also matches "smb://")
+        while (rest.startsWith("/")) {
+            rest = rest.substring(1);
+        }
+        String host = settings.text(MangaSettings.SMB_HOST);
+        String share = settings.text(MangaSettings.SMB_SHARE);
+        int slash = rest.indexOf('/');
+        if (slash > 0) {
+            rest = rest.substring(slash + 1);   // drop the saved host
+        }
+        if (!share.isEmpty()) {
+            slash = rest.indexOf('/');
+            if (slash > 0 && rest.substring(0, slash).equalsIgnoreCase(share)) {
+                rest = rest.substring(slash + 1);
+            } else if (rest.equalsIgnoreCase(share)) {
+                rest = "";
+            }
+        }
+        String base = host.isEmpty() ? "" : SmbRemoteManga.keyFor(host, share, rest);
+        return s.substring(0, at) + base;
+    }
+
     /** Mapping line generated from the SMB settings when the user has not
      *  configured one: share "e" == PC drive "E:". */
     static String defaultMapping(MangaSettings settings) {

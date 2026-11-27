@@ -45,7 +45,25 @@ public final class RemoteChapterLoader {
         int lastDone, lastTotal;
         String lastName;
         long lastCurDone, lastCurTotal;
+        /** Pages a late joiner needs first, in priority order. */
+        final java.util.Set<Integer> urgent = new java.util.LinkedHashSet<>();
         ActiveDownload(String key) { this.key = key; }
+
+        synchronized void reanchor(int page) {
+            if (page > 0) {
+                urgent.add(page);
+            }
+        }
+
+        synchronized int takeUrgent() {
+            if (urgent.isEmpty()) {
+                return -1;
+            }
+            java.util.Iterator<Integer> it = urgent.iterator();
+            int p = it.next();
+            it.remove();
+            return p;
+        }
 
         synchronized void add(Progress p, Callback c) {
             if (p != null) {
@@ -109,10 +127,13 @@ public final class RemoteChapterLoader {
         final ActiveDownload active = new ActiveDownload(key);
         ActiveDownload existing = ACTIVE.putIfAbsent(key, active);
         if (existing != null) {
-            // Same chapter is already streaming. piggyback on it instead of
-            // launching a second downloader that fights over the same .tmp files.
+            // Same chapter is already streaming. Piggyback on it, but if the
+            // reader entered at a different page, pull that anchor forward:
+            // otherwise tapping image #90 joins a download that started at #0
+            // and the user stares at "从头下载" for minutes.
+            existing.reanchor(startPage);
             existing.add(progress, callback);
-            Log.i(TAG, "dedup join " + key);
+            Log.i(TAG, "dedup join " + key + " anchor=" + startPage);
             return;
         }
         active.add(progress, callback);
@@ -145,7 +166,17 @@ public final class RemoteChapterLoader {
                 }
 
                 boolean opened = false;
-                for (int idx : order) {
+                // A late joiner (tap on a specific file) can push its page to
+                // the front of an already-running download via reanchor().
+                java.util.Set<Integer> urgentDone = new java.util.HashSet<>();
+                for (int k = 0; k < order.size(); k++) {
+                    int urgentIdx = active.takeUrgent();
+                    int idx = (urgentIdx >= 0 && urgentIdx < total
+                            && !urgentDone.contains(urgentIdx) && order.remove((Integer) urgentIdx))
+                            ? urgentIdx : order.get(0);
+                    if (urgentIdx >= 0) {
+                        urgentDone.add(urgentIdx);
+                    }
                     final int i = idx;
                     RemoteManga.PageInfo p = pages.get(i);
                     final File out = cachedFile(dir, i, p.nameHint);
