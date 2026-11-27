@@ -3423,7 +3423,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         } else if (x > third * 2.0f) {
             pageDelta(1);
         } else if (mPageCounter != null) {
-            mPageCounter.setVisibility(mPageCounter.getVisibility() == VISIBLE ? GONE : VISIBLE);
+            // Persist the toggle. applyDisplaySettings() runs on every page and
+            // on every reopen, so a visibility that only lived in the View was
+            // reset to "shown" immediately - the setting was never written.
+            final boolean show = mPageCounter.getVisibility() != VISIBLE;
+            mSettings.put(MangaSettings.READER_SHOW_PAGE_NUMBER, show);
+            mPageCounter.setVisibility(show ? VISIBLE : GONE);
+            showHint(show ? "显示页码（点中间可隐藏）" : "已隐藏页码（点中间可显示）");
         }
     }
 
