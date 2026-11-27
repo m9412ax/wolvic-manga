@@ -533,8 +533,11 @@ public final class MangaSettings {
             return;
         }
         JSONObject map = paths115();
-        map.put(chapterKey, pcPath);
-        prefs().edit().putString(SYNC_115_PATHS, map.toString()).apply();
+        try {
+            map.put(chapterKey, pcPath);
+            prefs().edit().putString(SYNC_115_PATHS, map.toString()).apply();
+        } catch (JSONException ignored) {
+        }
     }
 
     /** PC path of a 115 chapter key, or "". */
