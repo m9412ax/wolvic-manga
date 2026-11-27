@@ -1450,11 +1450,11 @@ public class MangaLibraryWidget extends UIWidget {
                     ? "☰ 列表" : "▦ 图标");
         }
         if (mShelfSizeButton != null) {
-            String[] names = {"小", "中", "大"};
-            int size = Math.max(0, Math.min(2, mSettings.integer(MangaSettings.LIBRARY_SIZE)));
-            // Window size, NOT tile size: the tile size lives in 设置 (its own
-            // slider, independent from the file browsers).
-            mShelfSizeButton.setText("◱ 窗口 " + names[size]);
+            int size = shelfThumbDp();
+            String name = size <= 130 ? "小" : size >= 220 ? "大" : "中";
+            // Tile size of the SHELF only. The file browsers keep their own
+            // size (设置 → 缩略图大小), so one never resizes the other.
+            mShelfSizeButton.setText("⤢ 缩略图 " + name);
         }
         if (mShelfSortButton != null) {
             mShelfSortButton.setText("↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)));
@@ -1468,11 +1468,16 @@ public class MangaLibraryWidget extends UIWidget {
         refreshShelfToolbarLabels();
     }
 
+    /** Quick presets for the shelf tile size; the precise value is a slider
+     *  in 设置 → 书架缩略图大小. */
     private void cycleShelfSize() {
-        int next = (mSettings.integer(MangaSettings.LIBRARY_SIZE) + 1) % 3;
-        mSettings.put(MangaSettings.LIBRARY_SIZE, next);
-        applyLibrarySize();
+        int size = shelfThumbDp();
+        int next = size <= 130 ? 170 : size < 220 ? 240 : 120;
+        mSettings.put(MangaSettings.SHELF_THUMB_SIZE, next);
+        mSettings.put(MangaSettings.LIBRARY_VIEW_MODE, 0); // tiles only make sense in the grid
+        applyShelfGeometry();
         refreshShelfToolbarLabels();
+        Toast.makeText(getContext(), "缩略图 " + next + " dp", Toast.LENGTH_SHORT).show();
     }
 
     private void cycleShelfSort() {
