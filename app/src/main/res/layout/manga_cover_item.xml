@@ -1,31 +1,101 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- One bookshelf cell: cover image + manga title. Plain inflation. -->
+<!-- One bookshelf cell (icon view): cover + title + info line + progress bar.
+     The cover height is assigned by MangaCoverAdapter so the tiles follow the
+     real width of the grid instead of a hard-coded pixel value. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:background="@drawable/manga_card_bg"
-    android:padding="10dp"
-    android:layout_margin="8dp"
+    android:padding="8dp"
+    android:layout_margin="6dp"
     android:clickable="true"
     android:focusable="true">
 
-    <ImageView
-        android:id="@+id/coverImage"
+    <FrameLayout
+        android:id="@+id/shelfCoverWrap"
         android:layout_width="match_parent"
-        android:layout_height="200dp"
-        android:scaleType="centerCrop"
-        android:background="#FF26262E"
-        android:contentDescription="漫画封面" />
+        android:layout_height="180dp"
+        android:background="#FF26262E">
+
+        <ImageView
+            android:id="@+id/shelfCover"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="centerCrop"
+            android:contentDescription="漫画封面" />
+
+        <TextView
+            android:id="@+id/shelfGlyph"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:textColor="#FF80D5D2"
+            android:textSize="42sp"
+            android:text="▣" />
+
+        <TextView
+            android:id="@+id/shelfBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="5dp"
+            android:background="#CC0E1514"
+            android:paddingLeft="7dp"
+            android:paddingRight="7dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="#FF80D5D2"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/shelfCheck"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_margin="5dp"
+            android:background="#DD0E1514"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:textColor="#FFFFC857"
+            android:textSize="14sp"
+            android:text="✓"
+            android:visibility="gone" />
+    </FrameLayout>
 
     <TextView
-        android:id="@+id/coverTitle"
+        android:id="@+id/shelfTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="7dp"
         android:maxLines="2"
         android:ellipsize="end"
         android:textColor="#FFFFFFFF"
-        android:textSize="18sp" />
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/shelfMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#FF8FA19E"
+        android:textSize="11sp" />
+
+    <ProgressBar
+        android:id="@+id/shelfProgress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="5dp"
+        android:layout_marginTop="5dp"
+        android:max="100"
+        android:progress="0"
+        android:progressTint="#FF4C9AFF"
+        android:progressBackgroundTint="#33FFFFFF"
+        android:visibility="gone" />
 
 </LinearLayout>

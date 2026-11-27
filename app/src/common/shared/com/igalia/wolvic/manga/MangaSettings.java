@@ -112,6 +112,11 @@ public final class MangaSettings {
      *  extension sources). Smaller value = more columns = more items per row.
      *  Range 90..280, default 160. */
     public static final String THUMB_SIZE = "thumb_size";
+    /** Bookshelf cover width in dp. Deliberately independent from
+     *  {@link #THUMB_SIZE}: the shelf holds finished books (bigger covers look
+     *  better) while the file browsers need compact tiles to show many files.
+     *  Range 100..300, default 170. */
+    public static final String SHELF_THUMB_SIZE = "shelf_thumb_size";
     /** File browser thumbnail aspect: 0 = 16:9 landscape, 1 = 3:4 portrait
      *  (default, what most manga pages actually look like), 2 = 9:16 tall. */
     public static final String THUMB_RATIO = "thumb_ratio";
@@ -288,6 +293,8 @@ public final class MangaSettings {
                 return 1;
             case THUMB_SIZE:
                 return 160;
+            case SHELF_THUMB_SIZE:
+                return 170;
             case READER_BRIGHTNESS:
                 return 100;
             case READER_AUTO_ADVANCE_SEC:

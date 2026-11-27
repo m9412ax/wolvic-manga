@@ -70,7 +70,7 @@ public class SourceCoverAdapter extends RecyclerView.Adapter<SourceCoverAdapter.
     @Override
     public CoverViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View view = LayoutInflater.from(mContext)
-                .inflate(R.layout.manga_cover_item, parent, false);
+                .inflate(R.layout.manga_source_cover_item, parent, false);
         return new CoverViewHolder(view);
     }
 

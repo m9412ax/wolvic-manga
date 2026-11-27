@@ -192,7 +192,12 @@ public class MangaOptionsView extends SettingsView
         radio("书架视图大小（窗口与封面）", MangaSettings.LIBRARY_SIZE,
                 new String[]{"小", "中（默认）", "大"},
                 new int[]{0, 1, 2});
-        slider("缩略图大小（越小列数越多，全局生效）", MangaSettings.THUMB_SIZE, 90, 280);
+        slider("缩略图大小（文件管理 / SMB / 115 / 图源，越小列数越多）",
+                MangaSettings.THUMB_SIZE, 90, 280);
+        // The shelf has its own tile size: books deserve bigger covers than
+        // file listings, and tuning one must not resize the other.
+        slider("书架缩略图大小（与文件管理分开，越小列数越多）",
+                MangaSettings.SHELF_THUMB_SIZE, 100, 300);
         radio("文件缩略图比例", MangaSettings.THUMB_RATIO,
                 new String[]{"16:9（横向）", "3:4（竖向，默认）", "9:16（长竖）"},
                 new int[]{0, 1, 2});

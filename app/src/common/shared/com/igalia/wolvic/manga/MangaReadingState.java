@@ -189,11 +189,10 @@ public final class MangaReadingState {
             return NONE;
         }
         load();
-        String pre = prefix.endsWith("/") ? prefix : prefix + "/";
         int seen = 0;
         boolean allDone = true;
         for (Chapter chapter : mChapters.values()) {
-            if (!chapter.key.equals(prefix) && !chapter.key.startsWith(pre)) {
+            if (!underPrefix(chapter.key, prefix)) {
                 continue;
             }
             seen++;
@@ -205,6 +204,64 @@ public final class MangaReadingState {
             return NONE;
         }
         return allDone ? DONE : READING;
+    }
+
+    /**
+     * Aggregate progress of a whole manga (a local folder, or a remote book
+     * whose chapters are keyed {@code <bookKey>|<chapterId>}).
+     */
+    public static final class Progress {
+        /** 0..100, or -1 when nothing has been read yet. */
+        public int percent = -1;
+        /** Chapters with a known page count. */
+        public int chapters;
+        /** Chapters finished (last page reached). */
+        public int doneChapters;
+        public int pages;
+        public int readPages;
+    }
+
+    /** True when [key] belongs to the book/folder [prefix]. */
+    public static boolean underPrefix(String key, String prefix) {
+        if (TextUtils.isEmpty(key) || TextUtils.isEmpty(prefix)) {
+            return false;
+        }
+        if (key.equals(prefix)) {
+            return true;
+        }
+        return key.startsWith(prefix + "/") || key.startsWith(prefix + "|");
+    }
+
+    /** Sums the pages of every chapter inside [prefix] into one percentage. */
+    public Progress progressOfFolder(String prefix) {
+        Progress p = new Progress();
+        if (TextUtils.isEmpty(prefix)) {
+            return p;
+        }
+        load();
+        for (Chapter chapter : mChapters.values()) {
+            if (!underPrefix(chapter.key, prefix)) {
+                continue;
+            }
+            if (chapter.total > 0) {
+                p.pages += chapter.total;
+                p.readPages += Math.max(1, Math.min(chapter.page + 1, chapter.total));
+                p.chapters++;
+                if (chapter.isDone()) {
+                    p.doneChapters++;
+                }
+            } else if (chapter.page > 0) {
+                // Page count unknown (still downloading): count it as started.
+                p.chapters++;
+            }
+        }
+        if (p.pages > 0) {
+            p.percent = Math.max(0, Math.min(100,
+                    Math.round(p.readPages * 100f / p.pages)));
+        } else if (p.chapters > 0) {
+            p.percent = 1;
+        }
+        return p;
     }
 
     /** Drops one chapter's progress (file deleted / chapter removed). */

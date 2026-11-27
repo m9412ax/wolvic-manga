@@ -30,6 +30,7 @@ import android.widget.FrameLayout;
 import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -45,6 +46,7 @@ import androidx.preference.PreferenceManager;
 import androidx.preference.PreferenceScreen;
 import androidx.preference.TwoStatePreference;
 import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
 import com.igalia.wolvic.VRBrowserActivity;
@@ -123,6 +125,7 @@ public class MangaLibraryWidget extends UIWidget {
         SOURCE_SETTINGS("图源设置"),
         SOURCE_OPTIONS("选择选项"),
         SOURCE_TEXT("输入文本"),
+        BOOK("书本详情"),
         FOLDER("文件夹"),
         SETTINGS("设置");
 
@@ -170,6 +173,15 @@ public class MangaLibraryWidget extends UIWidget {
     private boolean mFolderDetail;
     private float mFolderThumbScale = 1.0f;
     private boolean mPermissionRequested;
+
+    /** 书本详情 page: the object the user tapped on the shelf. */
+    @Nullable private File mBookDir;
+    @Nullable private String mBookRemoteKey;
+    private String mBookTitle = "";
+    /** Measured grid width the current card geometry was computed for. */
+    private int mShelfGridWidth = -1;
+    /** Remote shelf keys whose cover download is already queued. */
+    private final java.util.Set<String> mRemoteCoverPending = new java.util.HashSet<>();
 
     private String mWebDavUrl = "";
     private String mWebDavStatus = "未连接";
@@ -251,6 +263,13 @@ public class MangaLibraryWidget extends UIWidget {
         thread.setDaemon(true);
         return thread;
     });
+    /** Remote cover downloads run apart from the scan queue: a dead SMB host
+     *  must never delay rebuilding the shelf. */
+    private final ExecutorService mCoverExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "manga-cover");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Handler mMain = new Handler(Looper.getMainLooper());
     /** Timestamp guard: a VR pointer can fire several click events for one
      *  physical press; opening the reader repeatedly stacks windows. */
@@ -282,16 +301,31 @@ public class MangaLibraryWidget extends UIWidget {
                 new MangaCoverAdapter.OnMangaClickListener() {
                     @Override
                     public void onMangaClick(File folder) {
-                        openFolder(folder);
+                        // A shelf tap opens the book card, NOT the folder. The
+                        // card offers 阅读 / 打开本地文件夹, and back returns to
+                        // the shelf instead of walking up the file tree.
+                        openBookPage(folder);
                     }
                     @Override
                     public void onRemoteMangaClick(String remoteKey) {
-                        openRemoteFromShelf(remoteKey);
+                        openRemoteBookPage(remoteKey);
                     }
                 }, this::resetProgress);
         mAdapter.setCompact(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1);
         mAdapter.setCardWidth(gridCardWidthPx(spanCount()));
         mGrid.setAdapter(mAdapter);
+        // The first layout pass has no measured width yet, so the card width
+        // computed above is only a guess (it used a fallback panel width). Once
+        // the grid is measured, re-derive columns / cover size. Without this
+        // the shelf showed wrong-sized thumbnails until the user switched tabs.
+        mGrid.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            int width = r - l;
+            if (width > 0 && width != mShelfGridWidth) {
+                mShelfGridWidth = width;
+                // Post: notifyDataSetChanged() during a layout pass throws.
+                mMain.post(this::applyShelfGeometry);
+            }
+        });
         setupLibraryToolbar();
         setupPanelDrag();
 
@@ -633,6 +667,9 @@ public class MangaLibraryWidget extends UIWidget {
             case FOLDER:
                 fillFolderPage(content);
                 break;
+            case BOOK:
+                fillBookPage(content);
+                break;
             case SETTINGS:
                 fillSettingsPage(content);
                 break;
@@ -653,6 +690,12 @@ public class MangaLibraryWidget extends UIWidget {
      *  Mirrors the on-screen "返回" buttons: step up one folder / leave a
      *  source sub-page, otherwise fall back to the main bookshelf. */
     public boolean goBack() {
+        // A book card is a leaf of the shelf: Back returns to the shelf, never
+        // to the parent directory of the book.
+        if (mCurrentPage == MangaPage.BOOK) {
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
         if (mCurrentPage == MangaPage.FOLDER) {
             File parent = mFolderDir != null ? mFolderDir.getParentFile() : null;
             if (parent != null) {
@@ -728,11 +771,9 @@ public class MangaLibraryWidget extends UIWidget {
         dismissQuickSheet();
         mCurrentPage = page;
         if (page == MangaPage.LIBRARY && mGrid != null && mAdapter != null) {
-            // Re-derive columns from the shared thumbnail size: changing the
-            // slider must affect the shelf the next time it is shown.
-            int span = spanCount();
-            mGrid.setLayoutManager(new GridLayoutManager(getContext(), span));
-            mAdapter.setCardWidth(gridCardWidthPx(span));
+            // Re-derive columns from the shelf's own tile size: changing the
+            // setting must affect the shelf the next time it is shown.
+            applyShelfGeometry();
         }
         for (Map.Entry<MangaPage, View> entry : mPageViews.entrySet()) {
             entry.getValue().setVisibility(entry.getKey() == page ? VISIBLE : GONE);
@@ -763,25 +804,55 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Card width in px for a grid with [span] columns. */
     private int gridCardWidthPx(int span) {
-        int width = getWidth();
+        int width = mGrid != null && mGrid.getWidth() > 0
+                ? mGrid.getWidth() : getWidth();
+        if (width <= 0 && mPageContainer != null) {
+            width = mPageContainer.getWidth();
+        }
         if (width <= 0) {
             width = Math.round(800 * getResources().getDisplayMetrics().density);
         }
-        return Math.max(1, width / Math.max(1, span) - dp(16));
+        // 12dp margins + 16dp inner padding of one tile.
+        return Math.max(1, width / Math.max(1, span) - dp(28));
+    }
+
+    private int shelfThumbDp() {
+        return Math.max(100, Math.min(300, mSettings.integer(MangaSettings.SHELF_THUMB_SIZE)));
     }
 
     private int spanCount() {
         if (mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1) {
             return 1;
         }
-        // One global control: the same tile width drives the shelf, the file
-        // browsers and the extension cover grid.
-        int size = Math.max(90, Math.min(280, mSettings.integer(MangaSettings.THUMB_SIZE)));
-        int widthPx = getWidth();
+        // The shelf has its OWN tile size. It used to share THUMB_SIZE with the
+        // file browsers, so shrinking SMB file tiles also shrank the shelf.
+        int size = shelfThumbDp();
+        int widthPx = mGrid != null && mGrid.getWidth() > 0
+                ? mGrid.getWidth() : getWidth();
         int widthDp = widthPx > 0
                 ? (int) (widthPx / getResources().getDisplayMetrics().density)
                 : 800;
         return Math.max(2, Math.min(10, widthDp / size));
+    }
+
+    /**
+     * Re-derives columns and cover size from the measured grid and applies the
+     * current view mode. Safe to call any time; it is a no-op when nothing
+     * changed, which keeps the layout listener from looping.
+     */
+    private void applyShelfGeometry() {
+        if (mGrid == null || mAdapter == null) {
+            return;
+        }
+        int span = spanCount();
+        boolean list = mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1;
+        RecyclerView.LayoutManager lm = mGrid.getLayoutManager();
+        if (!(lm instanceof GridLayoutManager)
+                || ((GridLayoutManager) lm).getSpanCount() != span) {
+            mGrid.setLayoutManager(new GridLayoutManager(getContext(), span));
+        }
+        mAdapter.setCompact(list);
+        mAdapter.setCardWidth(list ? 0 : gridCardWidthPx(span));
     }
 
     private boolean hasStoragePermission() {
@@ -819,6 +890,8 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private int mScanGeneration = 0;
+    /** Bumped by every shelf mutation so a stale background scan is dropped. */
+    private int mShelfGeneration = 0;
 
     /** Directory enumeration and cover discovery run off the UI thread: a
      *  large manga tree must never block app startup or freeze the loading
@@ -830,25 +903,37 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         mRoot = new File(mSettings.text(MangaSettings.SOURCE_ROOT));
-        mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
+        applyShelfGeometry();
         final int generation = ++mScanGeneration;
         final String rootPath = mRoot.getAbsolutePath();
         mIoExecutor.execute(() -> {
             final List<MangaCoverAdapter.MangaItem> items = buildLibraryItems();
             mMain.post(() -> {
-                if (generation != mScanGeneration || mCurrentPage != MangaPage.LIBRARY) {
+                if (generation != mScanGeneration) {
                     return;
                 }
                 mAdapter.update(items);
-                if (items.isEmpty()) {
-                    showEmptyState("未找到漫画。请把漫画文件夹放到 " + rootPath);
-                } else {
-                    mEmptyText.setVisibility(GONE);
-                    mGrid.setVisibility(VISIBLE);
+                // The adapter may have been measured before the very first
+                // layout; re-apply geometry now that there is data to draw.
+                applyShelfGeometry();
+                if (mCurrentPage == MangaPage.LIBRARY) {
+                    if (items.isEmpty()) {
+                        showEmptyState("未找到漫画。请把漫画文件夹放到 " + rootPath);
+                    } else {
+                        mEmptyText.setVisibility(GONE);
+                        mGrid.setVisibility(VISIBLE);
+                    }
                 }
+                startRemoteCoverLoads(items);
                 Log.i(TAG, "scanLibrary items=" + items.size() + " root=" + rootPath);
             });
         });
+    }
+
+    /** Immediately rebuilds the shelf (after 加入书架 / 移出 / 删除). */
+    private void refreshShelf() {
+        mShelfGeneration++;
+        scanLibrary();
     }
 
     private List<MangaCoverAdapter.MangaItem> buildLibraryItems() {
@@ -885,6 +970,7 @@ public class MangaLibraryWidget extends UIWidget {
             dirs = new ArrayList<>(dirs.subList(0, 200));
         }
 
+        final MangaReadingState state = MangaReadingState.get(getContext());
         List<MangaCoverAdapter.MangaItem> items = new ArrayList<>();
         String[] images = mSettings.imageExtensions();
         String[] videos = mSettings.videoExtensions();
@@ -893,20 +979,251 @@ public class MangaLibraryWidget extends UIWidget {
             if (!includeHidden && dir.getName().startsWith(".")) {
                 continue;
             }
-            File cover = findCoverRecursive(dir, images, 2);
-            boolean hasVideo = hasMediaRecursive(dir, videos, 2);
+            // Covers are always the FIRST IMAGE, even when chapters start with
+            // a video: findCoverRecursive only ever looks at image extensions.
+            File cover = findCoverRecursive(dir, images, 4);
+            boolean hasVideo = hasMediaRecursive(dir, videos, 4);
             if (cover == null && !hasVideo) {
                 continue;
             }
-            items.add(new MangaCoverAdapter.MangaItem(dir, dir.getName(), cover, hasVideo));
+            MangaCoverAdapter.MangaItem item =
+                    new MangaCoverAdapter.MangaItem(dir, dir.getName(), cover, hasVideo);
+            fillLocalShelfMeta(item, dir, state);
+            items.add(item);
         }
-        // Remote entries first (online, no local folder / cover).
+        // Remote entries first (online, cover downloaded lazily).
         for (String key : remoteShelfKeys) {
             // folder may be @NonNull in MangaItem; use a harmless placeholder.
-            items.add(0, new MangaCoverAdapter.MangaItem(
-                    new File("/remote"), remoteShelfTitle(key), null, false, key));
+            MangaCoverAdapter.MangaItem item = new MangaCoverAdapter.MangaItem(
+                    new File("/remote"), remoteShelfTitle(key), null, false, key);
+            item.cover = cachedRemoteCover(key);
+            item.badge = shelfBadge(key);
+            fillRemoteShelfMeta(item, key, state);
+            items.add(0, item);
         }
         return items;
+    }
+
+    /** "12 章 · 42%" for a local folder, plus its read frame state. */
+    private void fillLocalShelfMeta(MangaCoverAdapter.MangaItem item, File dir,
+                                    MangaReadingState state) {
+        String path = dir.getAbsolutePath();
+        MangaReadingState.Progress progress = state.progressOfFolder(path);
+        item.percent = progress.percent;
+        item.state = state.stateOfFolder(path);
+        int chapters = countChapterDirs(dir);
+        StringBuilder meta = new StringBuilder();
+        if (chapters > 0) {
+            meta.append(chapters).append(" 章");
+        } else {
+            meta.append("单章");
+        }
+        if (progress.percent >= 0) {
+            meta.append(" · 已读 ").append(progress.percent).append('%');
+            if (progress.chapters > 0) {
+                meta.append("（").append(progress.doneChapters)
+                        .append('/').append(progress.chapters).append(" 章）");
+            }
+        } else if (item.percent < 0) {
+            meta.append(" · 未读");
+        }
+        item.meta = meta.toString();
+    }
+
+    private void fillRemoteShelfMeta(MangaCoverAdapter.MangaItem item, String key,
+                                     MangaReadingState state) {
+        String prefix = remoteProgressKey(key);
+        MangaReadingState.Progress progress = prefix == null
+                ? new MangaReadingState.Progress() : state.progressOfFolder(prefix);
+        item.percent = progress.percent;
+        item.state = prefix == null ? MangaReadingState.NONE : state.stateOfFolder(prefix);
+        StringBuilder meta = new StringBuilder(item.badge.isEmpty() ? "在线" : item.badge);
+        if (progress.percent >= 0) {
+            meta.append(" · 已读 ").append(progress.percent).append('%');
+        } else {
+            meta.append(" · 未读");
+        }
+        item.meta = meta.toString();
+    }
+
+    private int countChapterDirs(File dir) {
+        File[] kids = dir.listFiles();
+        if (kids == null) {
+            return 0;
+        }
+        int n = 0;
+        for (File kid : kids) {
+            if (kid.isDirectory() && !kid.getName().startsWith(".")) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    @Nullable
+    private static String shelfBadge(String key) {
+        if (key.startsWith(SHELF_SMB)) {
+            return "SMB";
+        }
+        if (key.startsWith(SHELF_115)) {
+            return "115";
+        }
+        if (key.startsWith(SHELF_SRC)) {
+            return "图源";
+        }
+        return "";
+    }
+
+    /**
+     * Canonical progress prefix of a remote shelf entry, matching the chapter
+     * keys the reader/loader writes (RemoteManga#key() and the extension key).
+     */
+    @Nullable
+    private String remoteProgressKey(String shelfKey) {
+        if (shelfKey.startsWith(SHELF_SMB)) {
+            return shelfKey.substring(SHELF_SMB.length());
+        }
+        if (shelfKey.startsWith(SHELF_115)) {
+            String rest = shelfKey.substring(SHELF_115.length());
+            int sep = rest.indexOf('|');
+            String cid = sep > 0 ? rest.substring(0, sep) : rest;
+            return "115:" + cid;
+        }
+        if (shelfKey.startsWith(SHELF_SRC)) {
+            String rest = shelfKey.substring(SHELF_SRC.length());
+            int first = rest.indexOf('|');
+            int last = rest.lastIndexOf('|');
+            if (first < 0 || last <= first) {
+                return null;
+            }
+            return "src:" + rest.substring(0, first) + ":" + rest.substring(first + 1, last);
+        }
+        return null;
+    }
+
+    // ------------------------------------------------- remote shelf covers
+
+    /** Deterministic cache path, so a fetched cover survives restarts. */
+    private File shelfCoverFile(String shelfKey) {
+        File base = getContext().getExternalCacheDir();
+        if (base == null) {
+            base = getContext().getCacheDir();
+        }
+        File dir = new File(base, "shelf-covers");
+        dir.mkdirs();
+        return new File(dir, stableHash(shelfKey) + ".jpg");
+    }
+
+    @Nullable
+    private File cachedRemoteCover(String shelfKey) {
+        File file = shelfCoverFile(shelfKey);
+        return file.isFile() && file.length() > 0 ? file : null;
+    }
+
+    /** Kicks off one background download per remote book without a cover. */
+    private void startRemoteCoverLoads(List<MangaCoverAdapter.MangaItem> items) {
+        for (MangaCoverAdapter.MangaItem item : items) {
+            if (item.remoteKey == null || item.cover != null
+                    || !item.remoteKey.startsWith(SHELF_SMB)
+                    && !item.remoteKey.startsWith(SHELF_115)) {
+                continue;
+            }
+            final String key = item.remoteKey;
+            if (!mRemoteCoverPending.add(key)) {
+                continue;
+            }
+            item.coverPending = true;
+            mCoverExecutor.execute(() -> {
+                File cover = fetchRemoteCover(key);
+                mMain.post(() -> {
+                    mRemoteCoverPending.remove(key);
+                    if (cover != null && mAdapter != null) {
+                        mAdapter.setCover(key, cover);
+                    }
+                    if (cover != null && mCurrentPage == MangaPage.BOOK
+                            && key.equals(mBookRemoteKey)) {
+                        refreshPage(MangaPage.BOOK);
+                    }
+                });
+            });
+        }
+    }
+
+    /** Downloads the first image of the first chapter of a remote book. */
+    @Nullable
+    private File fetchRemoteCover(String shelfKey) {
+        try {
+            File dest = shelfCoverFile(shelfKey);
+            if (dest.isFile() && dest.length() > 0) {
+                return dest;
+            }
+            RemoteManga manga = remoteMangaFor(shelfKey);
+            if (manga == null) {
+                return null;
+            }
+            List<RemoteManga.ChapterInfo> chapters = manga.listChapters();
+            String[] images = mSettings.imageExtensions();
+            for (int c = 0; c < chapters.size() && c < 3; c++) {
+                List<RemoteManga.PageInfo> pages = manga.listPages(chapters.get(c));
+                for (RemoteManga.PageInfo page : pages) {
+                    String hint = page.nameHint == null ? "" : page.nameHint;
+                    // Skip videos: a video thumb is a black frame, so the shelf
+                    // falls through to the first real image instead.
+                    if (!MangaSettings.hasExtension(hint, images)) {
+                        continue;
+                    }
+                    File tmp = new File(dest.getAbsolutePath() + ".tmp");
+                    manga.fetchPage(page, tmp);
+                    if (tmp.isFile() && tmp.length() > 0) {
+                        if (!tmp.renameTo(dest)) {
+                            tmp.delete();
+                            return null;
+                        }
+                        return dest;
+                    }
+                    tmp.delete();
+                    return null;
+                }
+            }
+            return null;
+        } catch (Throwable t) {
+            Log.w(TAG, "shelf cover failed for " + shelfKey + ": " + t);
+            return null;
+        }
+    }
+
+    @Nullable
+    private RemoteManga remoteMangaFor(String shelfKey) {
+        if (shelfKey.startsWith(SHELF_SMB)) {
+            String key = shelfKey.substring(SHELF_SMB.length());
+            String rest = key.startsWith("smb://") ? key.substring("smb://".length()) : key;
+            int slash = rest.indexOf('/');
+            String host = slash > 0 ? rest.substring(0, slash) : rest;
+            String shareAndPath = slash > 0 ? rest.substring(slash + 1) : "";
+            int s2 = shareAndPath.indexOf('/');
+            String share = s2 > 0 ? shareAndPath.substring(0, s2) : shareAndPath;
+            String path = s2 > 0 ? shareAndPath.substring(s2 + 1) : "";
+            if (host.isEmpty() || share.isEmpty()) {
+                return null;
+            }
+            MangaSmb.Auth auth = new MangaSmb.Auth(host, share,
+                    mSettings.text(MangaSettings.SMB_DOMAIN),
+                    mSettings.text(MangaSettings.SMB_USER),
+                    mSettings.text(MangaSettings.SMB_PASS));
+            return smbManga(auth, path);
+        }
+        if (shelfKey.startsWith(SHELF_115)) {
+            String rest = shelfKey.substring(SHELF_115.length());
+            int sep = rest.indexOf('|');
+            String cid = sep > 0 ? rest.substring(0, sep) : rest;
+            String title = sep > 0 ? rest.substring(sep + 1) : "115";
+            String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+            if (cookie == null || cookie.isEmpty()) {
+                return null;
+            }
+            return p115Manga(cookie, cid, title);
+        }
+        return null;
     }
 
     private void showEmptyState(String message) {
@@ -1135,7 +1452,9 @@ public class MangaLibraryWidget extends UIWidget {
         if (mShelfSizeButton != null) {
             String[] names = {"小", "中", "大"};
             int size = Math.max(0, Math.min(2, mSettings.integer(MangaSettings.LIBRARY_SIZE)));
-            mShelfSizeButton.setText("⤢ " + names[size]);
+            // Window size, NOT tile size: the tile size lives in 设置 (its own
+            // slider, independent from the file browsers).
+            mShelfSizeButton.setText("◱ 窗口 " + names[size]);
         }
         if (mShelfSortButton != null) {
             mShelfSortButton.setText("↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)));
@@ -1145,9 +1464,7 @@ public class MangaLibraryWidget extends UIWidget {
     private void toggleShelfView() {
         int next = mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1 ? 0 : 1;
         mSettings.put(MangaSettings.LIBRARY_VIEW_MODE, next);
-        mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
-        mAdapter.setCompact(next == 1);
-        mAdapter.notifyDataSetChanged();
+        applyShelfGeometry();
         refreshShelfToolbarLabels();
     }
 
@@ -1476,12 +1793,23 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Adds a remote manga to the bookshelf as a tagged string (no download). */
     private void addRemoteToShelf(String shelfKey) {
+        if (shelfKey == null || shelfKey.isEmpty()) {
+            return;
+        }
         mSettings.addToBookshelf(shelfKey);
         Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
+        // Rebuild the shelf immediately: the adapter used to keep the old list
+        // until the app was restarted.
+        refreshShelf();
     }
 
     /** Re-opens a remote bookshelf entry by reconnecting to SMB/115. */
     private void openRemoteFromShelf(String shelfKey) {
+        openRemoteFromShelf(shelfKey, false);
+    }
+
+    /** @param fromStart true = 从头开始, false = resume the saved position. */
+    private void openRemoteFromShelf(String shelfKey, boolean fromStart) {
         if (shelfKey.startsWith(SHELF_SMB)) {
             final String key = shelfKey.substring(SHELF_SMB.length());
             // key = smb://host/share/path
@@ -1496,7 +1824,7 @@ public class MangaLibraryWidget extends UIWidget {
                     mSettings.text(MangaSettings.SMB_DOMAIN),
                     mSettings.text(MangaSettings.SMB_USER),
                     mSettings.text(MangaSettings.SMB_PASS));
-            openRemoteManga(smbManga(auth, path));
+            openRemoteManga(smbManga(auth, path), null, fromStart);
         } else if (shelfKey.startsWith(SHELF_115)) {
             String rest = shelfKey.substring(SHELF_115.length());
             int sep = rest.indexOf('|');
@@ -1508,7 +1836,7 @@ public class MangaLibraryWidget extends UIWidget {
                 switchPage(MangaPage.WEBDAV);
                 return;
             }
-            openRemoteManga(p115Manga(cookie, cid, title));
+            openRemoteManga(p115Manga(cookie, cid, title), null, fromStart);
         } else if (shelfKey.startsWith(SHELF_SRC)) {
             openSourceFromShelf(shelfKey);
         }
@@ -1612,6 +1940,233 @@ public class MangaLibraryWidget extends UIWidget {
 
     // ------------------------------------------- folder / bookshelf views
 
+    // -------------------------------------------------------- book card
+
+    /** Opens the 书本详情 card of a LOCAL book (a shelf tile was tapped). */
+    private void openBookPage(@Nullable File folder) {
+        if (folder == null) {
+            return;
+        }
+        mBookDir = folder;
+        mBookRemoteKey = null;
+        mBookTitle = folder.getName();
+        switchPage(MangaPage.BOOK);
+    }
+
+    /** Opens the 书本详情 card of an SMB / 115 / 图源 book. */
+    private void openRemoteBookPage(@Nullable String shelfKey) {
+        if (shelfKey == null) {
+            return;
+        }
+        mBookDir = null;
+        mBookRemoteKey = shelfKey;
+        mBookTitle = remoteShelfTitle(shelfKey);
+        switchPage(MangaPage.BOOK);
+    }
+
+    /**
+     * A book card, not a folder listing: cover, title, progress and the two
+     * entry points that matter (阅读 / 打开本地文件夹). Back from here returns to
+     * the shelf, which is why tapping a book no longer drops the user into the
+     * filesystem (and made Back walk up the folder tree).
+     */
+    private void fillBookPage(LinearLayout content) {
+        final boolean local = mBookDir != null;
+        if (!local && mBookRemoteKey == null) {
+            addInfo(content, "书本", "没有选中漫画，请从书架重新进入。");
+            return;
+        }
+        final String progressPrefix = local
+                ? mBookDir.getAbsolutePath() : remoteProgressKey(mBookRemoteKey);
+        final MangaReadingState state = MangaReadingState.get(getContext());
+        final MangaReadingState.Progress progress = progressPrefix == null
+                ? new MangaReadingState.Progress()
+                : state.progressOfFolder(progressPrefix);
+
+        LinearLayout top = addRow(content);
+        addButton(top, "← 返回书架", v -> switchPage(MangaPage.LIBRARY));
+        if (local && mSettings.isInBookshelf(mBookDir.getAbsolutePath())) {
+            addButton(top, "★ 移出书架", v -> {
+                mSettings.removeFromBookshelf(mBookDir.getAbsolutePath());
+                Toast.makeText(getContext(), "已移出书架", Toast.LENGTH_SHORT).show();
+                refreshShelf();
+                switchPage(MangaPage.LIBRARY);
+            });
+        } else if (!local && mSettings.isInBookshelf(mBookRemoteKey)) {
+            addButton(top, "★ 移出书架", v -> {
+                mSettings.removeFromBookshelf(mBookRemoteKey);
+                Toast.makeText(getContext(), "已移出书架", Toast.LENGTH_SHORT).show();
+                refreshShelf();
+                switchPage(MangaPage.LIBRARY);
+            });
+        }
+
+        // Cover on the left, title + progress on the right: the shape of a
+        // real book card and readable from a VR panel.
+        LinearLayout head = addRow(content);
+        final ImageView cover = new ImageView(getContext());
+        cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        cover.setBackgroundColor(0xFF26262E);
+        LinearLayout.LayoutParams coverLp =
+                new LinearLayout.LayoutParams(dp(150), dp(200));
+        coverLp.rightMargin = dp(16);
+        head.addView(cover, coverLp);
+
+        LinearLayout info = new LinearLayout(getContext());
+        info.setOrientation(LinearLayout.VERTICAL);
+        head.addView(info, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView title = new TextView(getContext());
+        title.setText(mBookTitle);
+        title.setTextSize(24f);
+        title.setTextColor(0xFFFFFFFF);
+        title.setMaxLines(3);
+        info.addView(title);
+
+        TextView meta = new TextView(getContext());
+        meta.setText(bookMetaText(local, progress));
+        meta.setTextSize(15f);
+        meta.setTextColor(0xFF9FB3B0);
+        meta.setPadding(0, dp(6), 0, dp(8));
+        info.addView(meta);
+
+        ProgressBar bar = new ProgressBar(getContext(), null,
+                android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(100);
+        bar.setProgress(Math.max(0, progress.percent));
+        if (bar.getProgressDrawable() != null) {
+            bar.getProgressDrawable().setColorFilter(
+                    progress.percent >= 100 ? 0xFF4CD98A : 0xFF4C9AFF,
+                    android.graphics.PorterDuff.Mode.SRC_IN);
+        }
+        info.addView(bar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(8)));
+
+        loadBookCover(cover, local);
+
+        LinearLayout actions = addRow(content);
+        if (local) {
+            addButton(actions, progress.percent >= 0
+                    ? "▶ 继续阅读" : "▶ 开始阅读", v -> continueReading(mBookDir));
+            addButton(actions, "▶ 从头开始", v -> openLocalSession(mBookDir, null, false));
+            addButton(actions, "📂 打开本地文件夹", v -> openLocalFolder(mBookDir));
+        } else {
+            addButton(actions, progress.percent >= 0
+                    ? "▶ 继续阅读" : "▶ 开始阅读", v -> openRemoteFromShelf(mBookRemoteKey, false));
+            addButton(actions, "▶ 从头开始", v -> openRemoteFromShelf(mBookRemoteKey, true));
+        }
+
+        if (!local) {
+            addInfo(content, "来源", "在线漫画：阅读时按需加载，不会下载整本。"
+                    + (progress.chapters > 0
+                    ? "已记录 " + progress.chapters + " 个章节的进度。" : ""));
+            return;
+        }
+
+        addInfo(content, "章节", progress.chapters > 0
+                ? "已读 " + progress.doneChapters + "/" + progress.chapters + " 个章节"
+                : "还没有阅读记录。点击章节即可从该章开始。");
+        listBookChapters(content, mBookDir);
+    }
+
+    private String bookMetaText(boolean local, MangaReadingState.Progress progress) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(local ? "本地文件" : shelfBadge(mBookRemoteKey));
+        if (local) {
+            int chapters = countChapterDirs(mBookDir);
+            sb.append(" · ").append(chapters > 0 ? chapters + " 章" : "单章");
+        }
+        if (progress.percent >= 0) {
+            sb.append(" · 已读 ").append(progress.percent).append('%');
+            if (progress.pages > 0) {
+                sb.append("（").append(progress.readPages).append('/')
+                        .append(progress.pages).append(" 页）");
+            }
+        } else {
+            sb.append(" · 未开始");
+        }
+        return sb.toString();
+    }
+
+    private void loadBookCover(ImageView view, boolean local) {
+        final File cover;
+        if (local) {
+            cover = findCoverRecursive(mBookDir, mSettings.imageExtensions(), 4);
+        } else {
+            cover = cachedRemoteCover(mBookRemoteKey);
+            if (cover == null) {
+                // No cache yet: fetch it in the background for the next visit.
+                startRemoteCoverLoads(java.util.Collections.singletonList(
+                        new MangaCoverAdapter.MangaItem(new File("/remote"),
+                                mBookTitle, null, false, mBookRemoteKey)));
+            }
+        }
+        if (cover == null) {
+            return;
+        }
+        final String path = cover.getAbsolutePath();
+        view.setTag(path);
+        mIoExecutor.execute(() -> {
+            final Bitmap bitmap = MangaCoverAdapter.decodeScaled(cover, 480, 640);
+            mMain.post(() -> {
+                if (bitmap == null) {
+                    return;
+                }
+                if (path.equals(view.getTag())) {
+                    view.setImageBitmap(bitmap);
+                } else {
+                    bitmap.recycle();
+                }
+            });
+        });
+    }
+
+    /** Chapter rows: tapping one starts reading at that chapter. */
+    private void listBookChapters(LinearLayout content, File folder) {
+        List<File> chapters = mediaSubDirs(folder);
+        if (chapters.isEmpty()) {
+            chapters = new ArrayList<>();
+            chapters.add(folder);
+        }
+        MangaReadingState state = MangaReadingState.get(getContext());
+        int index = 0;
+        for (File chapter : chapters) {
+            index++;
+            MangaReadingState.Chapter mark = state.chapter(chapter.getAbsolutePath());
+            String prefix = mark == null ? ""
+                    : mark.isDone() ? "✓ " : "▸ ";
+            String tail = mark == null ? ""
+                    : "  ·  " + Math.min(mark.page + 1, Math.max(1, mark.total))
+                    + (mark.total > 0 ? "/" + mark.total : "") + " 页";
+            Button row = new Button(getContext());
+            row.setText(prefix + index + ". " + chapter.getName() + tail);
+            row.setAllCaps(false);
+            row.setTextSize(17f);
+            row.setTextColor(0xFFFFFFFF);
+            row.setBackgroundColor(0xFF232C38);
+            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            row.setMinHeight(dp(50));
+            row.setOnClickListener(v -> openLocalSession(chapter, null, true));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(0, dp(3), 0, dp(3));
+            content.addView(row, lp);
+        }
+    }
+
+    /** Jumps to the file manager at [dir] (used by 打开本地文件夹). */
+    private void openLocalFolder(File dir) {
+        if (dir == null || !dir.isDirectory()) {
+            Toast.makeText(getContext(), "文件夹已不存在", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mLocalDir = dir;
+        mSettings.setLastDir(dir.getAbsolutePath());
+        switchPage(MangaPage.LOCAL);
+    }
+
     /** A bookshelf entry is one manga; its sub-folders are chapters. Entries
      *  already on the bookshelf open their detail card first. */
     private void openFolder(File folder) {
@@ -1713,11 +2268,13 @@ public class MangaLibraryWidget extends UIWidget {
                 mSettings.removeFromBookshelf(path);
                 mFolderDetail = false;
                 refreshFolderPage(false);
+                refreshShelf();
             });
         } else {
             addButton(actions, "＋ 加入书架", v -> {
                 mSettings.addToBookshelf(path);
                 refreshFolderPage(false);
+                refreshShelf();
             });
         }
         addButton(actions, "设为默认位置", v -> {
@@ -2871,6 +3428,7 @@ public class MangaLibraryWidget extends UIWidget {
             case SMB: return "SMB 共享";
             case WEBDAV: return "网盘";
             case EXTENSIONS: return "漫画源";
+            case BOOK: return mBookRemoteKey == null ? "书本详情 · 本地" : "书本详情 · " + mBookTitle;
             case FOLDER: return "文件夹";
             case SETTINGS: return "设置";
             default: return page.label;
@@ -3024,6 +3582,9 @@ public class MangaLibraryWidget extends UIWidget {
             Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
         }
         refreshPage(MangaPage.LOCAL);
+        // Rebuild the shelf now: the old code only rescanned after re-entering
+        // the 书架 tab, so a freshly added book stayed invisible until restart.
+        refreshShelf();
     }
 
     /** SMB: remember the current remote path, or jump to the saved one. */
@@ -4891,6 +5452,7 @@ public class MangaLibraryWidget extends UIWidget {
                 Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
             }
             refreshPage(MangaPage.SOURCE_MANGA);
+            refreshShelf();
         });
 
         addInfo(content, "章节列表", mSourceMangaStatus);
