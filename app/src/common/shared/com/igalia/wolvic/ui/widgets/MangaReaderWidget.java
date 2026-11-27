@@ -905,7 +905,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                     updateChapterDownloadProgress(dir, done, total,
                                             curName, curDone, curTotal);
                                 } else {
-                                    hideLoading();
+                                    // The download is over, but the page itself
+                                    // may still be DECODING. Hiding here is what
+                                    // produced "黑屏 + 什么都没有": the overlay
+                                    // was removed while a 1:1 AVIF decode was
+                                    // still running, so a slow page looked like
+                                    // a dead reader.
+                                    hideLoadingUnlessDecoding();
                                 }
                                 refreshChapterPageList();
                             }
@@ -982,7 +988,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             }
                         } else {
                             // Already open: grow the page list as the tail lands.
-                            if (done >= total) hideLoading();
+                            if (done >= total) hideLoadingUnlessDecoding();
                             refreshChapterPageList();
                         }
                     });
@@ -1835,7 +1841,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             mCurrent = fallback;
                             mDisplayWidth = fallback.getWidth();
                             mDisplayHeight = fallback.getHeight();
-                            mPageImage.setImageBitmap(safeForImageView(fallback));
+                            showOnPageImage(fallback);
                             mPageImage.post(this::applyImageTransform);
                         } else {
                             showHint("无法解码：" + page.getName());
@@ -1904,7 +1910,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (isContinuous()) {
                 rebuildStrip(bitmap, mStripGeneration);
             } else {
-                mPageImage.setImageBitmap(safeForImageView(bitmap));
+                showOnPageImage(bitmap);
                 applyImageTransform();
                 // FIRST-OPEN FIX: when a manga is opened for the very first time
                 // the widget has just been created and shown; the async decode
@@ -1981,7 +1987,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mCurrent = detail;
         mDisplayWidth = detail.getWidth();
         mDisplayHeight = detail.getHeight();
-        mPageImage.setImageBitmap(safeForImageView(detail));
+        showOnPageImage(detail);
         applyImageTransform();
         mPageImage.post(this::applyImageTransform);
         Log.i(TAG, "page detail index=" + mIndex + " size="
@@ -2013,9 +2019,42 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  such a bitmap - downsample just this once if a code path slipped
      *  through the tiling decision. Normal 1:1 pages arrive here well below
      *  the cap, so nothing is lost for regular reading. */
+    /** Puts [bitmap] on the page ImageView with bilinear filtering AND
+     *  mipmaps enabled. setImageBitmap() builds a BitmapDrawable whose mipmap
+     *  flag is off, so a page drawn at 1/3 of its pixel size re-sampled one
+     *  texel per pixel: thin glyph strokes then sparkled / crawled ("像素抖动"). */
+    private void showOnPageImage(Bitmap bitmap) {
+        Bitmap shown = safeForImageView(bitmap);
+        if (shown == null || shown.isRecycled()) {
+            mPageImage.setImageDrawable(null);
+            return;
+        }
+        try {
+            android.graphics.drawable.BitmapDrawable drawable =
+                    new android.graphics.drawable.BitmapDrawable(getResources(), shown);
+            drawable.setFilterBitmap(true);
+            drawable.setMipMap(true);
+            mPageImage.setImageDrawable(drawable);
+        } catch (Throwable t) {
+            mPageImage.setImageBitmap(shown);
+        }
+    }
+
     private Bitmap safeForImageView(Bitmap bitmap) {
         if (bitmap == null || bitmap.isRecycled()) {
             return bitmap;
+        }
+        // Mipmaps are the only way to stop a large page that is drawn much
+        // smaller than its pixel size from "crawling": without them the GPU
+        // reads one texel per screen pixel and thin strokes sparkle/moire,
+        // which is exactly the "像素抖动，文字看不清" report. ~33% more video
+        // memory per page is a fair trade for readable text.
+        if (!bitmap.hasMipMap()) {
+            try {
+                bitmap.setHasMipMap(true);
+            } catch (Throwable ignored) {
+                // Immutable/hardware backed bitmaps may refuse; not fatal.
+            }
         }
         long bytes = bitmap.getAllocationByteCount();
         if (bytes <= SINGLE_BITMAP_LIMIT) {
@@ -4238,6 +4277,22 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mLoadingOverlay != null) {
             mLoadingOverlay.setVisibility(GONE);
         }
+    }
+
+    /** Hides the overlay UNLESS a page is still being decoded.
+     *
+     *  A download-progress callback used to hide it unconditionally once the
+     *  chapter's pages had all landed - but the page the user was waiting for
+     *  was still decoding at that moment (AVIF takes seconds), leaving a pure
+     *  black screen with no information at all. The 20 s guard keeps a lost
+     *  decode from pinning the overlay forever. */
+    private void hideLoadingUnlessDecoding() {
+        if (mDecodePending
+                && android.os.SystemClock.uptimeMillis() - mDecodeSince < 20000L) {
+            showLoading("正在加载图片…", -1, -1, -1, -1);
+            return;
+        }
+        hideLoading();
     }
 
     private static String formatMiB(long bytes) {

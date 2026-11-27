@@ -68,11 +68,27 @@ public class MangaStripView extends View {
         super(context, attrs);
     }
 
+    /** Long-strip pages are drawn far smaller than their pixel size, and the
+     *  GPU then reads one texel per screen pixel: thin strokes sparkle and the
+     *  text looks like it is crawling. Mipmaps fix that (trilinear sampling);
+     *  the extra ~33% of texture memory only applies to pages on screen. */
+    private static Bitmap ensureMip(Bitmap b) {
+        if (b != null && !b.isRecycled() && !b.hasMipMap()) {
+            try {
+                b.setHasMipMap(true);
+            } catch (Throwable ignored) {
+                // Nothing to do; filtering still works, just with aliasing.
+            }
+        }
+        return b;
+    }
+
     public void setStrip(Bitmap[] segments, float scale, float zoom, float offset) {
         boolean changed = mScale != (scale > 0 ? scale : 1.0f)
                 || mZoom != (zoom > 0 ? zoom : 1.0f);
         for (int i = 0; i < 5; i++) {
-            Bitmap b = segments != null && i < segments.length ? segments[i] : null;
+            Bitmap b = segments != null && i < segments.length
+                    ? ensureMip(segments[i]) : null;
             if (mSegments[i] != b) {
                 changed = true;
                 mSegments[i] = b;
@@ -103,7 +119,8 @@ public class MangaStripView extends View {
                 || mPanX != panX || mPanY != panY;
         mFillWidth = true;
         for (int i = 0; i < 5; i++) {
-            Bitmap b = segments != null && i < segments.length ? segments[i] : null;
+            Bitmap b = segments != null && i < segments.length
+                    ? ensureMip(segments[i]) : null;
             if (mSegments[i] != b) {
                 changed = true;
                 mSegments[i] = b;
@@ -123,6 +140,11 @@ public class MangaStripView extends View {
      *  into one Bitmap would hit RecordingCanvas' size limit again; drawing
      *  N ordinary bitmaps into one canvas is fine. */
     public void setTiles(Bitmap[] tiles, Matrix matrix) {
+        if (tiles != null) {
+            for (int i = 0; i < tiles.length; i++) {
+                tiles[i] = ensureMip(tiles[i]);
+            }
+        }
         mTiles = tiles;
         mTileMode = tiles != null && tiles.length > 0;
         if (matrix != null) {

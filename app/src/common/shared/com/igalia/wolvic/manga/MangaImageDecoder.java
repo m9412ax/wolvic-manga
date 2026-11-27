@@ -416,30 +416,31 @@ public final class MangaImageDecoder {
                 // scaleFiltered(). The native sampler gave no guarantee about
                 // its filter, and a neighbouring-pixel shrink aliases dense
                 // text into shimmering pixels - the "文字抖动 / 放大也抖" report.
+                // Pick the decode scale from the byte budget OURSELVES so the
+                // cost of a page is predictable: never bigger than the budget
+                // (a full 1:1 frame of a huge page is what made the reader sit
+                // on a black screen for seconds), never smaller than needed.
                 int decodeSample = sample;
                 int[] bounds = null;
                 try {
                     bounds = nativeReadBounds(file.getAbsolutePath());
-                    long fullBytes = (long) bounds[0] * bounds[1] * 4L;
-                    if (fullBytes > 0 && fullBytes <= AVIF_FULL_DECODE_BYTES) {
-                        decodeSample = 1;
-                    } else if (fullBytes > 0) {
-                        // Too big to hold 1:1 on this device. Bound the frame
-                        // the native decoder allocates, then refine the result
-                        // with scaleFiltered() below.
+                    if (bounds[0] > 0 && bounds[1] > 0) {
+                        long budget = byteBudget > 0 && byteBudget < Long.MAX_VALUE
+                                ? byteBudget : AVIF_FULL_DECODE_BYTES;
+                        long cap = Math.min(budget, AVIF_FULL_DECODE_BYTES);
+                        long full = (long) bounds[0] * bounds[1] * 4L;
                         int s = 1;
-                        while (s < 8
-                                && fullBytes / (4L * s * s) > AVIF_FULL_DECODE_BYTES) {
+                        while (s < 8 && full / (4L * s * s) > cap) {
                             s *= 2;
                         }
-                        decodeSample = Math.max(sample, s);
+                        decodeSample = Math.max(s, sample);
                     }
                 } catch (Throwable ignored) {
                     // Keep the caller's sample; the payload cap below still runs.
                 }
                 int[] dimensions = new int[2];
                 Bitmap bitmap = nativeDecodeSdr(file.getAbsolutePath(), decodeSample,
-                        Long.MAX_VALUE, dimensions);
+                        byteBudget, dimensions);
                 if (bitmap == null) {
                     return null;
                 }
