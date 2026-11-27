@@ -963,7 +963,7 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         mPageJumpFab = new TextView(getContext());
-        mPageJumpFab.setText("⇣ 最近阅读");
+        mPageJumpFab.setText("▼ 最近阅读");
         mPageJumpFab.setTextSize(15f);
         mPageJumpFab.setTextColor(0xFF80D5D2);
         mPageJumpFab.setBackgroundResource(R.drawable.manga_pill_bg);
@@ -1003,10 +1003,10 @@ public class MangaLibraryWidget extends UIWidget {
         boolean show = false;
         if (mCurrentPage == MangaPage.LIBRARY) {
             show = shelfJumpIndex() >= 0;
-            mPageJumpFab.setText("⇣ 最近阅读");
+            mPageJumpFab.setText("▼ 最近阅读");
         } else if (mCurrentPage == MangaPage.BOOK) {
             show = mBookJumpRow != null;
-            mPageJumpFab.setText("⇣ 最近章节");
+            mPageJumpFab.setText("▼ 最近章节");
         }
         mPageJumpFab.setVisibility(show ? VISIBLE : GONE);
         if (show) {

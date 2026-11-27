@@ -249,7 +249,7 @@ public class MangaFileBrowser extends LinearLayout {
         mSettingsButton.setOnClickListener(v -> openQuickSheet());
 
         mJumpButton = new TextView(context);
-        mJumpButton.setText("⇣ 最近阅读");
+        mJumpButton.setText("▼ 最近阅读");
         mJumpButton.setTextSize(15f);
         mJumpButton.setTextColor(0xFF80D5D2);
         mJumpButton.setBackgroundResource(R.drawable.manga_pill_bg);
@@ -300,7 +300,7 @@ public class MangaFileBrowser extends LinearLayout {
             return;
         }
         mJumpButton.setVisibility(VISIBLE);
-        mJumpButton.setText(firstVisiblePosition() <= 1 ? "⇣ 最近阅读" : "⇡ 顶部");
+        mJumpButton.setText(firstVisiblePosition() <= 1 ? "▼ 最近阅读" : "▲ 顶部");
     }
 
     /** First tap goes to the marked row, the next one returns to the top. */
