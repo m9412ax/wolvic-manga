@@ -55,7 +55,10 @@ public final class RemoteChapterLoader {
         ActiveDownload(String key) { this.key = key; }
 
         synchronized void reanchor(int page) {
-            if (page > 0) {
+            // A chapter entered "at its end" asks for page Integer.MAX_VALUE;
+            // that is a marker, not a page number, and must not become an
+            // urgent request (it would be silently dropped anyway).
+            if (page > 0 && page < Integer.MAX_VALUE - 1) {
                 urgent.add(page);
             }
         }
@@ -186,14 +189,29 @@ public final class RemoteChapterLoader {
                 // A late joiner (tap on a specific file) can push its page to
                 // the front of an already-running download via reanchor().
                 java.util.Set<Integer> urgentDone = new java.util.HashSet<>();
-                for (int k = 0; k < order.size(); k++) {
+                int processed = 0;
+                // NOTE: the head of [order] MUST be removed on every pass.
+                // An earlier revision read order.get(0) and relied on the
+                // urgent branch to remove it, so without an urgent page the
+                // loop re-fetched the SAME anchor page `total` times: the
+                // chapter folder ended up holding one page while `done`
+                // reached `total`, which is why paging stayed "one page at a
+                // time" and why a chapter opened at its "end" then jumped to
+                // page 1 on the next turn.
+                while (!order.isEmpty()) {
                     int urgentIdx = active.takeUrgent();
-                    int idx = (urgentIdx >= 0 && urgentIdx < total
-                            && !urgentDone.contains(urgentIdx) && order.remove((Integer) urgentIdx))
-                            ? urgentIdx : order.get(0);
-                    if (urgentIdx >= 0) {
+                    int idx;
+                    if (urgentIdx >= 0 && urgentIdx < total && !urgentDone.contains(urgentIdx)
+                            && order.remove((Integer) urgentIdx)) {
                         urgentDone.add(urgentIdx);
+                        idx = urgentIdx;
+                    } else {
+                        if (urgentIdx >= 0) {
+                            urgentDone.add(urgentIdx);
+                        }
+                        idx = order.remove(0);
                     }
+                    processed++;
                     final int i = idx;
                     RemoteManga.PageInfo p = pages.get(i);
                     final File out = cachedFile(dir, i, p.nameHint);
@@ -259,7 +277,10 @@ public final class RemoteChapterLoader {
                         opened = true;
                         MAIN.post(() -> active.result(dir, null));
                     }
-                    if (d % 8 == 0) enforceCacheCap(context, dir);
+                    // Gate the cap scan on pages PROCESSED, not on pages that
+                    // newly landed: a chapter that is already on disk would
+                    // otherwise re-scan the whole cache tree on every page.
+                    if (processed % 8 == 0) enforceCacheCap(context, dir);
                 }
                 enforceCacheCap(context, dir);
                 Log.i(TAG, "download done " + chapter.name + " pages=" + done[0]);

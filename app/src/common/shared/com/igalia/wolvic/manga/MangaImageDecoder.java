@@ -26,6 +26,10 @@ public final class MangaImageDecoder {
      *  1-3 s on this device; the JPEG re-read takes ~100 ms, so revisits and
      *  app restarts stay fast even after the memory cache evicts the page. */
     private static final long DISK_CACHE_MAX = 512L * 1024 * 1024;
+    /** Largest full-resolution AVIF frame decoded in one go (~160 MB of ARGB).
+     *  Below this we decode 1:1 and shrink with our own box-ish filter instead
+     *  of trusting the native sampler. */
+    private static final long AVIF_FULL_DECODE_BYTES = 160L * 1024 * 1024;
     private static volatile File sDiskCacheDir;
     private static final java.util.concurrent.ExecutorService DISK_WRITER =
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
@@ -255,7 +259,7 @@ public final class MangaImageDecoder {
                 name.append(Character.forDigit((b >> 4) & 0xF, 16))
                         .append(Character.forDigit(b & 0xF, 16));
             }
-            return new File(dir, name + ".jpg");
+            return new File(dir, name + ".png");
         } catch (Throwable t) {
             return null;
         }
@@ -297,7 +301,11 @@ public final class MangaImageDecoder {
                     return;
                 }
                 out = new java.io.FileOutputStream(tmp);
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
+                // LOSSLESS on purpose. JPEG q90 put ringing ("mosquito noise")
+                // around every glyph, which is what a re-read of a cached page
+                // showed as jittering pixels along the text. Manga line art
+                // compresses well as PNG, so the size cost is modest.
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
                 out.close();
                 out = null;
                 if (!tmp.renameTo(target)) {
@@ -342,6 +350,54 @@ public final class MangaImageDecoder {
         }
     }
 
+    /** Downscales [src] with a REAL filter.
+     *
+     *  A single bilinear pass over a big ratio (createScaledBitmap(src, w/4,
+     *  h/4, true)) only reads a 2x2 neighbourhood of every output pixel and
+     *  throws the rest away. On manga that is text: the thin strokes alias into
+     *  a shimmering mesh, the glyphs blur into each other, and no amount of
+     *  zooming brings them back. Halving repeatedly keeps every source pixel in
+     *  the average, which is what makes downscaled text stay readable.
+     *
+     *  Never recycles [src]. */
+    public static Bitmap scaleFiltered(Bitmap src, int dstW, int dstH) {
+        if (src == null || src.isRecycled() || dstW <= 0 || dstH <= 0) {
+            return src;
+        }
+        Bitmap cur = src;
+        int w = src.getWidth();
+        int h = src.getHeight();
+        try {
+            while (w / 2 >= dstW && h / 2 >= dstH) {
+                int nw = Math.max(dstW, w / 2);
+                int nh = Math.max(dstH, h / 2);
+                Bitmap next = Bitmap.createScaledBitmap(cur, nw, nh, true);
+                if (next == null || next == cur) {
+                    break;
+                }
+                if (cur != src) {
+                    cur.recycle();
+                }
+                cur = next;
+                w = nw;
+                h = nh;
+            }
+            if (w != dstW || h != dstH) {
+                Bitmap last = Bitmap.createScaledBitmap(cur, dstW, dstH, true);
+                if (last != null && last != cur) {
+                    if (cur != src) {
+                        cur.recycle();
+                    }
+                    cur = last;
+                }
+            }
+        } catch (Throwable t) {
+            // Out of memory / recycled source: the caller keeps what it had.
+            return cur == src ? src : cur;
+        }
+        return cur;
+    }
+
     private static Bitmap decodeAvifLocked(File file, int sample, long byteBudget) {
         java.io.InputStream in = null;
         Object decoder = null;
@@ -356,16 +412,66 @@ public final class MangaImageDecoder {
                 decoder = null;
                 in.close();
                 in = null;
+                // Decode large frames at native resolution and shrink HERE with
+                // scaleFiltered(). The native sampler gave no guarantee about
+                // its filter, and a neighbouring-pixel shrink aliases dense
+                // text into shimmering pixels - the "文字抖动 / 放大也抖" report.
+                int decodeSample = sample;
+                int[] bounds = null;
+                try {
+                    bounds = nativeReadBounds(file.getAbsolutePath());
+                    long fullBytes = (long) bounds[0] * bounds[1] * 4L;
+                    if (fullBytes > 0 && fullBytes <= AVIF_FULL_DECODE_BYTES) {
+                        decodeSample = 1;
+                    } else if (fullBytes > 0) {
+                        // Too big to hold 1:1 on this device. Bound the frame
+                        // the native decoder allocates, then refine the result
+                        // with scaleFiltered() below.
+                        int s = 1;
+                        while (s < 8
+                                && fullBytes / (4L * s * s) > AVIF_FULL_DECODE_BYTES) {
+                            s *= 2;
+                        }
+                        decodeSample = Math.max(sample, s);
+                    }
+                } catch (Throwable ignored) {
+                    // Keep the caller's sample; the payload cap below still runs.
+                }
                 int[] dimensions = new int[2];
-                Bitmap bitmap = nativeDecodeSdr(file.getAbsolutePath(), sample, byteBudget,
-                        dimensions);
-                DIMENSIONS.put(fileKey(file), dimensions);
+                Bitmap bitmap = nativeDecodeSdr(file.getAbsolutePath(), decodeSample,
+                        Long.MAX_VALUE, dimensions);
+                if (bitmap == null) {
+                    return null;
+                }
+                // Record the SOURCE size: aspect ratio and the "is a detail
+                // pass worth it" test both compare against it.
+                DIMENSIONS.put(fileKey(file), bounds != null && bounds[0] > 0
+                        ? bounds
+                        : new int[] {bitmap.getWidth(), bitmap.getHeight()});
+                // Payload cap: GPU texture edge AND the per-page byte budget.
+                final int maxEdge = 16384;
+                long bw = bitmap.getWidth();
+                long bh = bitmap.getHeight();
+                if (Math.max(bw, bh) > maxEdge || bw * bh * 4L > byteBudget) {
+                    double ratio = Math.min((double) maxEdge / Math.max(bw, bh),
+                            Math.sqrt((double) byteBudget / (bw * bh * 4.0)));
+                    int tw = Math.max(1, (int) (bw * ratio));
+                    int th = Math.max(1, (int) (bh * ratio));
+                    Bitmap scaled = scaleFiltered(bitmap, tw, th);
+                    if (scaled != null && scaled != bitmap) {
+                        bitmap.recycle();
+                        bitmap = scaled;
+                    }
+                }
                 android.util.Log.i("MangaImageDecoder", "avif sampled "
                         + dimensions[0] + "x" + dimensions[1] + " -> "
                         + bitmap.getWidth() + "x" + bitmap.getHeight()
+                        + " sample=" + decodeSample
                         + " bytes=" + bitmap.getAllocationByteCount()
                         + " alpha=" + bitmap.hasAlpha()
                         + " ms=" + (android.os.SystemClock.uptimeMillis() - started));
+                // Keyed by the REQUESTED sample (what readDiskCache() will ask
+                // for), even though we may have decoded 1:1 and scaled here.
                 writeDiskCache(file, sample, byteBudget, bitmap);
                 return bitmap;
             }
@@ -393,8 +499,10 @@ public final class MangaImageDecoder {
             }
             int sw = Math.max(1, w / sample);
             int sh = Math.max(1, h / sample);
-            Bitmap scaled = Bitmap.createScaledBitmap(full, sw, sh, true);
-            full.recycle();
+            Bitmap scaled = scaleFiltered(full, sw, sh);
+            if (scaled != full) {
+                full.recycle();
+            }
             return scaled;
         } catch (Throwable t) {
             android.util.Log.w("MangaImageDecoder", "avif decode failed", t);

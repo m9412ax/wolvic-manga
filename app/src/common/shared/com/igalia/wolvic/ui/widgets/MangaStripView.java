@@ -149,7 +149,9 @@ public class MangaStripView extends View {
         float height = getHeight() > 0 ? getHeight() : 1000f;
         // A large per-frame jump means a fast flick; drop bilinear filtering to
         // keep the frame budget. Restore it 120 ms after the motion settles.
-        if (step > height * 0.12f && !mFilterOff) {
+        // NEVER in tile mode: a giant 1:1 page is drawn heavily minified, and
+        // without filtering its text turns into crawling pixels.
+        if (!mTileMode && step > height * 0.12f && !mFilterOff) {
             mFilterOff = true;
             mPaint.setFilterBitmap(false);
         }
@@ -211,13 +213,19 @@ public class MangaStripView extends View {
                 float sliceBottom = Math.min(top + h, visibleBottom);
                 if (sliceBottom > sliceTop) {
                     try {
-                        // Draw only the intersecting slice. Passing a src rect
-                        // keeps the GPU from rasterising the whole full-res tile
-                        // on every scroll frame.
-                        Rect src = new Rect(0, (int) (sliceTop - top), tile.getWidth(),
-                                Math.min(tile.getHeight(), (int) (sliceBottom - top)));
-                        if (src.bottom > src.top) {
-                            RectF dst = new RectF(0f, sliceTop, tile.getWidth(), sliceBottom);
+                        // Draw only the intersecting slice. Integer SOURCE rows
+                        // with the dest computed from those same rows: the old
+                        // fractional top mapped a truncated source rect onto a
+                        // fractional dest, so each scroll frame re-sampled a
+                        // slightly different pixel band along the tile seams
+                        // (visible as a 1 px crawl / shimmer over the text).
+                        int srcTop = Math.max(0, (int) Math.floor(sliceTop - top));
+                        int srcBottom = Math.min(tile.getHeight(),
+                                (int) Math.ceil(sliceBottom - top));
+                        if (srcBottom > srcTop) {
+                            Rect src = new Rect(0, srcTop, tile.getWidth(), srcBottom);
+                            RectF dst = new RectF(0f, top + srcTop,
+                                    tile.getWidth(), top + srcBottom);
                             canvas.drawBitmap(tile, src, dst, mPaint);
                         }
                     } catch (Throwable ignored) {
@@ -267,13 +275,19 @@ public class MangaStripView extends View {
                 continue;
             }
             try {
-                Rect src = new Rect(0,
-                        (int) Math.max(0f, visibleTop / si),
-                        b.getWidth(),
-                        (int) Math.min(b.getHeight(), visibleBottom / si));
-                if (src.bottom > src.top) {
-                    RectF dst = new RectF(left, tops[i] + visibleTop + topShift,
-                            left + w, tops[i] + visibleBottom + topShift);
+                // Same rule as the tile path: an INTEGER source window whose
+                // dest is derived from it. Cropping with a fractional offset
+                // while drawing at a fractional position makes the whole page
+                // shift by sub-pixels on every scroll frame, which is the
+                // "文字一直在抖" effect when reading a long strip.
+                int srcTop = Math.max(0, (int) Math.floor(visibleTop / si));
+                int srcBottom = Math.min(b.getHeight(),
+                        (int) Math.ceil(visibleBottom / si));
+                if (srcBottom > srcTop) {
+                    float dstTop = tops[i] + topShift + srcTop * si;
+                    float dstBottom = tops[i] + topShift + srcBottom * si;
+                    Rect src = new Rect(0, srcTop, b.getWidth(), srcBottom);
+                    RectF dst = new RectF(left, dstTop, left + w, dstBottom);
                     canvas.drawBitmap(b, src, dst, mPaint);
                 }
             } catch (Throwable ignored) {

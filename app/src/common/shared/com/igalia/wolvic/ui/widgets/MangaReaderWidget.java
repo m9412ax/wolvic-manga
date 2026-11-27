@@ -864,6 +864,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mChapterProvider.ensureChapter(index, page, new MangaChapterSession.DirCallback() {
                     @Override
                     public void onDir(File d, String error) {
+                        if (d == null) {
+                            // The chapter could not be opened at all: drop the
+                            // "go to its end" intent, otherwise the overlay
+                            // stays on screen forever waiting for a page that
+                            // will never be requested.
+                            showHint("章节加载失败：" + (error == null ? "" : error));
+                            mOpenAtChapterEnd = false;
+                            mPendingTargetPage = -1;
+                            mEndPageRetries = 0;
+                            hideLoading();
+                            return;
+                        }
                         // The folder is already open; onProgress grows mPages.
                         // Keep the overlay while the requested page (chapter
                         // end) is still missing - hiding it looked like a hang.
@@ -1432,11 +1444,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             float height = mStripView.scaledHeight(2);
             frac = height > 0f ? mStripOffset / height : 0f;
         }
+        // Store the SERVER page number for online chapters: mIndex is a
+        // position inside the list of pages that happened to be downloaded,
+        // and every consumer (書架 "继续阅读", chapter marks) reads it as a page
+        // number. Saving the position is what re-opened a chapter at page 1
+        // after it had been left at its end.
+        final int pageNo = mChapterProvider != null ? currentRemoteIndex() : mIndex;
         progressPrefs().edit()
-                .putString("chap:" + mChapterProgressKey, mChapterIndex + "|" + mIndex + "|" + frac)
+                .putString("chap:" + mChapterProgressKey, mChapterIndex + "|" + pageNo + "|" + frac)
                 .apply();
         MangaReadingState.get(getContext()).noteChapter(
-                currentChapterKey(), mIndex, pageTotal());
+                currentChapterKey(), pageNo, pageTotal());
     }
 
     /** Canonical key of the chapter on screen (see MangaReadingState). */
@@ -2006,7 +2024,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         double ratio = Math.sqrt((double) SINGLE_BITMAP_LIMIT / (double) bytes);
         int w = Math.max(1, (int) (bitmap.getWidth() * ratio));
         int h = Math.max(1, (int) (bitmap.getHeight() * ratio));
-        Bitmap scaled = Bitmap.createScaledBitmap(bitmap, w, h, true);
+        Bitmap scaled = MangaImageDecoder.scaleFiltered(bitmap, w, h);
         Log.w(TAG, "bitmap over draw limit, downsampled " + bitmap.getWidth() + "x"
                 + bitmap.getHeight() + " -> " + w + "x" + h);
         return scaled != null ? scaled : bitmap;
@@ -2057,12 +2075,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             BitmapFactory.Options opts = new BitmapFactory.Options();
             opts.inSampleSize = sample;
-            // RGB_565 halves pixel memory/bandwidth vs ARGB_8888. On manga
-            // (mostly greyscale line art) the difference is imperceptible, and
-            // it roughly doubles the number of strip tiles that fit in cache -
-            // the main cause of scroll stutter in long-strip mode.
+            // ARGB_8888, NOT RGB_565. 565 keeps only 5-6 bits per channel, so
+            // every anti-aliased stroke edge is quantised to steps of 8: on
+            // dense manga text that reads as speckle/"抖动" that survives
+            // zooming (the error is baked into the bitmap). The byte budgets
+            // above already assume 4 bytes per pixel, so nothing overflows.
             Bitmap bitmap = MangaImageDecoder.decodeSampled(file, sample,
-                    Bitmap.Config.RGB_565);
+                    Bitmap.Config.ARGB_8888);
             if (bitmap != null && crop) {
                 Bitmap cropped = cropBorders(bitmap);
                 if (cropped != null && cropped != bitmap) {
@@ -2353,10 +2372,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         if (mChapterProvider != null && mChapterDirs != null && mChapterDirs.size() > 1) {
             int radius = Math.max(1, preloadRadius());
-            if (mIndex + radius >= pageTotal() - 1 && hasChapter(mChapterIndex + 1)) {
+            int current = currentRemoteIndex();
+            if (current + radius >= pageTotal() - 1 && hasChapter(mChapterIndex + 1)) {
                 mChapterProvider.prefetchChapter(mChapterIndex + 1);
             }
-            if (mIndex - radius <= 0 && hasChapter(mChapterIndex - 1)) {
+            if (current - radius <= 0 && hasChapter(mChapterIndex - 1)) {
                 mChapterProvider.prefetchChapter(mChapterIndex - 1);
             }
         }
@@ -2953,8 +2973,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mDestroyed || !isVisible() || !mSettings.bool(MangaSettings.READER_AUTO_ADVANCE)) {
             return;
         }
-        if (mIndex + 1 < pageTotal()) {
-            requestPage(mIndex + 1);
+        int current = mChapterProvider != null ? currentRemoteIndex() : mIndex;
+        if (current + 1 < pageTotal()) {
+            if (mChapterProvider != null) {
+                requestRemotePage(current + 1);
+            } else {
+                requestPage(mIndex + 1);
+            }
             if (mIndex + 1 >= mPages.size()) {
                 // Target still downloading; wait for it instead of falling
                 // through to the next chapter or declaring "last page".
@@ -3138,6 +3163,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (direction == 1) {
             delta = -delta;
         }
+        chapterLoadingGuard();
+        if (mChapterProvider != null) {
+            pageDeltaRemote(delta);
+            return;
+        }
         // Double-page mode is GROUP-based, not stride-based. Two consecutive
         // portrait pages are one displayed group; a landscape page is its own
         // group. Turning pages moves to the previous/next GROUP anchor, so a
@@ -3186,6 +3216,66 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
         }
         requestPage(target);
+    }
+
+    /**
+     * Page turn for an ONLINE chapter (SMB / 115 / source).
+     *
+     * mPages only holds the pages that have landed, and they land in download
+     * order ("the page you opened first, then outwards"), so a list POSITION is
+     * not a page NUMBER. Turning in position space was the reason "previous"
+     * left the chapter - after entering at the end, the only landed page sits
+     * at position 0, so delta -1 was read as "before page 1" and skipped to the
+     * previous chapter (= the beginning of the book) - while "next" fetched
+     * page 2 of 184. Both directions are computed in page numbers here.
+     */
+    private void pageDeltaRemote(int delta) {
+        int base = mPendingTargetPage >= 0 ? mPendingTargetPage : currentRemoteIndex();
+        int target = base + delta;
+        int total = pageTotal();
+        Log.i(TAG, "pageDelta(remote) base=" + base + " target=" + target
+                + " total=" + total + " known=" + mPageTotal + " landed=" + mPages.size());
+        // Cross a chapter boundary only when the chapter's real page count is
+        // known. Before the downloader reports it, pageTotal() is just "how
+        // many pages happen to be on disk", so page 184 of a 184 page chapter
+        // would look like it is past the end and skip a whole chapter.
+        if (mChapterDirs != null && mChapterDirs.size() > 1 && mPageTotal > 0) {
+            if (target >= total) {
+                Log.i(TAG, "pageDelta -> next chapter");
+                advanceChapter(1);
+                return;
+            }
+            if (target < 0) {
+                Log.i(TAG, "pageDelta -> previous chapter");
+                advanceChapter(-1);
+                return;
+            }
+        }
+        requestRemotePage(target);
+    }
+
+    /** Shows the page with this SERVER page number, fetching it if it is not
+     *  on disk yet (and remembering the intent so it is displayed the moment
+     *  the download lands). */
+    private void requestRemotePage(int remote) {
+        if (remote < 0) {
+            return;
+        }
+        int position = positionOfRemotePage(remote);
+        if (position >= 0) {
+            mPendingTargetPage = -1;
+            mOpenAtChapterEnd = false;
+            showPage(position);
+            return;
+        }
+        if (mPageTotal > 0 && remote >= mPageTotal) {
+            return;
+        }
+        mPendingTargetPage = remote;
+        mRequestedPage = -1;
+        mOpenAtChapterEnd = false;
+        showLoading("加载第 " + (remote + 1) + " 张…", -1, -1, -1, -1);
+        requestSinglePage(remote);
     }
 
     public void cycleScale() {
@@ -3240,9 +3330,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         showHint(value ? "自动翻页：开" : "自动翻页：关");
     }
 
-    /** Jump straight to a 0-based page, used by the tray scrubber. */
+    /** Jump straight to a 0-based page, used by the tray scrubber. For an
+     *  online chapter the scrubber's value is a SERVER page number. */
     public void jumpToPage(int index) {
         if (mPages.isEmpty()) {
+            return;
+        }
+        if (mChapterProvider != null) {
+            requestRemotePage(index);
             return;
         }
         requestPage(index);
@@ -3280,8 +3375,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         int chapterCount = mChapterDirs == null ? 1 : mChapterDirs.size();
-        tray.updateReaderProgress(mIndex, pageTotal(),
-                mChapterIndex, chapterCount);
+        tray.updateReaderProgress(mChapterProvider != null ? currentRemoteIndex() : mIndex,
+                pageTotal(), mChapterIndex, chapterCount);
     }
 
     public void openGotoDialog() {
@@ -3289,7 +3384,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         mGotoDialog.setVisibility(VISIBLE);
-        mGotoInput.setText(String.valueOf(mIndex + 1));
+        mGotoInput.setText(String.valueOf(currentRemoteIndex() + 1));
         mGotoInput.setHint("1 - " + pageTotal());
         mGotoInput.requestFocus();
         mGotoInput.selectAll();
@@ -3300,7 +3395,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             int page = Integer.parseInt(mGotoInput.getText().toString().trim());
             if (page >= 1 && page <= pageTotal()) {
                 mGotoDialog.setVisibility(GONE);
-                requestPage(page - 1);
+                if (mChapterProvider != null) {
+                    requestRemotePage(page - 1);
+                } else {
+                    requestPage(page - 1);
+                }
             } else {
                 Toast.makeText(getContext(), "页码范围 1 - " + pageTotal(),
                         Toast.LENGTH_SHORT).show();
