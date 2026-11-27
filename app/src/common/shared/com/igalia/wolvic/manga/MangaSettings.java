@@ -92,6 +92,12 @@ public final class MangaSettings {
     public static final String SOURCE_IMAGE_FORMATS = "source_image_formats";
     public static final String SOURCE_VIDEO_FORMATS = "source_video_formats";
     public static final String SOURCE_THUMB_PX = "source_thumb_px";
+    /** When true the extension catalogue also lists paid / members-only
+     *  sections. Default false: those pages only expose a few preview images
+     *  (the rest costs coins after login), so they are filtered out. */
+    public static final String SHOW_PAID_SECTION = "source_show_paid";
+    /** Extra path keywords treated as "paid section", comma separated. */
+    public static final String SOURCE_PAID_KEYWORDS = "source_paid_keywords";
     /** Unified sort mode for local/SMB/115 listings (shared across sources):
      *  0 = name ascending (default), 1 = name descending,
      *  2 = date newest first, 3 = date oldest first. */

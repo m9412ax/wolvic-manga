@@ -204,6 +204,10 @@ public class MangaOptionsView extends SettingsView
         edit("图片扩展名", MangaSettings.SOURCE_IMAGE_FORMATS);
         edit("视频扩展名", MangaSettings.SOURCE_VIDEO_FORMATS);
 
+        section("扩展图源");
+        switchRow("显示付费专区内容（默认关闭）", MangaSettings.SHOW_PAID_SECTION);
+        edit("自定义付费专区关键词（逗号分隔，可留空）", MangaSettings.SOURCE_PAID_KEYWORDS);
+
         section("WebDAV 网盘");
         edit("WebDAV 地址", MangaSettings.WEBDAV_URL);
         edit("用户名", MangaSettings.WEBDAV_USER);

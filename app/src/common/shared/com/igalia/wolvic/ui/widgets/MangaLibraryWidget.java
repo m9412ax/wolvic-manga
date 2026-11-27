@@ -54,6 +54,7 @@ import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaDownloader;
 import com.igalia.wolvic.manga.MangaFileCore;
 import com.igalia.wolvic.manga.MangaKeyCapture;
+import com.igalia.wolvic.manga.MangaPaidFilter;
 import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSmb;
 import com.igalia.wolvic.manga.Manga115Api;
@@ -3902,11 +3903,24 @@ public class MangaLibraryWidget extends UIWidget {
                 mSourceHasNext = false;
                 Log.w(TAG, "browse cb error: " + error);
             } else {
+                List<SManga> items = new ArrayList<>(page.getMangas());
+                int hidden = 0;
+                if (!mSettings.bool(MangaSettings.SHOW_PAID_SECTION)) {
+                    String extra = mSettings.text(MangaSettings.SOURCE_PAID_KEYWORDS);
+                    for (int i = items.size() - 1; i >= 0; i--) {
+                        if (MangaPaidFilter.isPaid(items.get(i).getUrl(), extra)) {
+                            items.remove(i);
+                            hidden++;
+                        }
+                    }
+                }
                 mSourceMangas.clear();
-                mSourceMangas.addAll(page.getMangas());
+                mSourceMangas.addAll(items);
                 mSourceHasNext = page.getHasNextPage();
-                mSourceStatus = "第 " + mSourcePage + " 页 · " + mSourceMangas.size() + " 部";
+                mSourceStatus = "第 " + mSourcePage + " 页 · " + mSourceMangas.size() + " 部"
+                        + (hidden > 0 ? "（已隐藏付费 " + hidden + "）" : "");
                 Log.i(TAG, "browse cb: " + mSourceMangas.size() + " manga, hasNext=" + mSourceHasNext
+                        + ", hiddenPaid=" + hidden
                         + (mSourceMangas.isEmpty() ? "" : ", first=" + mSourceMangas.get(0).getTitle()));
             }
             refreshPage(MangaPage.SOURCE_BROWSE);
