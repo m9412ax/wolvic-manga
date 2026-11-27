@@ -2754,9 +2754,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             delta = targetAnchor - mIndex;
         }
-        int target = mIndex + delta;
+        // If the user scrubbed to a page that is still downloading, turns must
+        // continue from THAT page, not from the last one that happened to be
+        // decoded (which made "previous" jump to an unrelated earlier image).
+        int base = mPendingTargetPage >= 0 ? mPendingTargetPage : mIndex;
+        int target = base + delta;
         chapterLoadingGuard();
-        Log.i(TAG, "pageDelta target=" + target + " pages=" + mPages.size()
+        Log.i(TAG, "pageDelta target=" + target + " base=" + base + " pages=" + mPages.size()
                 + " chapters=" + (mChapterDirs == null ? 0 : mChapterDirs.size())
                 + " chapterIndex=" + mChapterIndex + " loading=" + mChapterLoading);
         int total = pageTotal();
@@ -2851,9 +2855,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPendingTargetPage = -1;
             showPage(index);
         } else {
+            // This page belongs to the chapter but has not landed yet. Fetch
+            // it explicitly: the background downloader may be working on a
+            // far-away page and would otherwise keep the user waiting forever.
             mPendingTargetPage = index;
-            showHint("加载第 " + (index + 1) + " 张…");
-            // Make sure a download is actually running for the current chapter.
+            showLoading("加载第 " + (index + 1) + " 张…", -1, -1, -1, -1);
+            requestSinglePage(index);
             chapterLoadingGuard();
         }
     }

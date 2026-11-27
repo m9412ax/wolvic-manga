@@ -256,6 +256,89 @@ public final class RemoteChapterLoader {
         }, "remote-chapter-download").start();
     }
 
+    /**
+     * Fetches ONE page on demand (the reader scrubbed to it and the bulk pass
+     * has not reached it yet). Uses the same cachedFile() layout so a refresh
+     * of the chapter folder sees the page at the correct index.
+     */
+    public static void fetchSingle(final Context context, final RemoteManga manga,
+                                   final RemoteManga.ChapterInfo chapter,
+                                   final File dir, final int pageIndex,
+                                   final Callback callback) {
+        new Thread(() -> {
+            try {
+                List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
+                if (pages == null || pageIndex < 0 || pageIndex >= pages.size()) {
+                    throw new IllegalStateException("页码超出范围");
+                }
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new IllegalStateException("无法创建缓存目录");
+                }
+                RemoteManga.PageInfo p = pages.get(pageIndex);
+                File out = cachedFile(dir, pageIndex, p.nameHint);
+                if (!isValidCached(out)) {
+                    File tmp = new File(out.getAbsolutePath() + ".tmp");
+                    if (tmp.exists()) tmp.delete();
+                    if (isVideoName(p.nameHint)) {
+                        RemoteManga.writeVideoMarker(out, p);
+                    } else {
+                        manga.fetchPage(p, out);
+                    }
+                }
+                boolean ok = out.exists() && out.length() > 0;
+                Log.i(TAG, "fetchSingle " + chapter.name + " #" + pageIndex + " ok=" + ok);
+                if (callback != null) {
+                    MAIN.post(() -> callback.onResult(ok ? dir : null,
+                            ok ? null : "该页下载为空"));
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "fetchSingle failed: " + e.getMessage());
+                if (callback != null) {
+                    MAIN.post(() -> callback.onResult(null,
+                            e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                }
+            }
+        }, "remote-page-fetch").start();
+    }
+
+    /** Re-lists a chapter and pulls missing pages near the front, so a
+     *  truncated page list ("最后几页打不开") can recover. */
+    public static void refreshPageList(final RemoteManga manga,
+                                       final RemoteManga.ChapterInfo chapter,
+                                       final File dir, final Callback callback) {
+        new Thread(() -> {
+            int added = 0;
+            try {
+                List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
+                if (pages == null || pages.isEmpty()) {
+                    throw new IllegalStateException("刷新页面列表为空");
+                }
+                if (!dir.exists() && !dir.mkdirs()) {
+                    throw new IllegalStateException("无法创建缓存目录");
+                }
+                // A short burst is enough to expose a truncated head; the
+                // bulk downloader keeps filling the rest in the background.
+                int n = Math.min(pages.size(), 12);
+                for (int i = 0; i < n; i++) {
+                    RemoteManga.PageInfo p = pages.get(i);
+                    File out = cachedFile(dir, i, p.nameHint);
+                    if (isValidCached(out)) continue;
+                    if (isVideoName(p.nameHint)) {
+                        RemoteManga.writeVideoMarker(out, p);
+                    } else {
+                        manga.fetchPage(p, out);
+                    }
+                    if (out.exists() && out.length() > 0) added++;
+                }
+                Log.i(TAG, "refreshPageList " + chapter.name + " added=" + added);
+                if (callback != null) MAIN.post(() -> callback.onResult(dir, null));
+            } catch (Throwable e) {
+                Log.w(TAG, "refreshPageList failed: " + e.getMessage());
+                if (callback != null) MAIN.post(() -> callback.onResult(null, e.getMessage()));
+            }
+        }, "remote-list-refresh").start();
+    }
+
     /** Warms up only the first [maxPages] pages (sequential, silent). */
     public static void prefetch(final RemoteManga manga,
                                 final RemoteManga.ChapterInfo chapter,
@@ -381,7 +464,10 @@ public final class RemoteChapterLoader {
         return false;
     }
 
-    private static File cachedFile(File dir, int index, String nameHint) {
+    /** File name layout shared by the bulk downloader and single-page
+     *  top-ups: the reader's page list is built from these files, so both
+     *  paths MUST agree or a fetched page never appears in the list. */
+    public static File cachedFile(File dir, int index, String nameHint) {
         String ext = "jpg";
         if (nameHint != null) {
             int dot = nameHint.lastIndexOf('.');

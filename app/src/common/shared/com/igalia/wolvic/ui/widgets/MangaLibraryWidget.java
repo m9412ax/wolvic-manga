@@ -991,8 +991,13 @@ public class MangaLibraryWidget extends UIWidget {
         // Remote (SMB/115) bookshelf entries are tagged strings, not paths.
         List<String> remoteShelfKeys = new ArrayList<>();
         for (String saved : mSettings.bookshelf()) {
+            // NeeView bookmarks are imported as bare smb:// keys; they are
+            // remote entries too, not local paths.
             if (saved.startsWith(SHELF_SMB) || saved.startsWith(SHELF_115)
-                    || saved.startsWith(SHELF_SRC)) {
+                    || saved.startsWith(SHELF_SRC) || saved.startsWith("smb://")) {
+                if (saved.startsWith("smb://")) {
+                    saved = SHELF_SMB + saved;   // normalise for all the helpers
+                }
                 remoteShelfKeys.add(saved);
                 continue;
             }

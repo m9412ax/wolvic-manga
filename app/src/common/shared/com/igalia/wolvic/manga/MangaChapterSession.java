@@ -235,6 +235,30 @@ public class MangaChapterSession {
                 if (i < 0 || i >= chapters.size()) return;
                 RemoteChapterLoader.prefetch(manga, chapters.get(i), dirs.get(i), 3);
             }
+
+            @Override
+            public void fetchPage(int i, int pageIndex, DirCallback callback) {
+                if (i < 0 || i >= chapters.size()) {
+                    if (callback != null) callback.onDir(null, "章节序号越界");
+                    return;
+                }
+                // Download ONLY this page into the same cache layout the bulk
+                // loader uses, so the reader's refreshed file list contains it
+                // at the exact position the user jumped to.
+                RemoteChapterLoader.fetchSingle(context, manga, chapters.get(i),
+                        dirs.get(i), pageIndex,
+                        (dir, error) -> { if (callback != null) callback.onDir(dir, error); });
+            }
+
+            @Override
+            public void refreshPageList(int i, DirCallback callback) {
+                if (i < 0 || i >= chapters.size()) {
+                    if (callback != null) callback.onDir(null, "章节序号越界");
+                    return;
+                }
+                RemoteChapterLoader.refreshPageList(manga, chapters.get(i), dirs.get(i),
+                        (dir, error) -> { if (callback != null) callback.onDir(dir, error); });
+            }
         };
         List<String> keys = new ArrayList<>();
         List<String> ids = new ArrayList<>();
