@@ -793,6 +793,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         mChapterIndex = index;
+        // Each chapter has its own page count: keep the previous chapter's
+        // total out of the scrubber until this one reports its own.
+        mPageTotal = -1;
         File dir = mChapterDirs.get(index);
         File[] files = dir.isDirectory() ? dir.listFiles() : null;
         boolean hasPages = countImageFiles(dir) > 0;
