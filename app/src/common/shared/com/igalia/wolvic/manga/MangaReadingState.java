@@ -291,6 +291,40 @@ public final class MangaReadingState {
      * never moves backwards when both sides agree on the page count.
      * @return true when local state actually changed.
      */
+    /** Bulk variant of {@link #importChapter}: merges many marks but persists
+     *  only once, so importing a 12k-row history does not write the whole TSV
+     *  blob 12k times. */
+    public int importChapters(List<Chapter> incoming) {
+        if (incoming == null || incoming.isEmpty()) {
+            return 0;
+        }
+        load();
+        int changed = 0;
+        for (Chapter in : incoming) {
+            if (in == null || TextUtils.isEmpty(in.key)) {
+                continue;
+            }
+            Chapter local = mChapters.get(in.key);
+            if (local == null) {
+                mChapters.put(in.key, in);
+                changed++;
+            } else if (in.ts > local.ts) {
+                int newPage = local.total == in.total
+                        ? Math.max(local.page, in.page) : Math.max(0, in.page);
+                if (newPage != local.page || in.total != local.total) {
+                    changed++;
+                }
+                local.page = newPage;
+                local.total = Math.max(0, in.total);
+                local.ts = in.ts;
+            }
+        }
+        if (changed > 0) {
+            saveChapters();
+        }
+        return changed;
+    }
+
     public boolean importChapter(String key, int page, int total, long ts) {
         if (TextUtils.isEmpty(key)) {
             return false;

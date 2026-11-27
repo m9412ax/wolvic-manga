@@ -2019,6 +2019,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         Log.i(TAG, "preload window index=" + mIndex + " radius=" + preloadRadius()
                 + " cached=" + mCache.snapshot().size() + " pending=" + mPendingPages.size());
+        // Online chapters (SMB/115/extension): mPages only contains pages that
+        // have landed. Prefetch the ones in the read-ahead window that are
+        // still on the server, otherwise paging always downloads one at a time.
+        if (mChapterProvider != null && mPageTotal > mPages.size()) {
+            int radius = Math.max(1, preloadRadius());
+            for (int d = 1; d <= radius; d++) {
+                fetchIfMissing(mIndex + d);
+                if (d == 1) {
+                    fetchIfMissing(mIndex - 1);
+                }
+            }
+        }
         if (mChapterProvider != null && mChapterDirs != null && mChapterDirs.size() > 1) {
             int radius = Math.max(1, preloadRadius());
             if (mIndex + radius >= pageTotal() - 1 && hasChapter(mChapterIndex + 1)) {
@@ -2027,6 +2039,17 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (mIndex - radius <= 0 && hasChapter(mChapterIndex - 1)) {
                 mChapterProvider.prefetchChapter(mChapterIndex - 1);
             }
+        }
+    }
+
+    /** Fetches a not-yet-cached page of an online chapter in the background. */
+    private void fetchIfMissing(int index) {
+        if (index < 0 || index >= pageTotal()) {
+            return;
+        }
+        // Not landed yet (beyond the current on-disk page list).
+        if (index >= mPages.size()) {
+            requestSinglePage(index);
         }
     }
 

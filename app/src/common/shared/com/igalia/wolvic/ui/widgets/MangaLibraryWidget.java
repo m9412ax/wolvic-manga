@@ -2201,19 +2201,117 @@ public class MangaLibraryWidget extends UIWidget {
             addButton(actions, progress.percent >= 0
                     ? "▶ 继续阅读" : "▶ 开始阅读", v -> openRemoteFromShelf(mBookRemoteKey, false));
             addButton(actions, "▶ 从头开始", v -> openRemoteFromShelf(mBookRemoteKey, true));
-        }
-
-        if (!local) {
-            addInfo(content, "来源", "在线漫画：阅读时按需加载，不会下载整本。"
-                    + (progress.chapters > 0
-                    ? "已记录 " + progress.chapters + " 个章节的进度。" : ""));
-            return;
+            addButton(actions, "📂 打开文件夹", v -> openRemoteFolder(mBookRemoteKey));
         }
 
         addInfo(content, "章节", progress.chapters > 0
                 ? "已读 " + progress.doneChapters + "/" + progress.chapters + " 个章节"
                 : "还没有阅读记录。点击章节即可从该章开始。");
-        listBookChapters(content, mBookDir);
+        if (local) {
+            listBookChapters(content, mBookDir);
+        } else {
+            listRemoteBookChapters(content, mBookRemoteKey, state);
+        }
+    }
+
+    /** Jumps the file browser to the folder of an SMB/115 shelf entry. */
+    private void openRemoteFolder(String shelfKey) {
+        if (shelfKey.startsWith(SHELF_SMB)) {
+            String key = MangaSync.repairSmbKey(shelfKey.substring(SHELF_SMB.length()), mSettings);
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (!key.startsWith(prefix)) {
+                Toast.makeText(getContext(), "SMB 主机或共享已改变，请重新连接。",
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            mSmbPath = key.substring(prefix.length());
+            mSmbAutoConnected = true;
+            switchPage(MangaPage.SMB);
+            connectSmb();
+        } else if (shelfKey.startsWith(SHELF_115)) {
+            String rest = shelfKey.substring(SHELF_115.length());
+            int sep = rest.indexOf('|');
+            mNetdiskMode = "115";
+            mNetdiskAtRoot = false;
+            mP115Cid = sep > 0 ? rest.substring(0, sep) : rest;
+            mP115Title = sep > 0 ? rest.substring(sep + 1) : "115 网盘";
+            mP115ParentStack.clear();
+            switchPage(MangaPage.WEBDAV);
+            listP115Dir(mP115Cid);
+        } else {
+            Toast.makeText(getContext(), "该来源没有本地文件夹", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Lists a remote book's sub-folders as chapters, off the UI thread. */
+    private void listRemoteBookChapters(LinearLayout content, String shelfKey,
+                                        final MangaReadingState state) {
+        if (!shelfKey.startsWith(SHELF_SMB)) {
+            addInfo(content, "章节", "扩展来源请在漫画详情页查看章节。");
+            return;
+        }
+        String key = MangaSync.repairSmbKey(shelfKey.substring(SHELF_SMB.length()), mSettings);
+        String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+        if (!key.startsWith(prefix)) {
+            return;
+        }
+        final String rel = key.substring(prefix.length());
+        final MangaSmb.Auth auth = smbAuth();
+        mIoExecutor.execute(() -> {
+            List<String> names = new ArrayList<>();
+            try {
+                for (MangaSmb.Entry e : MangaSmb.list(auth, rel)) {
+                    if (e.directory && !e.name.startsWith(".")) {
+                        names.add(e.name);
+                    }
+                }
+                names.sort(NaturalOrder.INSTANCE);
+            } catch (Exception e) {
+                Log.w(TAG, "listRemoteBookChapters failed: " + e.getMessage());
+            }
+            final List<String> chapters = names;
+            mMain.post(() -> {
+                if (mCurrentPage != MangaPage.BOOK) {
+                    return;
+                }
+                int i = 0;
+                for (String name : chapters) {
+                    i++;
+                    String chapterKey = key + "/" + name;
+                    MangaReadingState.Chapter mark = state.chapter(chapterKey);
+                    String markPrefix = mark == null ? "" : mark.isDone() ? "✓ " : "▸ ";
+                    String tail = mark == null ? "" : "  ·  "
+                            + Math.min(mark.page + 1, Math.max(1, mark.total))
+                            + (mark.total > 0 ? "/" + mark.total : "") + " 页";
+                    String label = markPrefix + i + ". " + name + tail;
+                    addBookChapterButton(content, label, () ->
+                            openRemoteManga(smbManga(smbAuth(), rel + "/" + name),
+                                    null, false));
+                }
+                if (chapters.isEmpty()) {
+                    addInfo(content, "章节", "该漫画没有子文件夹章节，可直接继续阅读。");
+                }
+            });
+        });
+    }
+
+    private void addBookChapterButton(LinearLayout content, String label, Runnable click) {
+        Button row = new Button(getContext());
+        row.setText(label);
+        row.setAllCaps(false);
+        row.setTextSize(17f);
+        row.setTextColor(0xFFFFFFFF);
+        row.setBackgroundColor(0xFF232C38);
+        row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        row.setMinHeight(dp(50));
+        row.setOnClickListener(v -> click.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, dp(3), 0, dp(3));
+        content.addView(row, lp);
     }
 
     private String bookMetaText(boolean local, MangaReadingState.Progress progress) {

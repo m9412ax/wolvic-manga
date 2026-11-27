@@ -219,22 +219,52 @@ public final class MangaNeeViewSync {
 
     // ------------------------------------------------------- full history
 
+    /** Pulls the page number out of a NeeView Page field. Every image name
+     *  carries its 1-based index ("...-72.jpg", "80.jpg", "(40).avif"). */
+    private static int pageNumber(String name) {
+        if (name == null || name.isEmpty()) {
+            return -1;
+    }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)").matcher(name);
+        int last = -1;
+        while (m.find()) {
+            try {
+                last = Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return last;
+    }
+
+    /** Parses "[72P", "[184P2V", "[100P3V" from a chapter/book folder name. */
+    private static int totalPages(String name) {
+        if (name == null) {
+            return -1;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)\\s*P",
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(name);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return -1;
+    }
+
     /**
-     * Imports every NeeView history row whose path maps onto the VR manga
-     * share so folder/file frames survive a sync. Each folder is listed once
-     * (cached by path) to keep 12k rows cheap; the first [skip] row is handled
-     * separately by {@link #sync} and is left alone here.
+     * Imports the ENTIRE NeeView history: every row whose path maps onto the
+     * VR manga share becomes a read mark so folder/file frames are complete.
+     * Page numbers come from the image file name and the total from the
+     * folder's "[72P]" tag — no per-folder SMB listing needed, which is what
+     * makes 12k rows finish in one pass. Only SMB/115 (drive-letter) rows are
+     * imported; local-only entries are deliberately skipped.
      */
     private static int importHistoryMarks(Context context, MangaSettings settings,
                                           MangaReadingState state, JSONArray items,
                                           int skip) {
-        int imported = 0;
-        java.util.Map<String, List<String>> nameCache = new java.util.HashMap<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        // Cap both the rows scanned and the folders listed: a sync runs on a
-        // background thread but the user expects it to finish in seconds.
-        int limit = Math.min(items.length(), 500);
-        for (int i = skip; i < limit; i++) {
+        java.util.List<MangaReadingState.Chapter> batch = new java.util.ArrayList<>();
+        for (int i = skip; i < items.length(); i++) {
             JSONObject row = items.optJSONObject(i);
             if (row == null) {
                 continue;
@@ -245,43 +275,41 @@ public final class MangaNeeViewSync {
                 continue;
             }
             String vrChapter = MangaSync.fromSyncId(context, settings, pcPath);
-            if (vrChapter.isEmpty() || vrChapter.startsWith("smb:/ ")
-                    || !vrChapter.startsWith("smb://")) {
-                continue;
+            if (!vrChapter.startsWith("smb://") && !vrChapter.startsWith("115:")
+                    && !pcPath.toUpperCase(java.util.Locale.ROOT).startsWith("X:/")) {
+                continue;   // unrelated drive, skip
             }
-            // NeeView uses "<folder>\movie.mp4" for a per-file row; collapse
-            // it onto the parent folder the reader actually opens.
+            // X: rows without a learned 115 key still get a stable mark so the
+            // folder shows a frame; a later mapping upgrade can re-link them.
+            if (vrChapter.startsWith("smb:/ ") || vrChapter.isEmpty()) {
+                vrChapter = pcPath;
+            }
+            // A per-video row is "<chapter>\movie.mp4"; fold it into its parent.
             String folder = vrChapter;
             int slash = folder.lastIndexOf('/');
             String tail = slash > 0 ? folder.substring(slash + 1) : folder;
             if (!pageName.isEmpty() && pageName.equals(tail) && slash > 0) {
                 folder = folder.substring(0, slash);
             }
-            if (!seen.add(folder)) {
-                continue;
-            }
-            List<String> names = nameCache.get(folder);
-            if (names == null) {
-                names = pageNames(settings, folder);
-                nameCache.put(folder, names);
-            }
-            if (names.isEmpty()) {
-                continue;
-            }
-            int page = pageName.isEmpty() ? 0 : names.indexOf(pageName);
+            int page = pageNumber(pageName);       // 1-based
+            int total = totalPages(tail);
             if (page < 0) {
-                // Video / unmatched row: treat as the chapter's last page.
-                page = names.size() - 1;
+                continue;
             }
-            long ts = parseStamp(row.optString("LastAccessTime", ""));
-            if (state.importChapter(folder, page, names.size(), ts)) {
-                imported++;
+            // Reader uses 0-based page indexes.
+            int pageIndex = Math.max(0, page - 1);
+            if (total < page) {
+                total = page;                       // never below the reached page
             }
-            if (nameCache.size() >= 150) {
-                break;
-            }
+            MangaReadingState.Chapter c = new MangaReadingState.Chapter(folder);
+            c.page = pageIndex;
+            c.total = total;
+            c.ts = parseStamp(row.optString("LastAccessTime", ""));
+            batch.add(c);
         }
-        Log.i(TAG, "imported " + imported + " history marks from " + items.length() + " rows");
+        int imported = state.importChapters(batch);
+        Log.i(TAG, "imported " + imported + " history marks from " + items.length()
+                + " rows (" + batch.size() + " drive rows)");
         return imported;
     }
 
