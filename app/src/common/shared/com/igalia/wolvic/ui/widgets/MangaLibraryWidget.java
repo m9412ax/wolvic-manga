@@ -65,6 +65,7 @@ import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.manga.MangaSourceManager;
 import com.igalia.wolvic.manga.MangaSourceRepository;
 import com.igalia.wolvic.manga.MangaSync;
+import com.igalia.wolvic.manga.MangaNeeViewSync;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.manga.SmbRemoteManga;
@@ -718,8 +719,9 @@ public class MangaLibraryWidget extends UIWidget {
             return true;
         }
         if (mCurrentPage == MangaPage.LOCAL) {
+            // Step up one directory, but stop at the configured manga root.
             File parent = mLocalDir != null ? mLocalDir.getParentFile() : null;
-            if (parent != null) {
+            if (parent != null && (mRoot == null || !mLocalDir.equals(mRoot))) {
                 mLocalDir = parent;
                 mSettings.setLastDir(parent.getAbsolutePath());
                 refreshPage(MangaPage.LOCAL);
@@ -728,7 +730,31 @@ public class MangaLibraryWidget extends UIWidget {
             switchPage(MangaPage.LIBRARY);
             return true;
         }
+        if (mCurrentPage == MangaPage.SMB) {
+            // The controller back used to fall through to "return to shelf",
+            // skipping one directory level (the on-screen ← already worked).
+            int slash = mSmbPath == null ? -1 : mSmbPath.lastIndexOf('/');
+            if (slash >= 0) {
+                mSmbPath = slash > 0 ? mSmbPath.substring(0, slash) : "";
+                refreshPage(MangaPage.SMB);
+                return true;
+            }
+            switchPage(MangaPage.LIBRARY);
+            return true;
+        }
         if (mCurrentPage == MangaPage.WEBDAV) {
+            if ("115".equals(mNetdiskMode)) {
+                if (!mP115ParentStack.isEmpty()) {
+                    String[] parent = mP115ParentStack.pop();
+                    mP115Cid = parent[0];
+                    mP115Title = parent[1];
+                } else {
+                    mP115Cid = "0";
+                    mP115Title = "115 网盘";
+                }
+                refreshPage(MangaPage.WEBDAV);
+                return true;
+            }
             int slash = mWebDavUrl == null ? -1 : mWebDavUrl.lastIndexOf('/', Math.max(0, mWebDavUrl.length() - 2));
             if (slash > 8) {
                 mWebDavUrl = mWebDavUrl.substring(0, slash + 1);
@@ -1524,7 +1550,9 @@ public class MangaLibraryWidget extends UIWidget {
             Toast.makeText(getContext(), "正在同步…", Toast.LENGTH_SHORT).show();
         }
         mSyncExecutor.execute(() -> {
-            final MangaSync.Result result = MangaSync.sync(getContext(), mSettings);
+            final MangaSync.Result result = mSettings.bool(MangaSettings.SYNC_NEEV_DIRECT)
+                    ? MangaNeeViewSync.sync(getContext(), mSettings)
+                    : MangaSync.sync(getContext(), mSettings);
             mLastAutoPullMs = System.currentTimeMillis();
             mLastAutoPushMs = mLastAutoPullMs;
             mMain.post(() -> {

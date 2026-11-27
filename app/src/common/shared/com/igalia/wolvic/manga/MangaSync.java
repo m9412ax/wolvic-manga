@@ -339,7 +339,7 @@ public final class MangaSync {
 
     /** Writes the imported chapter/page into the key the reader actually
      *  resumes from. Without this, remote progress only colours the cards. */
-    private static void updateLegacyResume(Context context, MangaSettings settings,
+    public static void updateLegacyResume(Context context, MangaSettings settings,
                                            MangaReadingState state, List<String> changedKeys) {
         if (changedKeys.isEmpty()) {
             return;

@@ -211,6 +211,12 @@ public class MangaOptionsView extends SettingsView
 
         section("跨设备同步（SMB / 115 文件夹）");
         switchRow("启用同步（进度 / 历史 / 书架）", MangaSettings.SYNC_ENABLED);
+        switchRow("直接读写 NeeView 的 History.json（无需电脑脚本）",
+                MangaSettings.SYNC_NEEV_DIRECT);
+        edit("SMB 同步共享名（电脑放 NeeView Profile 的盘，如 d）",
+                MangaSettings.SYNC_SMB_SHARE);
+        edit("SMB 同步文件夹（相对共享根，默认 APP/NeeView/Profile）",
+                MangaSettings.SYNC_NEEV_FOLDER);
         radio("同步后端", MangaSettings.SYNC_BACKEND,
                 new String[]{"SMB 共享目录", "115 网盘目录"}, new int[]{0, 1});
         edit("同步文件夹名（建在共享/网盘根目录）", MangaSettings.SYNC_FOLDER);

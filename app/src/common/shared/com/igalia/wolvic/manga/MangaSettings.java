@@ -156,6 +156,12 @@ public final class MangaSettings {
     public static final String SYNC_AUTO_PULL = "sync_auto_pull";
     /** Last successful sync timestamp (ms). */
     public static final String SYNC_LAST_TS = "sync_last_ts";
+    /** Write VeeView's own History.json directly instead of our JSON + script. */
+    public static final String SYNC_NEEV_DIRECT = "sync_neev_direct";
+    /** SMB share that holds the PC profile (usually the D drive share). */
+    public static final String SYNC_SMB_SHARE = "sync_smb_share";
+    /** Folder under that share containing History.json. */
+    public static final String SYNC_NEEV_FOLDER = "sync_neev_folder";
 
     public static final String WEBDAV_URL = "webdav_url";
     public static final String WEBDAV_USER = "webdav_user";
@@ -302,6 +308,7 @@ public final class MangaSettings {
             case PROGRESS_VIDEO:
             case ADV_HW_ACCEL:
             case SYNC_AUTO_PUSH:
+            case SYNC_NEEV_DIRECT:
                 return true;
             default:
                 return false;
@@ -371,6 +378,10 @@ public final class MangaSettings {
                 return "manga-sync";
             case SYNC_DEVICE:
                 return "VR-阅读器";
+            case SYNC_SMB_SHARE:
+                return "d";
+            case SYNC_NEEV_FOLDER:
+                return "APP/NeeView/Profile";
             case SOURCE_ROOT:
                 return new File(Environment.getExternalStorageDirectory(), "Manga").getAbsolutePath();
             case SOURCE_IMAGE_FORMATS:
