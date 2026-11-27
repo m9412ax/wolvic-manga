@@ -2267,7 +2267,7 @@ public class MangaLibraryWidget extends UIWidget {
                         names.add(e.name);
                     }
                 }
-                names.sort(NaturalOrder.INSTANCE);
+                names.sort((a, b) -> MangaCoverAdapter.naturalCompare(a, b));
             } catch (Exception e) {
                 Log.w(TAG, "listRemoteBookChapters failed: " + e.getMessage());
             }
