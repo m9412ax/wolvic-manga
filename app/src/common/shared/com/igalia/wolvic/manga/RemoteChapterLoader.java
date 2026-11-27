@@ -38,6 +38,11 @@ public final class RemoteChapterLoader {
      *  rename() and producing endless "SMB 下载为空" / black pages. */
     private static final Map<String, ActiveDownload> ACTIVE = new ConcurrentHashMap<>();
 
+    /** Chapter folders a warm-up thread is already filling (capacity prefetch
+     *  is asked for on every page turn while the reader sits at an edge). */
+    private static final java.util.Set<String> PREFETCHING =
+            ConcurrentHashMap.newKeySet();
+
     private static final class ActiveDownload {
         final String key;
         final List<Progress> progresses = new ArrayList<>();
@@ -351,10 +356,18 @@ public final class RemoteChapterLoader {
     public static void prefetch(final RemoteManga manga,
                                 final RemoteManga.ChapterInfo chapter,
                                 final File dir, final int maxPages) {
+        final String key = dir.getAbsolutePath();
         // Never prefetch a chapter that is actively downloading: two threads
         // writing the same page's .tmp is exactly what causes "下载为空".
-        if (ACTIVE.containsKey(dir.getAbsolutePath())) {
-            Log.i(TAG, "prefetch skipped (active) " + dir.getAbsolutePath());
+        if (ACTIVE.containsKey(key)) {
+            Log.i(TAG, "prefetch skipped (active) " + key);
+            return;
+        }
+        // Capacity-based callers ask on every page turn while the reader sits
+        // at the chapter edge; without this guard each tick started ANOTHER
+        // prefetch thread for the same folder.
+        if (!PREFETCHING.add(key)) {
+            Log.i(TAG, "prefetch skipped (already warming) " + key);
             return;
         }
         new Thread(() -> {
@@ -372,8 +385,82 @@ public final class RemoteChapterLoader {
                 Log.i(TAG, "prefetch " + chapter.name + " " + got + "/" + n + " pages");
             } catch (Throwable e) {
                 Log.w(TAG, "prefetch failed: " + e.getMessage());
+            } finally {
+                PREFETCHING.remove(key);
             }
         }, "remote-prefetch").start();
+    }
+
+    // ------------------------------------------------ disk budget (capacity)
+
+    private static volatile long sUsageBytes = -1L;
+    private static volatile long sUsageAtMs = 0L;
+    private static final java.util.concurrent.atomic.AtomicBoolean sUsageScanning =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Total bytes currently held by the remote caches. Never blocks: returns
+     *  the last known value and kicks one background scan at most every 20 s.
+     *  Called from the UI thread on every page turn, so it must stay cheap. */
+    public static long cacheUsageBytes(Context context) {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if ((sUsageBytes < 0 || now - sUsageAtMs > 20000L)
+                && sUsageScanning.compareAndSet(false, true)) {
+            final Context app = context.getApplicationContext();
+            new Thread(() -> {
+                try {
+                    measureUsage(app);
+                } catch (Throwable e) {
+                    Log.w(TAG, "usage scan failed: " + e.getMessage());
+                } finally {
+                    sUsageScanning.set(false);
+                }
+            }, "cache-usage").start();
+        }
+        return sUsageBytes < 0 ? 0L : sUsageBytes;
+    }
+
+    /** Synchronous usage measurement (IO threads only). */
+    public static long cacheUsageBytesNow(Context context) {
+        try {
+            return measureUsage(context.getApplicationContext());
+        } catch (Throwable e) {
+            return sUsageBytes < 0 ? 0L : sUsageBytes;
+        }
+    }
+
+    private static long measureUsage(Context context) {
+        long total = 0L;
+        File[] chunks = new File[]{remoteCacheRoot(context),
+                new File(remoteCacheRoot(context).getParentFile(), "remote-single"),
+                new File(context.getExternalCacheDir(), "video-cache")};
+        for (File root : chunks) {
+            if (root == null || !root.isDirectory()) continue;
+            File[] subs = root.listFiles();
+            if (subs == null) continue;
+            for (File s : subs) {
+                if (s.isDirectory()) total += dirSize(s);
+                else if (s.isFile()) total += s.length();
+            }
+        }
+        sUsageBytes = total;
+        sUsageAtMs = android.os.SystemClock.elapsedRealtime();
+        return total;
+    }
+
+    /** Disk preload is CAPACITY based, not page based: keep pulling pages until
+     *  the cache reaches the user's 硬盘上限 (设置 → 图片缓存上限 · 硬盘).
+     *  [avgPageBytes] is the average size of a page in the current chapter; 0
+     *  falls back to a 4 MB guess. */
+    public static int pagesByBudget(Context context, long avgPageBytes) {
+        long cap = MangaSettings.get(context).integer(MangaSettings.IMAGE_CACHE_MB)
+                * 1024L * 1024L;
+        long remain = cap - cacheUsageBytes(context);
+        if (remain <= 0L) {
+            return 1;
+        }
+        long avg = avgPageBytes > 0 ? avgPageBytes : 4L * 1024L * 1024L;
+        int pages = (int) (remain / avg);
+        return Math.max(1, Math.min(400, pages));
     }
 
     /** Evicts oldest chapter folders until the remote cache is under the cap.
@@ -430,6 +517,9 @@ public final class RemoteChapterLoader {
                     Log.i(TAG, "evicted " + ch.getAbsolutePath() + " (" + s + " bytes)");
                 }
             }
+            // Let the next budget query re-measure instead of trusting a
+            // pre-eviction number (otherwise prefetch stays idle for 20 s).
+            sUsageAtMs = 0L;
         } catch (Throwable e) {
             Log.w(TAG, "enforceCacheCap failed: " + e.getMessage());
         }

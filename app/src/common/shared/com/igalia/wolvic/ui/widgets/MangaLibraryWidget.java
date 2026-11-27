@@ -1835,14 +1835,40 @@ public class MangaLibraryWidget extends UIWidget {
             }
         }
         final int localTotal = localCount;
+        int remoteCount = 0;
+        int srcCount = 0;
+        for (MangaCoverAdapter.MangaItem item : items) {
+            if (item.remoteKey == null) {
+                continue;
+            }
+            if (item.remoteKey.startsWith(SHELF_SRC)) {
+                srcCount++;
+            } else {
+                remoteCount++;
+            }
+        }
+        final int remoteTotal = remoteCount;
+        final int srcTotal = srcCount;
         MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, "删除", s -> {
             s.section("将处理");
             s.caption(names.toString());
             s.divider();
-            s.hint(localTotal > 0
-                    ? "本地文件夹会连同里面的图片/视频一起删除且无法恢复；"
-                    + "SMB / 115 / 扩展源条目只会从书架移除，不会删远端文件。"
-                    : "只会从书架移除，不会删除远端文件，也不清除阅读进度。");
+            if (localTotal > 0) {
+                s.hint("本地：" + localTotal + " 部，会删除文件夹里的图片 / 视频，无法恢复。");
+            }
+            if (remoteTotal > 0) {
+                // Same as the file browser's delete: the whole book folder goes
+                // away on the NAS / 115, not just the shelf entry. "移出书架"
+                // (the NeeView bookmark equivalent) is a separate button.
+                s.hint("SMB / 115：" + remoteTotal + " 部，会删除共享 / 网盘上的"
+                        + "整本文件夹（含全部章节），无法恢复。");
+            }
+            if (srcTotal > 0) {
+                s.hint("扩展源：" + srcTotal + " 部，只能移出书架（网站内容无法删除）。");
+            }
+            if (remoteTotal > 0 || localTotal > 0) {
+                s.hint("只想取消收藏请用「移出书架」，它不会删任何文件。");
+            }
         }, new MangaQuickSheet.DismissListener() {
             @Override
             public void onConfirm() {
@@ -1852,18 +1878,91 @@ public class MangaLibraryWidget extends UIWidget {
         sheet.withFooter(false);
     }
 
+    /** Path of an SMB shelf key relative to the share root, or null. */
+    private String smbRelFromShelfKey(String shelfKey) {
+        if (shelfKey == null || !shelfKey.startsWith(SHELF_SMB)) {
+            return null;
+        }
+        String key = MangaSync.repairSmbKey(shelfKey.substring(SHELF_SMB.length()), mSettings);
+        String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+        if (key == null || !key.startsWith(prefix)) {
+            return null;
+        }
+        String rel = key.substring(prefix.length());
+        while (rel.endsWith("/")) {
+            rel = rel.substring(0, rel.length() - 1);
+        }
+        return rel.isEmpty() ? null : rel;
+    }
+
+    /** 115 cid of a shelf key (the part before '|'), or null. */
+    private String cidFromShelfKey(String shelfKey) {
+        if (shelfKey == null || !shelfKey.startsWith(SHELF_115)) {
+            return null;
+        }
+        String rest = shelfKey.substring(SHELF_115.length());
+        int sep = rest.indexOf('|');
+        String cid = sep > 0 ? rest.substring(0, sep) : rest;
+        return cid.isEmpty() ? null : cid;
+    }
+
     private void performShelfDelete(final List<MangaCoverAdapter.MangaItem> items) {
         mIoExecutor.execute(() -> {
             int deleted = 0;
             int unlinked = 0;
+            int failed = 0;
+            String lastError = null;
+            final MangaReadingState state = MangaReadingState.get(getContext());
             for (MangaCoverAdapter.MangaItem item : items) {
-                String key = item.remoteKey != null ? item.remoteKey : item.folder.getAbsolutePath();
-                if (item.remoteKey == null && item.folder.isDirectory()) {
-                    if (deleteRecursiveLocal(item.folder)) {
+                final String key = item.remoteKey != null
+                        ? item.remoteKey : (item.folder == null ? "" : item.folder.getAbsolutePath());
+                if (item.remoteKey == null) {
+                    if (item.folder != null && item.folder.isDirectory()
+                            && deleteRecursiveLocal(item.folder)) {
                         deleted++;
                     }
-                    MangaReadingState.get(getContext()).forgetPrefix(item.folder.getAbsolutePath());
+                    state.forgetPrefix(item.folder == null ? "" : item.folder.getAbsolutePath());
+                } else if (item.remoteKey.startsWith(SHELF_SMB)) {
+                    String rel = smbRelFromShelfKey(item.remoteKey);
+                    if (rel == null) {
+                        failed++;
+                        lastError = "SMB 地址无法解析（主机 / 共享已改变？）";
+                    } else {
+                        try {
+                            MangaSmb.delete(smbAuth(),
+                                    java.util.Collections.singletonList(rel));
+                            deleted++;
+                            state.forgetPrefix("remote:smb://"
+                                    + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                                    + mSettings.text(MangaSettings.SMB_SHARE) + "/" + rel);
+                        } catch (Exception e) {
+                            failed++;
+                            lastError = e.getMessage();
+                            Log.w(TAG, "shelf delete SMB failed " + rel + ": " + e.getMessage());
+                        }
+                    }
+                } else if (item.remoteKey.startsWith(SHELF_115)) {
+                    String cid = cidFromShelfKey(item.remoteKey);
+                    String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+                    if (cid == null || cookie == null || cookie.isEmpty()) {
+                        failed++;
+                        lastError = "115 未登录，无法删除网盘文件";
+                    } else {
+                        try {
+                            String parent = Manga115Api.findParentCid(cookie, cid);
+                            Manga115Api.deleteFiles(cookie, parent,
+                                    java.util.Collections.singletonList(cid));
+                            deleted++;
+                            state.forgetPrefix("115:" + cid);
+                        } catch (Exception e) {
+                            failed++;
+                            lastError = e.getMessage();
+                            Log.w(TAG, "shelf delete 115 failed " + cid + ": " + e.getMessage());
+                        }
+                    }
                 }
+                // Extension entries have no deletable file: unlink only.
                 if (mSettings.isInBookshelf(key)) {
                     mSettings.removeFromBookshelf(key);
                     unlinked++;
@@ -1871,9 +1970,17 @@ public class MangaLibraryWidget extends UIWidget {
             }
             final int d = deleted;
             final int u = unlinked;
+            final int f = failed;
+            final String err = lastError;
             mMain.post(() -> {
-                Toast.makeText(getContext(), "已删除 " + d + " 个文件夹 · 移出书架 " + u + " 项",
-                        Toast.LENGTH_SHORT).show();
+                String msg = "已删除并移出 " + d + " 部";
+                if (u > d) {
+                    msg = "已从书架移除 " + u + " 部";
+                }
+                if (f > 0) {
+                    msg += " · " + f + " 部失败：" + (err == null ? "未知错误" : err);
+                }
+                Toast.makeText(getContext(), msg, Toast.LENGTH_LONG).show();
                 setShelfSelectionMode(false);
                 scanLibrary();
             });
@@ -2630,20 +2737,25 @@ public class MangaLibraryWidget extends UIWidget {
                 View latestRow = null;
                 for (String name : chapters) {
                     i++;
+                    final int idx = i;
                     String chapterKey = key + "/" + name;
                     MangaReadingState.Chapter mark = state.chapter(chapterKey);
                     String markPrefix = mark == null ? "" : mark.isDone() ? "✓ " : "▸ ";
                     String tail = mark == null ? "" : "  ·  "
                             + Math.min(mark.page + 1, Math.max(1, mark.total))
                             + (mark.total > 0 ? "/" + mark.total : "") + " 页";
-                    String label = markPrefix + i + ". " + name + tail;
+                    String label = markPrefix + idx + ". " + name + tail;
+                    final String relChapter = rel + "/" + name;
                     Button row = addBookChapterButton(content, label, () -> {
                         // Open the BOOK, positioned at this chapter: opening
                         // the chapter folder alone gave a one-chapter playlist,
                         // so prev/next chapter did nothing.
                         mOpenChapterHint = name;
                         openRemoteManga(smbManga(smbAuth(), rel), null, false);
-                    });
+                    }, () -> confirmChapterDelete(idx + ". " + name,
+                            "会从 SMB 共享删除整个章节文件夹：\n" + relChapter
+                                    + "\n里面的图片 / 视频一并删除，无法恢复。",
+                            () -> deleteSmbChapter(relChapter, chapterKey)));
                     if (mark != null) {
                         latestRow = row;
                     }
@@ -2691,6 +2803,7 @@ public class MangaLibraryWidget extends UIWidget {
                 View latestRow = null;
                 for (String[] row : rows) {
                     i++;
+                    final int idx = i;
                     String chapterKey = "115:" + row[0];
                     MangaReadingState.Chapter mark = state.chapter(chapterKey);
                     String markPrefix = mark == null ? "" : mark.isDone() ? "✓ " : "▸ ";
@@ -2698,10 +2811,13 @@ public class MangaLibraryWidget extends UIWidget {
                             + Math.min(mark.page + 1, Math.max(1, mark.total))
                             + (mark.total > 0 ? "/" + mark.total : "") + " 页";
                     Button button = addBookChapterButton(content,
-                            markPrefix + i + ". " + row[1] + tail, () -> {
+                            markPrefix + idx + ". " + row[1] + tail, () -> {
                                 mOpenChapterHint = row[1];
                                 openRemoteManga(p115Manga(cookie, cid, title), null, false);
-                            });
+                            }, () -> confirmChapterDelete(idx + ". " + row[1],
+                                    "会从 115 网盘删除整个章节文件夹：\n" + row[1]
+                                            + "\n里面的图片 / 视频一并删除，无法恢复。",
+                                    () -> delete115Chapter(cid, row[0], chapterKey)));
                     if (mark != null) {
                         latestRow = button;
                     }
@@ -2715,7 +2831,19 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
-    private Button addBookChapterButton(LinearLayout content, String label, Runnable click) {        Button row = new Button(getContext());
+    private Button addBookChapterButton(LinearLayout content, String label, Runnable click) {
+        return addBookChapterButton(content, label, click, null);
+    }
+
+    /** A chapter row: the label button plus an optional 🗑 button that removes
+     *  ONLY this chapter (never its siblings). */
+    private Button addBookChapterButton(LinearLayout content, String label,
+                                        Runnable click, @Nullable Runnable delete) {
+        LinearLayout line = new LinearLayout(getContext());
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button row = new Button(getContext());
         row.setText(label);
         row.setAllCaps(false);
         row.setTextSize(17f);
@@ -2724,12 +2852,124 @@ public class MangaLibraryWidget extends UIWidget {
         row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         row.setMinHeight(dp(50));
         row.setOnClickListener(v -> click.run());
+        line.addView(row, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        if (delete != null) {
+            Button del = new Button(getContext());
+            del.setText("🗑");
+            del.setContentDescription("删除本章");
+            del.setAllCaps(false);
+            del.setTextSize(16f);
+            del.setTextColor(0xFFFF8A80);
+            del.setBackgroundColor(0xFF2E2226);
+            del.setOnClickListener(v -> delete.run());
+            LinearLayout.LayoutParams dlp =
+                    new LinearLayout.LayoutParams(dp(54), dp(50));
+            dlp.setMargins(dp(6), 0, 0, 0);
+            line.addView(del, dlp);
+        }
+
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, dp(3), 0, dp(3));
-        content.addView(row, lp);
+        content.addView(line, lp);
         return row;
+    }
+
+    /** Confirmation sheet for removing ONE chapter (never the whole book). */
+    private void confirmChapterDelete(String label, String detail, Runnable ok) {
+        if (mPageContainer == null) {
+            return;
+        }
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, "删除章节", s -> {
+            s.section("将删除");
+            s.caption(label);
+            s.divider();
+            s.hint(detail);
+            s.hint("只删除这一章，同书的其他章节不受影响。");
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+                ok.run();
+            }
+        });
+        sheet.withFooter(false);
+    }
+
+    private void deleteLocalChapter(final File dir, final String chapterKey) {
+        mIoExecutor.execute(() -> {
+            final boolean ok = deleteRecursiveLocal(dir);
+            if (ok) {
+                MangaReadingState.get(getContext()).forgetPrefix(chapterKey);
+            }
+            mMain.post(() -> {
+                Toast.makeText(getContext(), ok ? "已删除本章" : "删除失败",
+                        Toast.LENGTH_SHORT).show();
+                if (mCurrentPage == MangaPage.BOOK) {
+                    refreshPage(MangaPage.BOOK);
+                }
+            });
+        });
+    }
+
+    private void deleteSmbChapter(final String rel, final String chapterKey) {
+        final MangaSmb.Auth auth = smbAuth();
+        mIoExecutor.execute(() -> {
+            boolean ok = true;
+            String error = null;
+            try {
+                MangaSmb.delete(auth, java.util.Collections.singletonList(rel));
+            } catch (Exception e) {
+                ok = false;
+                error = e.getMessage();
+                Log.w(TAG, "deleteSmbChapter failed " + rel + ": " + e.getMessage());
+            }
+            if (ok) {
+                MangaReadingState.get(getContext()).forgetPrefix(chapterKey);
+            }
+            final boolean done = ok;
+            final String err = error;
+            mMain.post(() -> {
+                Toast.makeText(getContext(), done ? "已删除本章 · " + rel
+                                : "删除失败：" + (err == null ? "未知错误" : err),
+                        Toast.LENGTH_LONG).show();
+                if (mCurrentPage == MangaPage.BOOK) {
+                    refreshPage(MangaPage.BOOK);
+                }
+            });
+        });
+    }
+
+    private void delete115Chapter(final String bookCid, final String chapterCid,
+                                  final String chapterKey) {
+        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        mIoExecutor.execute(() -> {
+            boolean ok = true;
+            String error = null;
+            try {
+                Manga115Api.deleteFiles(cookie, bookCid,
+                        java.util.Collections.singletonList(chapterCid));
+            } catch (Exception e) {
+                ok = false;
+                error = e.getMessage();
+                Log.w(TAG, "delete115Chapter failed " + chapterCid + ": " + e.getMessage());
+            }
+            if (ok) {
+                MangaReadingState.get(getContext()).forgetPrefix(chapterKey);
+            }
+            final boolean done = ok;
+            final String err = error;
+            mMain.post(() -> {
+                Toast.makeText(getContext(), done ? "已删除本章"
+                                : "删除失败：" + (err == null ? "未知错误" : err),
+                        Toast.LENGTH_LONG).show();
+                if (mCurrentPage == MangaPage.BOOK) {
+                    refreshPage(MangaPage.BOOK);
+                }
+            });
+        });
     }
 
     private String bookMetaText(boolean local, MangaReadingState.Progress progress) {
@@ -2797,30 +3037,36 @@ public class MangaLibraryWidget extends UIWidget {
             chapters.add(folder);
         }
         MangaReadingState state = MangaReadingState.get(getContext());
+        // Only real sub-folders are chapters; the single synthetic entry is the
+        // book folder itself and must never be deleted from a chapter row.
+        final boolean hasChapters = chapters.size() > 1
+                || !chapters.get(0).equals(folder);
         int index = 0;
         View latestRow = null;
         for (File chapter : chapters) {
             index++;
+            final int idx = index;
             MangaReadingState.Chapter mark = state.chapter(chapter.getAbsolutePath());
             String prefix = mark == null ? ""
                     : mark.isDone() ? "✓ " : "▸ ";
             String tail = mark == null ? ""
                     : "  ·  " + Math.min(mark.page + 1, Math.max(1, mark.total))
                     + (mark.total > 0 ? "/" + mark.total : "") + " 页";
-            Button row = new Button(getContext());
-            row.setText(prefix + index + ". " + chapter.getName() + tail);
-            row.setAllCaps(false);
-            row.setTextSize(17f);
-            row.setTextColor(0xFFFFFFFF);
-            row.setBackgroundColor(0xFF232C38);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setMinHeight(dp(50));
-            row.setOnClickListener(v -> openLocalSession(chapter, null, true));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            lp.setMargins(0, dp(3), 0, dp(3));
-            content.addView(row, lp);
+            final File chapterDir = chapter;
+            final Runnable deleteAction;
+            if (hasChapters) {
+                deleteAction = () -> confirmChapterDelete(idx + ". " + chapterDir.getName(),
+                        "会删除本地文件夹：\n" + chapterDir.getAbsolutePath()
+                                + "\n里面的图片 / 视频一并删除，无法恢复。",
+                        () -> deleteLocalChapter(chapterDir,
+                                chapterDir.getAbsolutePath()));
+            } else {
+                deleteAction = null;
+            }
+            Button row = addBookChapterButton(content,
+                    prefix + idx + ". " + chapter.getName() + tail,
+                    () -> openLocalSession(chapterDir, null, true),
+                    deleteAction);
             // Chapters are listed in reading order: the last one with a mark
             // is the furthest chapter read, regardless of open order.
             if (mark != null) {

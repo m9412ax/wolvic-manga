@@ -154,13 +154,13 @@ public class MangaChapterSession {
                 if (i < 0 || i >= chapters.size()) {
                     return;
                 }
-                // Only warm a small head. The page LIST is now cached (so the
-                // chapter opens with all URLs instantly) and downloadChapter
-                // streams the rest on demand. Prefetching 64 full images used
-                // to saturate the host connection and make the just-switched
-                // chapter's own images crawl. A few pages keeps it cheap.
+                // Disk preload is CAPACITY based: keep warming the neighbour
+                // chapter until the user's 硬盘上限 is reached instead of a
+                // fixed 3 pages. 120 pages is a sanity cap so one huge chapter
+                // cannot monopolise the connection.
                 MangaSourceRepository.INSTANCE.prefetchChapter(context, source, manga,
-                        chapters.get(i), 3);
+                        chapters.get(i), Math.min(120,
+                                RemoteChapterLoader.pagesByBudget(context, 0L)));
             }
 
             @Override
@@ -233,7 +233,9 @@ public class MangaChapterSession {
             @Override
             public void prefetchChapter(int i) {
                 if (i < 0 || i >= chapters.size()) return;
-                RemoteChapterLoader.prefetch(manga, chapters.get(i), dirs.get(i), 3);
+                // Capacity based (SMB / 115): fill up to the disk budget.
+                RemoteChapterLoader.prefetch(manga, chapters.get(i), dirs.get(i),
+                        Math.min(120, RemoteChapterLoader.pagesByBudget(context, 0L)));
             }
 
             @Override

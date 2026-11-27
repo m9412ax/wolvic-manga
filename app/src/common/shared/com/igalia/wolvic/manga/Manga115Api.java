@@ -324,6 +324,55 @@ public final class Manga115Api {
         }
     }
 
+    /** Parent folder id cache: cid -> pid. The delete endpoint wants a pid and
+     *  a shelf entry only stores the folder's own cid. */
+    private static final java.util.Map<String, String> PARENT_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Records a parent-child pair while browsing so a later delete does not
+     *  have to walk the tree again. */
+    public static void rememberParent(String parentCid, String childCid) {
+        if (parentCid != null && childCid != null && !parentCid.isEmpty()
+                && !childCid.isEmpty()) {
+            PARENT_CACHE.put(childCid, parentCid);
+        }
+    }
+
+    /** Best-effort parent cid of [target] (bounded breadth-first walk from the
+     *  root). 115's rb/delete uses pid only as bookkeeping - fid[] decides what
+     *  is actually removed - so "0" is a safe fallback when the walk fails. */
+    public static String findParentCid(String cookie, String target) {
+        if (target == null || target.isEmpty() || "0".equals(target)) {
+            return "0";
+        }
+        String cached = PARENT_CACHE.get(target);
+        if (cached != null) {
+            return cached;
+        }
+        java.util.ArrayDeque<String> queue = new java.util.ArrayDeque<>();
+        queue.add("0");
+        int visited = 0;
+        while (!queue.isEmpty() && visited < 60) {
+            String dir = queue.poll();
+            visited++;
+            try {
+                for (DirEntry e : listDir(cookie, dir)) {
+                    if (!e.isDir) continue;
+                    String child = e.cid != null && !e.cid.isEmpty() ? e.cid : e.fileId;
+                    if (child == null || child.isEmpty()) continue;
+                    PARENT_CACHE.put(child, dir);
+                    if (child.equals(target)) {
+                        return dir;
+                    }
+                    queue.add(child);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "findParentCid list " + dir + " failed: " + e.getMessage());
+            }
+        }
+        return "0";
+    }
+
     public static void deleteFiles(String cookie, String parentCid,
                                    java.util.List<String> ids) throws Exception {
         if (ids == null || ids.isEmpty()) {

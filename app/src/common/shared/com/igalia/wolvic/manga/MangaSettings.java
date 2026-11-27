@@ -46,10 +46,9 @@ public final class MangaSettings {
      *  into the Bitmap cache beforehand. Purely memory, independent of how
      *  many pages are fetched to disk. */
     public static final String READER_PRELOAD = "reader_preload";
-    /** Disk preload: how many pages ahead of the reading position a remote
-     *  chapter (SMB / 115 / figure source) downloads to local storage. Kept
-     *  separate from READER_PRELOAD: a slow link wants deep disk prefetch, a
-     *  fast link with huge images wants deep RAM preload. */
+    /** Deprecated: disk preload is now CAPACITY based (RemoteChapterLoader
+     *  .pagesByBudget + IMAGE_CACHE_MB). Kept only so old installs that stored
+     *  a page count do not lose the key on upgrade. */
     public static final String READER_FETCH_AHEAD = "reader_fetch_ahead";
     /** Number of background threads that decode the preload window in parallel. */
     public static final String READER_PRELOAD_THREADS = "reader_preload_threads";

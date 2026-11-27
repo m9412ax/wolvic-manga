@@ -311,14 +311,14 @@ public class MangaOptionsView extends SettingsView
                 MangaSettings.READER_PRELOAD,
                 new String[]{"不预载", "1 页", "2 页", "3 页", "4 页", "6 页", "8 页"},
                 new int[]{0, 1, 2, 3, 4, 6, 8});
-        radio("远程预下载页数 · 硬盘（SMB / 115 / 图源提前拉到本地）",
-                MangaSettings.READER_FETCH_AHEAD,
-                new String[]{"1 页", "2 页", "3 页", "4 页", "6 页", "8 页", "12 页"},
-                new int[]{1, 2, 3, 4, 6, 8, 12});
         radio("图片预加载线程 · 内存（越多翻页越快，占用内存越高）",
                 MangaSettings.READER_PRELOAD_THREADS,
                 new String[]{"1 线程", "2 线程", "3 线程", "4 线程"}, new int[]{1, 2, 3, 4});
-        button("当前图片缓存占用（硬盘）· 点击查看数值 / 清除",
+        // Disk preload is CAPACITY based (no page-count knob): SMB / 115 / 图源
+        // keep pulling pages to local storage until the 硬盘上限 above is used
+        // up, then the oldest chapters are evicted. That is what makes a 2 GB
+        // setting actually behave like 2 GB.
+        button("远程硬盘预载 · 按容量（SMB / 115 / 图源跟随上面的硬盘上限）· 点击查看占用 / 清除",
                 com.igalia.wolvic.manga.MangaCacheManager.imageCacheLabel(getContext()),
                 () -> {
                     long freed = com.igalia.wolvic.manga.MangaCacheManager.clearImageCache(getContext());

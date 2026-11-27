@@ -49,6 +49,7 @@ import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
 import com.igalia.wolvic.manga.RemoteManga;
+import com.igalia.wolvic.manga.RemoteChapterLoader;
 import com.igalia.wolvic.manga.SourceVideo;
 import com.igalia.wolvic.manga.browser.MangaQuickSheet;
 import com.igalia.wolvic.manga.PrefetchVideoDataSource;
@@ -132,6 +133,14 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private long mSingleFetchAt;
     /** Prefetch requests currently in flight (page indexes). */
     private final java.util.Set<Integer> mPrefetchInFlight = new java.util.HashSet<>();
+    /** Capacity-based prefetch can ask for dozens of pages at once (a 2 GB
+     *  budget at 3 MB/page = ~600). Every request spawns its own download
+     *  thread, so they are queued and run a few at a time instead of all at
+     *  once. Deep links stay fast because the bulk downloader is separate. */
+    private static final int FETCH_INFLIGHT_MAX = 3;
+    private final java.util.LinkedHashSet<Integer> mFetchQueue = new java.util.LinkedHashSet<>();
+    private int mFetchActive;
+    private boolean mPumpingFetch;
     /** Throttles page-list refreshes triggered by "next" at the last page. */
     private long mLastListRefreshRequest;
     /** A next-page request that arrived while the target page was still
@@ -711,6 +720,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mOpenAtChapterEnd = false;
         }
         mPrefetchInFlight.clear();
+        clearFetchQueue();
         mIndex = 0;
         mZoom = 1.0f;
         mPanX = 0f;
@@ -785,6 +795,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPendingTargetPage = -1;
         mOpenAtChapterEnd = false;
         mPrefetchInFlight.clear();
+        clearFetchQueue();
         mIndex = 0;
         mLoadGeneration++;
         mStripGeneration++;
@@ -1069,17 +1080,34 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     /** One targeted retry for a page the bulk download gave up on. */
     private void requestSinglePage(final int index) {
+        requestSinglePage(index, false);
+    }
+
+    /** [fromQueue] = this request holds one of the FETCH_INFLIGHT_MAX slots and
+     *  must release it (and pump the next one) on EVERY exit path. */
+    private void requestSinglePage(final int index, final boolean fromQueue) {
+        final Runnable release = () -> {
+            if (fromQueue) {
+                if (mFetchActive > 0) {
+                    mFetchActive--;
+                }
+                pumpFetchQueue();
+            }
+        };
         if (mChapterProvider == null) {
+            release.run();
             return;
         }
         long now = System.currentTimeMillis();
         if (mSingleFetchPage == index && now - mSingleFetchAt < 5000L) {
+            release.run();
             return;
         }
         // The deep read-ahead window asks for the same pages on every
         // preloadNext() tick. Without this guard the requests piled up into
         // dozens of competing SMB downloads (each with its own thread + list).
         if (!mPrefetchInFlight.add(index)) {
+            release.run();
             return;
         }
         mSingleFetchPage = index;
@@ -1088,6 +1116,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final int chapterIndex = mChapterIndex;
         mChapterProvider.fetchPage(chapterIndex, index, (dir, error) -> mMainHandler.post(() -> {
             mPrefetchInFlight.remove(index);
+            release.run();
             if (mDestroyed || session != mChapterSession || chapterIndex != mChapterIndex) {
                 return;
             }
@@ -2197,10 +2226,32 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return isContinuous() ? radius : Math.min(radius, 1);
     }
 
-    /** How many not-yet-downloaded pages a remote chapter fetches ahead. */
+    /** How many not-yet-downloaded pages a remote chapter fetches ahead.
+     *  CAPACITY based on purpose: the user sets a disk budget (设置 → 图片缓存
+     *  上限 · 硬盘, e.g. 2 GB) and prefetch keeps pulling pages until that
+     *  budget is used up. The old page-count knob meant "2 GB" silently
+     *  behaved like "4 pages". */
     private int fetchAhead() {
-        return Math.max(1, Math.min(12,
-                mSettings.integer(MangaSettings.READER_FETCH_AHEAD)));
+        long avg = averagePageBytes();
+        return RemoteChapterLoader.pagesByBudget(getContext(), avg);
+    }
+
+    /** Average size of an already-landed page in this chapter (cheap: samples
+     *  at most 8 files). 0 when nothing is on disk yet. */
+    private long averagePageBytes() {
+        if (mPages == null || mPages.isEmpty()) {
+            return 0L;
+        }
+        long sum = 0L;
+        int n = 0;
+        for (int i = 0; i < mPages.size() && n < 8; i += Math.max(1, mPages.size() / 8)) {
+            File f = mPages.get(i);
+            if (f != null && f.isFile() && f.length() > 0) {
+                sum += f.length();
+                n++;
+            }
+        }
+        return n == 0 ? 0L : sum / n;
     }
 
     private long pageCacheBudget() {
@@ -2323,7 +2374,38 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (positionOfRemotePage(remoteIndex) >= 0) {
             return;   // already on disk
         }
-        requestSinglePage(remoteIndex);
+        if (mPrefetchInFlight.contains(remoteIndex) || mFetchQueue.contains(remoteIndex)) {
+            return;
+        }
+        mFetchQueue.add(remoteIndex);
+        pumpFetchQueue();
+    }
+
+    /** Starts queued prefetches while fewer than FETCH_INFLIGHT_MAX run. */
+    private void pumpFetchQueue() {
+        if (mPumpingFetch) {
+            return;
+        }
+        mPumpingFetch = true;
+        try {
+            while (mFetchActive < FETCH_INFLIGHT_MAX && !mFetchQueue.isEmpty()) {
+                Integer next = mFetchQueue.iterator().next();
+                mFetchQueue.remove(next);
+                if (next == null || positionOfRemotePage(next) >= 0) {
+                    continue;
+                }
+                mFetchActive++;
+                requestSinglePage(next, true);
+            }
+        } finally {
+            mPumpingFetch = false;
+        }
+    }
+
+    private void clearFetchQueue() {
+        mFetchQueue.clear();
+        mFetchActive = 0;
+        mPumpingFetch = false;
     }
 
 
