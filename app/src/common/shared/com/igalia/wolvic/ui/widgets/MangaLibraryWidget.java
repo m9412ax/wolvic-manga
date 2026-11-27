@@ -64,6 +64,7 @@ import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaSettingsPanel;
 import com.igalia.wolvic.manga.MangaSourceManager;
 import com.igalia.wolvic.manga.MangaSourceRepository;
+import com.igalia.wolvic.manga.MangaSync;
 import com.igalia.wolvic.manga.MangaWebDav;
 import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.manga.SmbRemoteManga;
@@ -182,6 +183,10 @@ public class MangaLibraryWidget extends UIWidget {
     private int mShelfGridWidth = -1;
     /** Remote shelf keys whose cover download is already queued. */
     private final java.util.Set<String> mRemoteCoverPending = new java.util.HashSet<>();
+    /** Sync guards: one in-flight job, throttled auto push/pull. */
+    private boolean mSyncRunning;
+    private long mLastAutoPullMs;
+    private long mLastAutoPushMs;
 
     private String mWebDavUrl = "";
     private String mWebDavStatus = "未连接";
@@ -267,6 +272,12 @@ public class MangaLibraryWidget extends UIWidget {
      *  must never delay rebuilding the shelf. */
     private final ExecutorService mCoverExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "manga-cover");
+        thread.setDaemon(true);
+        return thread;
+    });
+    /** Sync has its own queue: an unreachable SMB host must not block scans. */
+    private final ExecutorService mSyncExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "manga-sync");
         thread.setDaemon(true);
         return thread;
     });
@@ -787,6 +798,9 @@ public class MangaLibraryWidget extends UIWidget {
             mTitle.setText(page.label);
         }
         refreshCurrentPage();
+        if (page == MangaPage.LIBRARY) {
+            maybeAutoPull();
+        }
         scrollPageToTop(page);
         // SMB: once configured, auto-connect on entry and show the share as a
         // plain folder list (no repeated setup screen).
@@ -1392,6 +1406,7 @@ public class MangaLibraryWidget extends UIWidget {
 
         View spacer = new View(getContext());
         bar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        bar.addView(shelfPill("☁ 同步", v -> runSync(false)));
         bar.addView(shelfPill("☑ 多选", v -> setShelfSelectionMode(true)));
 
         LinearLayout sel = new LinearLayout(getContext());
@@ -1485,6 +1500,69 @@ public class MangaLibraryWidget extends UIWidget {
         mSettings.put(MangaSettings.SORT_MODE, next);
         refreshShelfToolbarLabels();
         scanLibrary();
+    }
+
+    // ------------------------------------------------------ cross-device sync
+
+    /** Runs a pull→merge→push cycle off the UI thread. */
+    private void runSync(boolean automatic) {
+        if (!mSettings.bool(MangaSettings.SYNC_ENABLED)) {
+            if (!automatic) {
+                Toast.makeText(getContext(), "请先在设置 → 跨设备同步中启用", Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        if (mSyncRunning) {
+            if (!automatic) {
+                Toast.makeText(getContext(), "上次同步还没结束", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        mSyncRunning = true;
+        if (!automatic) {
+            Toast.makeText(getContext(), "正在同步…", Toast.LENGTH_SHORT).show();
+        }
+        mSyncExecutor.execute(() -> {
+            final MangaSync.Result result = MangaSync.sync(getContext(), mSettings);
+            mLastAutoPullMs = System.currentTimeMillis();
+            mLastAutoPushMs = mLastAutoPullMs;
+            mMain.post(() -> {
+                mSyncRunning = false;
+                Toast.makeText(getContext(), result.message,
+                        result.ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                if (result.ok) {
+                    refreshShelf();
+                    refreshPage(MangaPage.HISTORY);
+                    if (mCurrentPage == MangaPage.BOOK) {
+                        refreshPage(MangaPage.BOOK);
+                    }
+                }
+            });
+        });
+    }
+
+    /** Entering the shelf may pull remote changes, at most every 5 minutes. */
+    private void maybeAutoPull() {
+        if (!mSettings.bool(MangaSettings.SYNC_ENABLED)
+                || !mSettings.bool(MangaSettings.SYNC_AUTO_PULL)) {
+            return;
+        }
+        if (System.currentTimeMillis() - mLastAutoPullMs < 5 * 60 * 1000L) {
+            return;
+        }
+        runSync(true);
+    }
+
+    /** After reading, push the freshly written chapter mark (debounced). */
+    private void maybeAutoPush() {
+        if (!mSettings.bool(MangaSettings.SYNC_ENABLED)
+                || !mSettings.bool(MangaSettings.SYNC_AUTO_PUSH)) {
+            return;
+        }
+        if (System.currentTimeMillis() - mLastAutoPushMs < 30 * 1000L) {
+            return;
+        }
+        runSync(true);
     }
 
     private void continueLastReading() {
@@ -3257,6 +3335,7 @@ public class MangaLibraryWidget extends UIWidget {
         if (chapterKey == null || chapterKey.isEmpty()) {
             return;
         }
+        maybeAutoPush();
         if (chapterKey.startsWith("smb://")) {
             String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
                     + mSettings.text(MangaSettings.SMB_SHARE) + "/";

@@ -264,6 +264,104 @@ public final class MangaReadingState {
         return p;
     }
 
+    /** Snapshot of every chapter mark, used by the cross-device sync export. */
+    public List<Chapter> allChapters() {
+        load();
+        List<Chapter> out = new ArrayList<>();
+        for (Chapter c : mChapters.values()) {
+            Chapter copy = new Chapter(c.key);
+            copy.page = c.page;
+            copy.total = c.total;
+            copy.ts = c.ts;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    /**
+     * Merges a remote chapter mark. The newer timestamp wins; the page index
+     * never moves backwards when both sides agree on the page count.
+     * @return true when local state actually changed.
+     */
+    public boolean importChapter(String key, int page, int total, long ts) {
+        if (TextUtils.isEmpty(key)) {
+            return false;
+        }
+        load();
+        Chapter local = mChapters.get(key);
+        if (local == null) {
+            local = new Chapter(key);
+            mChapters.put(key, local);
+            local.page = Math.max(0, page);
+            local.total = Math.max(0, total);
+            local.ts = ts > 0 ? ts : System.currentTimeMillis();
+            saveChapters();
+            return true;
+        }
+        if (ts <= local.ts) {
+            return false;
+        }
+        int newPage = local.total == total
+                ? Math.max(local.page, page) : Math.max(0, page);
+        boolean changed = newPage != local.page || Math.max(0, total) != local.total;
+        local.page = newPage;
+        local.total = Math.max(0, total);
+        local.ts = ts;
+        if (changed) {
+            saveChapters();
+        }
+        return changed;
+    }
+
+    /** Merges one remote 历史 row; newer timestamp wins. @return true if changed */
+    public boolean importRecord(Record incoming) {
+        if (incoming == null || TextUtils.isEmpty(incoming.id)) {
+            return false;
+        }
+        load();
+        for (int i = 0; i < mHistory.size(); i++) {
+            Record local = mHistory.get(i);
+            if (!local.id.equals(incoming.id)) {
+                continue;
+            }
+            if (incoming.ts <= local.ts) {
+                return false;
+            }
+            Record copy = new Record();
+            copy.id = incoming.id;
+            copy.title = incoming.title;
+            copy.source = incoming.source;
+            copy.path = incoming.path;
+            copy.chapterKey = incoming.chapterKey;
+            copy.index = incoming.index;
+            copy.page = incoming.page;
+            copy.total = incoming.total;
+            copy.ts = incoming.ts;
+            copy.coverPath = incoming.coverPath;
+            mHistory.remove(i);
+            mHistory.add(0, copy);
+            saveHistory();
+            return true;
+        }
+        Record copy = new Record();
+        copy.id = incoming.id;
+        copy.title = incoming.title;
+        copy.source = incoming.source;
+        copy.path = incoming.path;
+        copy.chapterKey = incoming.chapterKey;
+        copy.index = incoming.index;
+        copy.page = incoming.page;
+        copy.total = incoming.total;
+        copy.ts = incoming.ts;
+        copy.coverPath = incoming.coverPath;
+        mHistory.add(0, copy);
+        while (mHistory.size() > MAX_HISTORY) {
+            mHistory.remove(mHistory.size() - 1);
+        }
+        saveHistory();
+        return true;
+    }
+
     /** Drops one chapter's progress (file deleted / chapter removed). */
     public void forget(String key) {
         if (TextUtils.isEmpty(key)) {

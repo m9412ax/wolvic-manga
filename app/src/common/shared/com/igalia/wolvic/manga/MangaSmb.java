@@ -22,8 +22,11 @@ import com.hierynomus.smbj.share.DiskShare;
 import com.hierynomus.smbj.share.File;
 
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -212,6 +215,70 @@ public final class MangaSmb {
             }
             Log.i(TAG, "download " + path + " -> " + written[0] + " bytes");
             return written[0];
+        } finally {
+            closeQuietly(connection);
+            closeQuietly(client);
+        }
+    }
+
+    /** Reads a small UTF-8 text file from the share (sync manifest). */
+    public static String readText(Auth auth, String relativePath) throws Exception {
+        SMBClient client = newClient();
+        Connection connection = null;
+        try {
+            connection = client.connect(auth.host);
+            Session session = connection.authenticate(new AuthenticationContext(
+                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
+                    auth.domain == null ? "" : auth.domain));
+            DiskShare share = (DiskShare) session.connectShare(auth.share);
+            String path = normalizePath(relativePath);
+            if (!share.fileExists(path)) {
+                return null;
+            }
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (File remote = share.openFile(path, READ_MASK, FILE_ATTRS, SHARE_ACCESS,
+                    SMB2CreateDisposition.FILE_OPEN, null);
+                 InputStream in = remote.getInputStream()) {
+                byte[] chunk = new byte[8192];
+                int n;
+                while ((n = in.read(chunk)) > 0) {
+                    buffer.write(chunk, 0, n);
+                }
+            }
+            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            closeQuietly(connection);
+            closeQuietly(client);
+        }
+    }
+
+    /** Writes a small UTF-8 text file, creating [relativePath]'s folders. */
+    public static void writeText(Auth auth, String relativePath, String content) throws Exception {
+        SMBClient client = newClient();
+        Connection connection = null;
+        try {
+            connection = client.connect(auth.host);
+            Session session = connection.authenticate(new AuthenticationContext(
+                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
+                    auth.domain == null ? "" : auth.domain));
+            DiskShare share = (DiskShare) session.connectShare(auth.share);
+            String path = normalizePath(relativePath);
+            int slash = path.lastIndexOf('/');
+            if (slash > 0) {
+                String folder = path.substring(0, slash);
+                if (!share.folderExists(folder)) {
+                    share.mkdir(folder);
+                }
+            }
+            java.util.Set<AccessMask> writeMask = EnumSet.of(
+                    AccessMask.FILE_WRITE_DATA, AccessMask.FILE_WRITE_ATTRIBUTES,
+                    AccessMask.FILE_READ_ATTRIBUTES, AccessMask.SYNCHRONIZE);
+            try (File remote = share.openFile(path, writeMask, FILE_ATTRS, SHARE_ACCESS,
+                    SMB2CreateDisposition.FILE_OVERWRITE_IF, null);
+                 OutputStream out = remote.getOutputStream()) {
+                out.write(content.getBytes(StandardCharsets.UTF_8));
+            }
+            Log.i(TAG, "writeText " + path + " -> " + content.length() + " chars");
         } finally {
             closeQuietly(connection);
             closeQuietly(client);

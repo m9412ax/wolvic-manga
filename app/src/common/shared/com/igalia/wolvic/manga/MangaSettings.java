@@ -136,6 +136,27 @@ public final class MangaSettings {
     /** Bookshelf entries (JSON array of absolute folder paths). */
     public static final String BOOKSHELF_ITEMS = "bookshelf_items";
 
+    // ------------------------------------------------------------- sync
+    /** Master switch for the cross-device progress sync folder. Default off. */
+    public static final String SYNC_ENABLED = "sync_enabled";
+    /** Storage backend: 0 = SMB share, 1 = 115 netdisk. */
+    public static final String SYNC_BACKEND = "sync_backend";
+    /** Folder name created at the root of the chosen backend. */
+    public static final String SYNC_FOLDER = "sync_folder";
+    /** 115 cid of the folder that holds the sync directory ("" = drive root). */
+    public static final String SYNC_115_CID = "sync_115_cid";
+    /** Path mapping lines "vrPrefix => pcPrefix", one per line. Used to build
+     *  the cross-device stable book id (e.g. smb://host/e/ => E:\\). */
+    public static final String SYNC_PATH_MAP = "sync_path_map";
+    /** Stable name of this device in the sync file. */
+    public static final String SYNC_DEVICE = "sync_device";
+    /** Push changes automatically when a chapter is closed. */
+    public static final String SYNC_AUTO_PUSH = "sync_auto_push";
+    /** Pull remote changes on entering the shelf, at most every N minutes. */
+    public static final String SYNC_AUTO_PULL = "sync_auto_pull";
+    /** Last successful sync timestamp (ms). */
+    public static final String SYNC_LAST_TS = "sync_last_ts";
+
     public static final String WEBDAV_URL = "webdav_url";
     public static final String WEBDAV_USER = "webdav_user";
     public static final String WEBDAV_PASS = "webdav_pass";
@@ -256,6 +277,10 @@ public final class MangaSettings {
         prefs().edit().putFloat(key, value).apply();
     }
 
+    public void put(String key, long value) {
+        prefs().edit().putLong(key, value).apply();
+    }
+
     // ------------------------------------------------------------ defaults
 
     public static boolean defaultBoolean(String key) {
@@ -276,6 +301,7 @@ public final class MangaSettings {
             case PROGRESS_ENABLED:
             case PROGRESS_VIDEO:
             case ADV_HW_ACCEL:
+            case SYNC_AUTO_PUSH:
                 return true;
             default:
                 return false;
@@ -341,6 +367,10 @@ public final class MangaSettings {
 
     public static String defaultString(String key) {
         switch (key) {
+            case SYNC_FOLDER:
+                return "manga-sync";
+            case SYNC_DEVICE:
+                return "VR-阅读器";
             case SOURCE_ROOT:
                 return new File(Environment.getExternalStorageDirectory(), "Manga").getAbsolutePath();
             case SOURCE_IMAGE_FORMATS:

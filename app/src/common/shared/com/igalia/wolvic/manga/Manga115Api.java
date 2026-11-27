@@ -233,6 +233,97 @@ public final class Manga115Api {
      * on the server). [parentCid] is the folder they live in; [ids] are the
      * file_id / cid values returned by {@link #listDir(String, String)}.
      */
+    /** Creates a folder if it does not exist yet; returns its cid. */
+    public static String ensureFolder(String cookie, String parentCid, String name)
+            throws Exception {
+        String pid = parentCid == null || parentCid.isEmpty() ? "0" : parentCid;
+        for (DirEntry entry : listDir(cookie, pid)) {
+            if (entry.isDir && name.equals(entry.name)) {
+                return entry.cid;
+            }
+        }
+        String json = httpPost("https://webapi.115.com/files/add",
+                "pid=" + enc(pid) + "&name=" + enc(name) + "&type=1", cookie);
+        JSONObject root = new JSONObject(json);
+        String cid = first(root, "cid", "fid", "id");
+        if (cid.isEmpty() && root.optJSONObject("data") != null) {
+            cid = first(root.optJSONObject("data"), "cid", "fid", "id");
+        }
+        if (cid.isEmpty()) {
+            throw new IllegalStateException("115 建目录失败 " + root.optString("error", json));
+        }
+        return cid;
+    }
+
+    /** Finds a file by name in a 115 folder (used by the sync manifest). */
+    public static String findFile(String cookie, String cid, String name) throws Exception {
+        for (DirEntry entry : listDir(cookie, cid)) {
+            if (!entry.isDir && name.equals(entry.name)) {
+                return entry.fileId.isEmpty() ? entry.cid : entry.fileId;
+            }
+        }
+        return null;
+    }
+
+    /** Reads a small remote file via the direct-link API (works for .json too). */
+    public static byte[] fileBytes(String cookie, String fileId) throws Exception {
+        String url = resolveDirectUrl(cookie, fileId);
+        if (url == null || url.isEmpty()) {
+            throw new IllegalStateException("115 取直链失败 id=" + fileId);
+        }
+        return httpGetBytes(url, cookie, true);
+    }
+
+    /**
+     * Uploads a small text file into a 115 folder via the WebAPI multipart
+     * endpoint. Some accounts gate it behind the newer upload gateway; in that
+     * case an error is thrown and the caller can fall back to the SMB backend.
+     */
+    public static void uploadText(String cookie, String cid, String name,
+                                  String content) throws Exception {
+        String boundary = "----MangaHubSync" + System.currentTimeMillis();
+        java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+        String head = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"pid\"\r\n\r\n"
+                + (cid == null || cid.isEmpty() ? "0" : cid) + "\r\n"
+                + "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + name + "\"\r\n"
+                + "Content-Type: application/json; charset=UTF-8\r\n\r\n";
+        body.write(head.getBytes(StandardCharsets.UTF_8));
+        body.write(content.getBytes(StandardCharsets.UTF_8));
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+
+        HttpURLConnection conn = (HttpURLConnection) new URL(
+                "https://webapi.115.com/files/upload").openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(30000);
+        conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+        conn.setRequestProperty("User-Agent", UA);
+        conn.setRequestProperty("Referer", REFERER);
+        if (cookie != null && !cookie.isEmpty()) {
+            conn.setRequestProperty("Cookie", cookie);
+        }
+        try {
+            byte[] bytes = body.toByteArray();
+            conn.setFixedLengthStreamingMode(bytes.length);
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(bytes);
+            }
+            int code = conn.getResponseCode();
+            String response = readAll(code >= 400 ? conn.getErrorStream() : conn.getInputStream());
+            JSONObject result = new JSONObject(response);
+            boolean ok = result.optBoolean("state", false) || result.optInt("errno", -1) == 0;
+            if (!ok) {
+                throw new IllegalStateException("115 上传失败 " + result.optString("error", response));
+            }
+            Log.i(TAG, "uploadText " + name + " -> " + cid);
+        } finally {
+            conn.disconnect();
+        }
+    }
+
     public static void deleteFiles(String cookie, String parentCid,
                                    java.util.List<String> ids) throws Exception {
         if (ids == null || ids.isEmpty()) {

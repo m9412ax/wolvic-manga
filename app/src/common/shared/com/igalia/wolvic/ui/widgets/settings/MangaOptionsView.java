@@ -209,6 +209,29 @@ public class MangaOptionsView extends SettingsView
         edit("图片扩展名", MangaSettings.SOURCE_IMAGE_FORMATS);
         edit("视频扩展名", MangaSettings.SOURCE_VIDEO_FORMATS);
 
+        section("跨设备同步（SMB / 115 文件夹）");
+        switchRow("启用同步（进度 / 历史 / 书架）", MangaSettings.SYNC_ENABLED);
+        radio("同步后端", MangaSettings.SYNC_BACKEND,
+                new String[]{"SMB 共享目录", "115 网盘目录"}, new int[]{0, 1});
+        edit("同步文件夹名（建在共享/网盘根目录）", MangaSettings.SYNC_FOLDER);
+        edit("115 同步所在目录 cid（0 = 网盘根目录）", MangaSettings.SYNC_115_CID);
+        edit("本机名称（写入同步文件）", MangaSettings.SYNC_DEVICE);
+        editMultiline("路径映射规则（每行一条：VR前缀 => 电脑前缀）", MangaSettings.SYNC_PATH_MAP);
+        switchRow("读完一章自动上传", MangaSettings.SYNC_AUTO_PUSH);
+        switchRow("进入书架时自动下载", MangaSettings.SYNC_AUTO_PULL);
+        button("立即同步一次", "开始同步", () -> {
+            if (!mSettings.bool(MangaSettings.SYNC_ENABLED)) {
+                setStatus("请先在设置里启用同步");
+                return;
+            }
+            setStatus("正在同步…");
+            new Thread(() -> {
+                final com.igalia.wolvic.manga.MangaSync.Result r =
+                        com.igalia.wolvic.manga.MangaSync.sync(getContext(), mSettings);
+                post(() -> setStatus(r.message));
+            }, "manga-sync-manual").start();
+        });
+
         section("扩展图源");
         switchRow("显示付费专区内容（默认关闭）", MangaSettings.SHOW_PAID_SECTION);
         edit("自定义付费专区关键词（逗号分隔，可留空）", MangaSettings.SOURCE_PAID_KEYWORDS);
@@ -479,6 +502,37 @@ public class MangaOptionsView extends SettingsView
         control.setOnSaveClickedListener(view -> {
             mSettings.put(key, control.getFirstText());
             Log.i(TAG, key + " updated");
+        });
+        mSections.addView(row);
+    }
+
+    /** Multi-line text setting (e.g. one path mapping per line). */
+    private void editMultiline(String title, String key) {
+        mGroupKeys.add(key);
+        View row = LayoutInflater.from(getContext())
+                .inflate(R.layout.manga_row_button, mSections, false);
+        label(row, title);
+        ButtonSetting control = row.findViewById(R.id.mangaButton);
+        control.setDescription(title);
+        control.setButtonText("编辑规则");
+        control.setOnClickListener(view -> {
+            final android.widget.EditText input = new android.widget.EditText(getContext());
+            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+            input.setMinLines(5);
+            input.setGravity(android.view.Gravity.TOP);
+            input.setText(mSettings.text(key));
+            input.setHint("smb://192.168.1.10/e/ => E:/\n"
+                    + "/storage/emulated/0/Manga/ => E:/Manga/");
+            new android.app.AlertDialog.Builder(getContext())
+                    .setTitle(title)
+                    .setView(input)
+                    .setPositiveButton("保存", (dialog, which) -> {
+                        mSettings.put(key, input.getText().toString());
+                        setStatus(key + " 已更新");
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
         });
         mSections.addView(row);
     }
