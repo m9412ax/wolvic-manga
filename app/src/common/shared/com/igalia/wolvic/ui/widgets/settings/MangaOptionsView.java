@@ -167,9 +167,13 @@ public class MangaOptionsView extends SettingsView
         // Takes effect the next time a book is opened (the layer is created
         // then). Lower values are softer only because they carry fewer texels
         // than the panel really covers.
-        radio("面板分辨率（低=更稳，高=更锐；重开书生效）", MangaSettings.READER_RENDER_SCALE,
-                new String[]{"100%（最锐利）", "75%", "50%", "35%", "25%", "15%（最稳定）"},
-                new int[]{100, 75, 50, 35, 25, 15});
+        // Only INTEGER minification ratios are steady: at exactly N:1 a
+        // bilinear tap averages an N x N block, while at 2.7:1 it keeps
+        // skipping texels and the sampling grid slides with every head move.
+        // A coarse radio group can never land on the exact ratio, so this is a
+        // 1% slider: the stable band is narrow and you have to hunt for it.
+        percentSlider("面板分辨率（低=更稳，高=更锐；重开书生效）",
+                MangaSettings.READER_RENDER_SCALE, 20, 100);
         radio("阅读背景", MangaSettings.READER_BACKGROUND,
                 new String[]{"黑色", "白色", "灰色"}, new int[]{0, 1, 2});
         radio("画面亮度", MangaSettings.READER_BRIGHTNESS,
@@ -509,6 +513,63 @@ public class MangaOptionsView extends SettingsView
         });
         plus.setOnClickListener(v -> {
             holder[0] = Math.min(hi, holder[0] + 10);
+            commit.run();
+        });
+        mSections.addView(row);
+    }
+
+    /**
+     * Integer percentage row with single-step buttons. The "steady" band is
+     * only a few percent wide, so 10-step buttons would jump over it.
+     */
+    private void percentSlider(String title, String key, int min, int max) {
+        mGroupKeys.add(key);
+        View row = LayoutInflater.from(getContext())
+                .inflate(R.layout.manga_row_slider, mSections, false);
+        label(row, title);
+        SeekBar bar = row.findViewById(R.id.mangaSlider);
+        TextView value = row.findViewById(R.id.mangaSliderValue);
+        TextView minus = row.findViewById(R.id.mangaSliderMinus);
+        TextView plus = row.findViewById(R.id.mangaSliderPlus);
+
+        int current = Math.max(min, Math.min(max, mSettings.integer(key)));
+        bar.setMax(Math.max(1, max - min));
+        bar.setProgress(current - min);
+        value.setText(current + "%");
+
+        final int[] holder = {current};
+        final int lo = min;
+        final int hi = max;
+        Runnable commit = () -> {
+            mSettings.put(key, holder[0]);
+            value.setText(holder[0] + "%");
+            bar.setProgress(holder[0] - lo);
+            Log.i(TAG, key + "=" + holder[0]);
+        };
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) {
+                    return;
+                }
+                holder[0] = lo + progress;
+                value.setText(holder[0] + "%");
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) { }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                commit.run();
+            }
+        });
+        minus.setOnClickListener(v -> {
+            holder[0] = Math.max(lo, holder[0] - 1);
+            commit.run();
+        });
+        plus.setOnClickListener(v -> {
+            holder[0] = Math.min(hi, holder[0] + 1);
             commit.run();
         });
         mSections.addView(row);

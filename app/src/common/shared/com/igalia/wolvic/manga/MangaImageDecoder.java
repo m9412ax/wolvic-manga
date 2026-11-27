@@ -391,11 +391,89 @@ public final class MangaImageDecoder {
                     cur = last;
                 }
             }
+            // Progressive halving is a chain of 2x2 box averages: correctly
+            // band-limited (no aliasing, so nothing to crawl) but visibly SOFT.
+            // At 4x that is a 4x4 average of every output pixel, and that
+            // softness is exactly what "25% 不抖了但很糊" was. Unsharp masking
+            // at the FINAL resolution puts the edge contrast back. It cannot
+            // reintroduce detail above the pixel grid, so the panel stays
+            // steady - unlike rendering at a higher resolution, where the extra
+            // detail is what the compositor turns into crawling pixels.
+            final float reduced = src.getWidth() / (float) Math.max(1, cur.getWidth());
+            if (reduced >= 1.9f) {
+                cur = sharpen(cur, 0.35f);
+            }
         } catch (Throwable t) {
             // Out of memory / recycled source: the caller keeps what it had.
             return cur == src ? src : cur;
         }
         return cur;
+    }
+
+    /**
+     * Mild unsharp mask: out = v + amount * (v - 4-neighbour average).
+     * Operates on a mutable copy and walks three rows at a time, so the extra
+     * footprint is one page-sized buffer (never a second full-size source).
+     */
+    private static Bitmap sharpen(Bitmap src, float amount) {
+        final int w = src.getWidth();
+        final int h = src.getHeight();
+        if (w < 8 || h < 8) {
+            return src;
+        }
+        Bitmap out;
+        try {
+            out = src.copy(Bitmap.Config.ARGB_8888, true);
+        } catch (Throwable t) {
+            return src;
+        }
+        if (out == null || !out.isMutable()) {
+            return src;
+        }
+        final int[] prev = new int[w];
+        final int[] cur = new int[w];
+        final int[] next = new int[w];
+        final int[] dst = new int[w];
+        try {
+            out.getPixels(prev, 0, w, 0, 0, w, 1);
+            out.getPixels(cur, 0, w, 0, 1, w, 1);
+            for (int y = 1; y < h - 1; y++) {
+                out.getPixels(next, 0, w, 0, y + 1, w, 1);
+                dst[0] = cur[0];
+                dst[w - 1] = cur[w - 1];
+                for (int x = 1; x < w - 1; x++) {
+                    final int c = cur[x];
+                    final int a = (c >>> 24) & 0xFF;
+                    if (a == 0) {
+                        dst[x] = c;
+                        continue;
+                    }
+                    final int blurR = (((prev[x] >> 16) & 0xFF) + ((next[x] >> 16) & 0xFF)
+                            + ((cur[x - 1] >> 16) & 0xFF) + ((cur[x + 1] >> 16) & 0xFF)) >> 2;
+                    final int blurG = (((prev[x] >> 8) & 0xFF) + ((next[x] >> 8) & 0xFF)
+                            + ((cur[x - 1] >> 8) & 0xFF) + ((cur[x + 1] >> 8) & 0xFF)) >> 2;
+                    final int blurB = ((prev[x] & 0xFF) + (next[x] & 0xFF)
+                            + (cur[x - 1] & 0xFF) + (cur[x + 1] & 0xFF)) >> 2;
+                    final int r = clamp255((int) (((c >> 16) & 0xFF) + amount * (((c >> 16) & 0xFF) - blurR)));
+                    final int g = clamp255((int) (((c >> 8) & 0xFF) + amount * (((c >> 8) & 0xFF) - blurG)));
+                    final int b = clamp255((int) ((c & 0xFF) + amount * ((c & 0xFF) - blurB)));
+                    dst[x] = (a << 24) | (r << 16) | (g << 8) | b;
+                }
+                out.setPixels(dst, 0, w, 0, y, w, 1);
+                System.arraycopy(cur, 0, prev, 0, w);
+                System.arraycopy(next, 0, cur, 0, w);
+            }
+        } catch (Throwable t) {
+            // Keep whatever rows were already sharpened.
+        }
+        if (out != src) {
+            src.recycle();
+        }
+        return out;
+    }
+
+    private static int clamp255(int v) {
+        return v < 0 ? 0 : (v > 255 ? 255 : v);
     }
 
     private static Bitmap decodeAvifLocked(File file, int sample, long byteBudget) {
