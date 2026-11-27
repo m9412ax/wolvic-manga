@@ -158,15 +158,18 @@ public class MangaOptionsView extends SettingsView
         radio("缩放模式", MangaSettings.READER_SCALE,
                 new String[]{"适应屏幕", "拉伸填满", "居中裁剪", "原始尺寸"},
                 new int[]{0, 1, 2, 3});
-        // Wolvic draws every panel into a SurfaceTexture at ~5x the pixels it
-        // covers on screen and the VR compositor then minifies it with a plain
-        // bilinear tap (no mipmaps: external OES textures cannot have them).
-        // Detail finer than the final screen pixels therefore shimmers when the
-        // head moves. Rendering the page below 100% removes that detail before
-        // it reaches the compositor: softer, but steady.
-        radio("文字抗抖（内部渲染倍率越低越稳）", MangaSettings.READER_RENDER_SCALE,
-                new String[]{"关闭（最清晰）", "75%", "50%", "35%", "25%（最稳定）"},
-                new int[]{100, 75, 50, 35, 25});
+        // Wolvic draws every panel into a VR layer texture at ~1.6x the pixels
+        // the panel covers on screen, and the compositor then minifies it with
+        // a plain bilinear tap (external OES textures cannot carry mipmaps).
+        // Detail finer than the final screen pixels shimmers when the head
+        // moves. This scales the LAYER TEXTURE itself, so the sampler works at
+        // ~1:1 instead of 4-5x minification: sharp and steady at the same time.
+        // Takes effect the next time a book is opened (the layer is created
+        // then). Lower values are softer only because they carry fewer texels
+        // than the panel really covers.
+        radio("面板分辨率（低=更稳，高=更锐；重开书生效）", MangaSettings.READER_RENDER_SCALE,
+                new String[]{"100%（最锐利）", "75%", "50%", "35%", "25%", "15%（最稳定）"},
+                new int[]{100, 75, 50, 35, 25, 15});
         radio("阅读背景", MangaSettings.READER_BACKGROUND,
                 new String[]{"黑色", "白色", "灰色"}, new int[]{0, 1, 2});
         radio("画面亮度", MangaSettings.READER_BRIGHTNESS,

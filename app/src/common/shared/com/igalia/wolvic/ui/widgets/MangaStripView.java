@@ -75,12 +75,13 @@ public class MangaStripView extends View {
     /** Below this on-screen scale the source is prefiltered instead of being
      *  minified by the GPU on every frame. */
     private static final float PRESCALE_BELOW = 0.92f;
-    /** Extra multiplier (0.25..1) applied to the resample target; mirrors the
-     *  reader's READER_RENDER_SCALE setting. */
+    /** Layer-texture pixels per view pixel (Wolvic oversamples panels; the
+     *  reader can lower it through READER_RENDER_SCALE). Multiplying the
+     *  on-screen scale by it gives the real resolution of the panel texture. */
     private float mRenderScale = 1.0f;
 
     public void setRenderScale(float scale) {
-        mRenderScale = (scale > 0.2f && scale <= 1.0f) ? scale : 1.0f;
+        mRenderScale = (scale > 0.05f && scale < 8f) ? scale : 1.0f;
     }
 
     public MangaStripView(Context context) {

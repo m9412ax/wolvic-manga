@@ -634,8 +634,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         aPlacement.parentHandle = -1;
         aPlacement.cylinder = false;
         aPlacement.visible = false;
+        // The reader panel is a VR quad layer. The compositor shrinks its
+        // texture down to the pixels the panel covers on screen with a single
+        // bilinear tap, and Wolvic already oversamples the panel on top of the
+        // display density (~1.6x here). A 3000px page therefore gets minified
+        // 4-5x every frame, which is exactly what makes text and 1dp borders
+        // crawl while the head moves. Lowering the LAYER texture (not the page
+        // bitmap) brings that tap close to 1:1; the page resample below follows
+        // the same factor so the page is still drawn at full panel resolution.
+        int panelPct = initSettings.integer(MangaSettings.READER_RENDER_SCALE);
+        float texScale = SettingsStore.getInstance(context).getDisplayDpi() / 100.0f;
+        if (panelPct > 0 && panelPct < 100) {
+            texScale *= Math.max(0.2f, panelPct / 100.0f);
+        }
+        aPlacement.textureScale = Math.max(0.2f, texScale);
         Log.i(TAG, "placement w=" + aPlacement.width + " y=" + aPlacement.translationY
-                + " z=" + aPlacement.translationZ);
+                + " z=" + aPlacement.translationZ
+                + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight());
     }
 
     // ----------------------------------------------------------- content
@@ -2699,7 +2714,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mStripView != null) {
-            mStripView.setRenderScale(renderScale());
+            mStripView.setRenderScale(panelTextureScale());
         }
         float vw = mStripView.getWidth() > 0 ? mStripView.getWidth() : mPageImage.getWidth();
         if (vw <= 0) {
@@ -3028,10 +3043,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mDestroyed || isContinuous() || mTiledPage) {
             return;
         }
-        // The panel texture the compositor sees is several times larger than
-        // the pixels it covers on screen, so the useful resolution is only
-        // scale * renderScale(). See READER_RENDER_SCALE.
-        float want = Math.max(0.02f, scale * renderScale());
+        // The page is drawn into a layer texture that is textureScale times the
+        // view's own pixel size (that is how Wolvic oversamples a panel), so the
+        // useful resolution is exactly scale * textureScale. Resampling to that
+        // size instead of to the view size means the compositor's own tap and
+        // ours live at the same scale: one cheap, static step instead of two.
+        float want = Math.max(0.02f, scale * panelTextureScale());
         if (Math.abs(want - mPrescaleWanted) > 0.01f) {
             mPrescaleWanted = want;
             mMainHandler.removeCallbacks(mPrescaleTask);
@@ -3039,13 +3056,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /** 0.25..1 multiplier applied to every page resample. 1 = off. */
-    private float renderScale() {
-        int percent = mSettings.integer(MangaSettings.READER_RENDER_SCALE);
-        if (percent <= 0 || percent >= 100) {
-            return 1.0f;
-        }
-        return Math.max(0.25f, percent / 100.0f);
+    /** How many pixels of layer texture one page pixel spans on this panel. */
+    private float panelTextureScale() {
+        return mWidgetPlacement != null ? mWidgetPlacement.textureScale : 1.0f;
     }
 
     private void prescalePageNow() {
