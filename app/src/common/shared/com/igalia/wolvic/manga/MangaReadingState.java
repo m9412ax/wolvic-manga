@@ -51,7 +51,9 @@ public final class MangaReadingState {
     private static final String PREFS = "manga_reading_state";
     private static final String KEY_CHAPTERS = "chapters";
     private static final String KEY_HISTORY = "history";
-    private static final int MAX_CHAPTERS = 4000;
+    /** History is imported in full from NeeView (12k+ rows); keep enough for
+     *  every chapter the user has ever opened instead of truncating silently. */
+    private static final int MAX_CHAPTERS = 16000;
     private static final int MAX_HISTORY = 150;
 
     private static MangaReadingState sInstance;

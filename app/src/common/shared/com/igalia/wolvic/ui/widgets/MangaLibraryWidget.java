@@ -1808,6 +1808,49 @@ public class MangaLibraryWidget extends UIWidget {
                 videoBufferBytes());
     }
 
+    /** Opens an SMB folder at [pageName], promoting to the parent manga when
+     *  this folder is one chapter among several — so the reader can turn
+     *  chapters just like the local file browser. */
+    private void openSmbAtChapter(final MangaSmb.Auth auth, final String folder,
+                                  final String pageName) {
+        mIoExecutor.execute(() -> {
+            String root = folder;
+            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+            try {
+                // Does this folder hold loose media (i.e. is it a chapter)?
+                boolean loose = false;
+                for (MangaSmb.Entry e : MangaSmb.list(auth, folder)) {
+                    if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
+                        loose = true;
+                        break;
+                    }
+                }
+                if (loose) {
+                    int slash = folder.lastIndexOf('/');
+                    String parent = slash > 0 ? folder.substring(0, slash) : "";
+                    // Only promote when the parent really holds sibling chapters.
+                    int siblings = 0;
+                    for (MangaSmb.Entry e : MangaSmb.list(auth, parent)) {
+                        if (!e.directory) continue;
+                        for (MangaSmb.Entry kid : MangaSmb.list(auth, e.path)) {
+                            if (!kid.directory && MangaSmb.isMediaFile(kid.name, media)) {
+                                siblings++;
+                                break;
+                            }
+                        }
+                    }
+                    if (siblings > 1) {
+                        root = parent;
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "openSmbAtChapter probe failed: " + e.getMessage());
+            }
+            final String openRoot = root;
+            mMain.post(() -> openRemoteManga(smbManga(auth, openRoot), pageName));
+        });
+    }
+
     private RemoteManga p115Manga(String cookie, String cid, String title) {
         return new Netdisk115RemoteManga(cookie, cid, title,
                 concat(mSettings.imageExtensions(), mSettings.videoExtensions()),
@@ -2320,6 +2363,11 @@ public class MangaLibraryWidget extends UIWidget {
         if (local) {
             int chapters = countChapterDirs(mBookDir);
             sb.append(" · ").append(chapters > 0 ? chapters + " 章" : "单章");
+        } else if (progress.chapters > 0) {
+            // NeeView imported marks give per-chapter progress even before any
+            // chapter was opened in VR — surface it on the book card.
+            sb.append(" · ").append(progress.chapters).append(" 章")
+                    .append(" · 读完 ").append(progress.doneChapters);
         }
         if (progress.percent >= 0) {
             sb.append(" · 已读 ").append(progress.percent).append('%');
@@ -3006,9 +3054,11 @@ public class MangaLibraryWidget extends UIWidget {
 
             @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
-                // Open the WHOLE current folder as a manga, positioned at this
-                // image, so up/down page turns keep working.
-                openRemoteManga(smbManga(smbAuth(), mSmbPath), entry.name);
+                // If the current folder is itself a chapter (loose images) and
+                // its parent holds several such folders, open the PARENT as the
+                // manga so the reader gets a chapter playlist and can switch
+                // chapters — identical to the local file browser behaviour.
+                openSmbAtChapter(smbAuth(), mSmbPath, entry.name);
             }
 
             @Override
@@ -3067,8 +3117,22 @@ public class MangaLibraryWidget extends UIWidget {
 
         final MangaReadingState state = MangaReadingState.get(getContext());
         final String want = historyTabKey();
+        // Pin the PC's last-opened position above the list. It comes from the
+        // NeeView sync (record id is a PC drive path) and resumes at the exact
+        // image, not just the chapter.
+        MangaReadingState.Record pcLatest = pcHistoryRecord(state);
+        if (pcLatest != null) {
+            LinearLayout pin = addRow(content);
+            addButton(pin, "💻 电脑最近阅读：" + pcLatest.title, v ->
+                    openPcHistoryRecord(pcLatest));
+            addInfo(content, "位置", historyMeta(pcLatest));
+        }
+
         List<MangaFileBrowser.Entry> entries = new ArrayList<>();
         for (MangaReadingState.Record record : state.records()) {
+            if (pcLatest != null && record.id.equals(pcLatest.id)) {
+                continue;  // already pinned above
+            }
             if (!want.isEmpty() && !want.equals(record.source)) {
                 continue;
             }
@@ -3153,6 +3217,63 @@ public class MangaLibraryWidget extends UIWidget {
             return "扩展图源";
         }
         return "漫画";
+    }
+
+    /** Newest record written from the PC NeeView sync (PC drive id). */
+    @Nullable
+    private MangaReadingState.Record pcHistoryRecord(MangaReadingState state) {
+        for (MangaReadingState.Record r : state.records()) {
+            String id = r.id == null ? "" : r.id;
+            if (id.matches("(?i)^[A-Z]:/.*")) {
+                return r;
+            }
+        }
+        return null;
+    }
+
+    /** Opens the PC's last position, resuming at the exact image in VR. */
+    private void openPcHistoryRecord(MangaReadingState.Record record) {
+        String chapterKey = record.chapterKey;
+        if (chapterKey == null || chapterKey.isEmpty()) {
+            chapterKey = record.path;
+        }
+        if (chapterKey == null || !chapterKey.startsWith("smb://")) {
+            chapterKey = MangaSync.repairSmbKey(chapterKey, mSettings);
+        }
+        if (chapterKey != null && chapterKey.startsWith("smb://")) {
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (chapterKey.startsWith(prefix)) {
+                // Seed the resume position with the exact page NeeView was on
+                // so "继续阅读" lands on that image, not chapter page 1.
+                if (record.page > 0) {
+                    String indexKey = "remote:" + chapterKey;
+                    float[] parts = MangaReaderWidget.readChapterProgress(
+                            progressPrefs(), indexKey);
+                    int chapterIndex = parts != null ? (int) parts[0] : 0;
+                    float frac = parts != null ? parts[2] : 0f;
+                    progressPrefs().edit()
+                            .putString("chap:" + indexKey,
+                                    chapterIndex + "|" + record.page + "|" + frac)
+                            .apply();
+                }
+                openRemoteManga(smbManga(smbAuth(),
+                                chapterKey.substring(prefix.length())),
+                        null, false);
+                return;
+            }
+        }
+        // Fall back to the normal SMB history opener.
+        MangaReadingState.Record local = new MangaReadingState.Record();
+        local.id = record.id;
+        local.title = record.title;
+        local.source = HIST_SMB;
+        local.path = MangaSync.repairSmbKey(record.path, mSettings);
+        local.chapterKey = chapterKey;
+        local.page = record.page;
+        local.total = record.total;
+        local.ts = record.ts;
+        openHistoryRecord(local);
     }
 
     private String historyMeta(MangaReadingState.Record record) {

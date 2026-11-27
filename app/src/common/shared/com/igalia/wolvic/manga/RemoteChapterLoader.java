@@ -150,6 +150,10 @@ public final class RemoteChapterLoader {
                 final int[] done = {0};
                 Log.i(TAG, "download " + manga.key() + "/" + chapter.name
                         + " pages=" + total + " (sequential)");
+                // Announce the TRUE page count immediately, before any page
+                // lands. Otherwise the reader shows "1 / 1" until the user
+                // turns a page and the first onProgress arrives.
+                MAIN.post(() -> active.progress(0, total, null, 0, 0));
 
                 // Download order: the page the user actually tapped first, then
                 // outward neighbours, then the rest. Previously it always began

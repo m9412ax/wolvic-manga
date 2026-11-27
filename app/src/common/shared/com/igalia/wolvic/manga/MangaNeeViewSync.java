@@ -169,7 +169,12 @@ public final class MangaNeeViewSync {
                 return c.key;
             }
         }
+        // SMB chapter keys are the plain folder path (what the file browser
+        // and reader use). Only extension sources need the "|chapter" suffix.
         String book = MangaSync.fromSyncId(context, settings, id);
+        if (book.startsWith("smb://")) {
+            return book;
+        }
         int slash = book.lastIndexOf('/');
         if (slash <= 0) {
             return book;
@@ -364,19 +369,47 @@ public final class MangaNeeViewSync {
             state.importRecord(record);
 
             // --- VR -> PC: update only the first row -----------------------
+            // Which chapter the user actually watched in VR: the newest 历史
+            // record written by noteHistory when the reader opened it. Using
+            // the max-ts chapter is wrong because imported PC marks also carry
+            // recent timestamps and would overwrite the real position.
             String pcKey = key;
             MangaReadingState.Chapter mark = state.chapter(key);
-            MangaReadingState.Chapter newestMark = null;
-            for (MangaReadingState.Chapter c : state.allChapters()) {
-                if (newestMark == null || c.ts > newestMark.ts) {
-                    newestMark = c;
+            // The newest VR-written history record is the book the user just
+            // read (noteHistory runs when the reader opens a chapter).
+            MangaReadingState.Record vrRecord = null;
+            for (MangaReadingState.Record r : state.records()) {
+                // VR-written records use a VR key (smb://, 115:, src:); the
+                // record imported from NeeView above uses a PC "E:/" id.
+                String rid = r.id == null ? "" : r.id;
+                if (rid.startsWith("smb://") || rid.startsWith("115:")
+                        || rid.startsWith("src:")) {
+                    vrRecord = r;
+                    break;  // records are newest-first
                 }
             }
-            // The PC row we just imported is authoritative unless the reader
-            // has moved to a newer page in VR after that timestamp.
-            if (newestMark != null && newestMark.ts > ts) {
-                mark = newestMark;
-                key = newestMark.key;
+            if (vrRecord != null && vrRecord.chapterKey != null
+                    && !vrRecord.chapterKey.isEmpty() && vrRecord.ts > ts) {
+                MangaReadingState.Chapter candidate = state.chapter(vrRecord.chapterKey);
+                if (candidate != null) {
+                    mark = candidate;
+                    key = vrRecord.chapterKey;
+                }
+            }
+            // Fallback: a chapter touched by the reader in the last 10 minutes
+            // (imported marks keep their original, older timestamps).
+            if (recent == null) {
+                MangaReadingState.Chapter touched = null;
+                long cutoff = System.currentTimeMillis() - 10 * 60 * 1000L;
+                for (MangaReadingState.Chapter c : state.allChapters()) {
+                    if (c.ts >= cutoff && (touched == null || c.ts > touched.ts)) {
+                        touched = c;
+                    }
+                }
+                if (touched != null) {
+                    mark = touched;
+                    key = touched.key;
+                }
             }
             String outId = canonical(MangaSync.syncId(context, settings, chapterPath(key)));
             if (!isDrivePath(outId)) {
