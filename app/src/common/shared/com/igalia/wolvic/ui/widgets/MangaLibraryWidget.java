@@ -225,6 +225,11 @@ public class MangaLibraryWidget extends UIWidget {
     // SMB2/3 browse state (path is relative to the configured share root).
     private final List<MangaSmb.Entry> mSmbEntries = new ArrayList<>();
     private String mSmbPath = "";
+    /** True while an SMB "open at chapter" probe is in flight. */
+    private boolean mSmbOpenPending = false;
+    private long mSmbOpenSeq = 0L;
+    /** folder -> whether that folder is a chapter of a bigger book. */
+    private final java.util.Map<String, Boolean> mSmbChapterProbe = new java.util.HashMap<>();
     private String mSmbStatus = "未连接";
     /** Once credentials are saved, entering the SMB tab auto-connects and
      *  shows the share as a folder list; the config form is hidden behind
@@ -253,6 +258,8 @@ public class MangaLibraryWidget extends UIWidget {
     /** Parent (cid,title) stack so "← 上级" returns to the real parent instead
      *  of always jumping to root. */
     private final java.util.Deque<String[]> mP115ParentStack = new java.util.ArrayDeque<>();
+    /** cid -> how many sub-folders that folder had when it was listed. */
+    private final java.util.Map<String, Integer> mP115DirCounts = new java.util.HashMap<>();
     private boolean mP115Restored = false;
     private final List<Manga115Api.DirEntry> mP115Entries = new ArrayList<>();
     private String mP115DirStatus = "";
@@ -1813,42 +1820,82 @@ public class MangaLibraryWidget extends UIWidget {
      *  chapters just like the local file browser. */
     private void openSmbAtChapter(final MangaSmb.Auth auth, final String folder,
                                   final String pageName) {
+        // Probing the share takes a couple of SMB round trips. Without a gate
+        // every tap of the same file queued another probe on the single IO
+        // thread and they all opened a reader once they came back — which
+        // looked like "no response, then several readers at once".
+        long now = System.currentTimeMillis();
+        if (mSmbOpenPending || now - mLastOpenReaderMs < 700L) {
+            Log.i(TAG, "openSmbAtChapter suppressed (pending=" + mSmbOpenPending + ")");
+            return;
+        }
+        mSmbOpenPending = true;
+        final long seq = ++mSmbOpenSeq;
+        if (getContext() != null) {
+            Toast.makeText(getContext(), "正在打开…", Toast.LENGTH_SHORT).show();
+        }
         mIoExecutor.execute(() -> {
             String root = folder;
-            String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
             try {
-                // Does this folder hold loose media (i.e. is it a chapter)?
-                boolean loose = false;
-                for (MangaSmb.Entry e : MangaSmb.list(auth, folder)) {
-                    if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
-                        loose = true;
-                        break;
-                    }
+                Boolean known = mSmbChapterProbe.get(folder);
+                boolean promote = known != null ? known : probeChapterSiblings(auth, folder);
+                if (known == null && seq == mSmbOpenSeq) {
+                    mSmbChapterProbe.put(folder, promote);
                 }
-                if (loose) {
+                if (promote) {
                     int slash = folder.lastIndexOf('/');
-                    String parent = slash > 0 ? folder.substring(0, slash) : "";
-                    // Only promote when the parent really holds sibling chapters.
-                    int siblings = 0;
-                    for (MangaSmb.Entry e : MangaSmb.list(auth, parent)) {
-                        if (!e.directory) continue;
-                        for (MangaSmb.Entry kid : MangaSmb.list(auth, e.path)) {
-                            if (!kid.directory && MangaSmb.isMediaFile(kid.name, media)) {
-                                siblings++;
-                                break;
-                            }
-                        }
-                    }
-                    if (siblings > 1) {
-                        root = parent;
+                    if (slash > 0) {
+                        root = folder.substring(0, slash);
                     }
                 }
             } catch (Exception e) {
                 Log.w(TAG, "openSmbAtChapter probe failed: " + e.getMessage());
             }
             final String openRoot = root;
-            mMain.post(() -> openRemoteManga(smbManga(auth, openRoot), pageName));
+            mMain.post(() -> {
+                mSmbOpenPending = false;
+                openRemoteManga(smbManga(auth, openRoot), pageName);
+            });
         });
+    }
+
+    /** True when [folder] is itself a chapter (loose media) living next to
+     *  other chapter folders, i.e. the parent is the book to open. Only a few
+     *  sibling folders are listed so the probe stays snappy on a slow share. */
+    private boolean probeChapterSiblings(MangaSmb.Auth auth, String folder) throws Exception {
+        String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
+        boolean loose = false;
+        for (MangaSmb.Entry e : MangaSmb.list(auth, folder)) {
+            if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
+                loose = true;
+                break;
+            }
+        }
+        if (!loose) {
+            return false;
+        }
+        int slash = folder.lastIndexOf('/');
+        if (slash <= 0) {
+            return false;
+        }
+        String parent = folder.substring(0, slash);
+        int checked = 0;
+        int withMedia = 0;
+        for (MangaSmb.Entry e : MangaSmb.list(auth, parent)) {
+            if (!e.directory) {
+                continue;
+            }
+            if (++checked > 4) {
+                break;
+            }
+            for (MangaSmb.Entry kid : MangaSmb.list(auth, e.path)) {
+                if (!kid.directory && MangaSmb.isMediaFile(kid.name, media)) {
+                    withMedia++;
+                    break;
+                }
+            }
+        }
+        return checked >= 2 && withMedia >= 2;
     }
 
     private RemoteManga p115Manga(String cookie, String cid, String title) {
@@ -3147,6 +3194,7 @@ public class MangaLibraryWidget extends UIWidget {
         }
         final MangaFileBrowser browser = new MangaFileBrowser(getContext());
         browser.setListMode(true);
+        browser.setJumpEnabled(false);
         browser.setData(entries, "历史记录", null,
                 entries.isEmpty() ? "还没有打开过漫画。" : null);
         browser.setCanGoBack(false);
@@ -4388,7 +4436,28 @@ public class MangaLibraryWidget extends UIWidget {
             @Override
             public void onOpen(MangaFileBrowser.Entry entry) {
                 String cookie = mSettings.text(MangaSettings.P115_COOKIE);
-                openRemoteManga(p115Manga(cookie, mP115Cid, mP115Title), entry.name);
+                String rootCid = mP115Cid;
+                String rootTitle = mP115Title;
+                // A folder that holds pages itself is a chapter, not the book:
+                // open the parent so the reader still has a chapter playlist.
+                boolean loose = false;
+                for (Manga115Api.DirEntry e : mP115Entries) {
+                    if (e.fileId != null && !e.fileId.isEmpty()
+                            && MangaSettings.hasExtension(e.name,
+                            concat(mSettings.imageExtensions(), mSettings.videoExtensions()))) {
+                        loose = true;
+                        break;
+                    }
+                }
+                if (loose && !mP115ParentStack.isEmpty()) {
+                    String[] up = mP115ParentStack.peek();
+                    Integer dirs = mP115DirCounts.get(up[0]);
+                    if (dirs != null && dirs >= 2) {
+                        rootCid = up[0];
+                        rootTitle = up[1];
+                    }
+                }
+                openRemoteManga(p115Manga(cookie, rootCid, rootTitle), entry.name);
             }
 
             @Override
@@ -4446,6 +4515,13 @@ public class MangaLibraryWidget extends UIWidget {
                 mMain.post(() -> {
                     mP115Entries.clear();
                     mP115Entries.addAll(result);
+                    int dirCount = 0;
+                    for (Manga115Api.DirEntry e : result) {
+                        if (e.fileId == null || e.fileId.isEmpty()) {
+                            dirCount++;
+                        }
+                    }
+                    mP115DirCounts.put(cid, dirCount);
                     mP115DirStatus = "已列出 " + result.size() + " 项";
                     refreshPage(MangaPage.WEBDAV);
                 });

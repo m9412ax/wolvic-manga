@@ -12,6 +12,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
 import android.util.AttributeSet;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -161,6 +162,11 @@ public class MangaFileBrowser extends LinearLayout {
     private LinearLayout mActionBar;
     private LinearLayout mCrumbs;
     private View mCrumbScroll;
+    /** Floating "jump to the page/chapter being read / back to top" button. */
+    private TextView mJumpButton;
+    /** Row the button jumps to; -1 when the folder has no reading mark. */
+    private int mJumpTarget = -1;
+    private boolean mJumpEnabled = true;
 
     private Callback mCallback;
     @Nullable private ViewGroup mSheetHost;
@@ -190,7 +196,13 @@ public class MangaFileBrowser extends LinearLayout {
     private void init(Context context) {
         setOrientation(VERTICAL);
         setBackgroundColor(0xFF0E1514);
-        LayoutInflater.from(context).inflate(R.layout.manga_browser, this, true);
+        // The listing fills the panel; the jump button floats over its lower
+        // right corner, so the inflated layout needs a FrameLayout parent.
+        FrameLayout host = new FrameLayout(context);
+        LayoutInflater.from(context).inflate(R.layout.manga_browser, host, true);
+        addView(host, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
 
         mList = findViewById(R.id.browserList);
         mTitle = findViewById(R.id.browserTitle);
@@ -235,6 +247,96 @@ public class MangaFileBrowser extends LinearLayout {
             }
         });
         mSettingsButton.setOnClickListener(v -> openQuickSheet());
+
+        mJumpButton = new TextView(context);
+        mJumpButton.setText("⇣ 最近阅读");
+        mJumpButton.setTextSize(15f);
+        mJumpButton.setTextColor(0xFF80D5D2);
+        mJumpButton.setBackgroundResource(R.drawable.manga_pill_bg);
+        mJumpButton.setPadding(dp(18), dp(10), dp(18), dp(10));
+        mJumpButton.setClickable(true);
+        mJumpButton.setFocusable(true);
+        mJumpButton.setVisibility(GONE);
+        mJumpButton.setOnClickListener(v -> onJumpClicked());
+        FrameLayout.LayoutParams jlp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        jlp.gravity = Gravity.BOTTOM | Gravity.END;
+        jlp.setMargins(0, 0, dp(18), dp(22));
+        host.addView(mJumpButton, jlp);
+
+        mList.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                updateJumpButton();
+            }
+        });
+    }
+
+    /** Hides/shows the floating jump button (e.g. 历史 rows have no pages). */
+    public void setJumpEnabled(boolean enabled) {
+        mJumpEnabled = enabled;
+        if (!enabled && mJumpButton != null) {
+            mJumpButton.setVisibility(GONE);
+        } else {
+            updateJumpButton();
+        }
+    }
+
+    private int firstVisiblePosition() {
+        if (mList == null || !(mList.getLayoutManager() instanceof GridLayoutManager)) {
+            return 0;
+        }
+        return ((GridLayoutManager) mList.getLayoutManager())
+                .findFirstVisibleItemPosition();
+    }
+
+    private void updateJumpButton() {
+        if (mJumpButton == null) {
+            return;
+        }
+        if (!mJumpEnabled || mJumpTarget <= 0 || mSorted.isEmpty()) {
+            mJumpButton.setVisibility(GONE);
+            return;
+        }
+        mJumpButton.setVisibility(VISIBLE);
+        mJumpButton.setText(firstVisiblePosition() <= 1 ? "⇣ 最近阅读" : "⇡ 顶部");
+    }
+
+    /** First tap goes to the marked row, the next one returns to the top. */
+    private void onJumpClicked() {
+        if (mJumpTarget <= 0 || mList == null) {
+            return;
+        }
+        if (firstVisiblePosition() <= 1) {
+            mList.smoothScrollToPosition(Math.min(mJumpTarget, mSorted.size() - 1));
+        } else {
+            mList.smoothScrollToPosition(0);
+        }
+    }
+
+    /**
+     * Row the jump button should land on: the chapter (or page) currently being
+     * read, else the deepest mark in the folder. Rows arrive pre-sorted, so
+     * "the last marked row" is the latest chapter in reading order.
+     */
+    private void computeJumpTarget() {
+        int target = -1;
+        for (int i = 0; i < mSorted.size(); i++) {
+            if (mSorted.get(i).state == 1) {   // MangaReadingState.READING
+                target = i;
+                break;
+            }
+        }
+        if (target < 0) {
+            for (int i = mSorted.size() - 1; i >= 0; i--) {
+                if (mSorted.get(i).state != 0) {
+                    target = i;
+                    break;
+                }
+            }
+        }
+        mJumpTarget = target;
     }
 
     private void applyLayoutManager() {
@@ -562,8 +664,10 @@ public class MangaFileBrowser extends LinearLayout {
             return base.compare(a, b);
         };
         Collections.sort(mSorted, cmp);
+        computeJumpTarget();
         mAdapter.notifyDataSetChanged();
         updateSummary();
+        updateJumpButton();
     }
 
     private void updateSummary() {
