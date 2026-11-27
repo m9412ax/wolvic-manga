@@ -99,13 +99,29 @@ public final class MangaSync {
         return s;
     }
 
-    /** Applies the configured VR→PC prefix mapping to one path. */
+    /** Mapping line generated from the SMB settings when the user has not
+     *  configured one: share "e" == PC drive "E:". */
+    static String defaultMapping(MangaSettings settings) {
+        String share = settings.text(MangaSettings.SMB_SHARE);
+        String host = settings.text(MangaSettings.SMB_HOST);
+        if (share.isEmpty() || host.isEmpty()) {
+            return "";
+        }
+        String drive = share.length() == 1
+                ? share.toUpperCase(Locale.ROOT) + ":/" : share + "/";
+        return "smb://" + host + "/" + share + "/ => " + drive;
+    }
+
+    /** Applies the configured (or inferred) VR→PC prefix mapping. */
     public static String syncId(Context context, MangaSettings settings, String path) {
         String raw = norm(path);
         if (raw.isEmpty()) {
             return "";
         }
         String config = settings.text(MangaSettings.SYNC_PATH_MAP);
+        if (config.trim().isEmpty()) {
+            config = defaultMapping(settings);
+        }
         if (!config.isEmpty()) {
             for (String line : config.split("\\r?\\n")) {
                 int arrow = line.indexOf("=>");
@@ -143,6 +159,9 @@ public final class MangaSync {
             return "";
         }
         String config = settings.text(MangaSettings.SYNC_PATH_MAP);
+        if (config.trim().isEmpty()) {
+            config = defaultMapping(settings);
+        }
         if (!config.isEmpty()) {
             for (String line : config.split("\\r?\\n")) {
                 int arrow = line.indexOf("=>");
