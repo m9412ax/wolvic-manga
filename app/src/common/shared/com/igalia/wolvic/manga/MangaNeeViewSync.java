@@ -238,6 +238,7 @@ public final class MangaNeeViewSync {
             state.importRecord(record);
 
             // --- VR -> PC: update only the first row -----------------------
+            String pcKey = key;
             MangaReadingState.Chapter mark = state.chapter(key);
             MangaReadingState.Chapter newestMark = null;
             for (MangaReadingState.Chapter c : state.allChapters()) {
@@ -252,11 +253,15 @@ public final class MangaNeeViewSync {
                 key = newestMark.key;
             }
             String outId = canonical(MangaSync.syncId(context, settings, chapterPath(key)));
-            if (outId.isEmpty()) {
+            if (!isDrivePath(outId)) {
+                // Local / 115 / extension reading cannot be opened by NeeView.
+                // Leave the PC row untouched instead of writing a bogus path.
+                key = pcKey;
+                mark = state.chapter(key);
                 outId = id;
             }
             String outPage = pageName;
-            if (mark != null) {
+            if (isDrivePath(outId) && mark != null) {
                 List<String> names = pageNames(settings, chapterPath(key));
                 if (!names.isEmpty()) {
                     int idx = Math.max(0, Math.min(mark.page, names.size() - 1));
