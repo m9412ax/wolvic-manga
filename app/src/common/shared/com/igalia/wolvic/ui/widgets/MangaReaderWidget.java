@@ -289,6 +289,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
 
     private final Matrix mMatrix = new Matrix();
     private float mZoom = 1.0f;
+    /** Width of the bitmap actually handed to the ImageView divided by the
+     *  page's intrinsic width. 1 = the decoded page; <1 = a prefiltered copy
+     *  drawn at nearly 1:1 device pixels. */
+    private float mShownK = 1.0f;
+    private float mPrescaleWanted = 1.0f;
+    private final Runnable mPrescaleTask = this::prescalePageNow;
     /** Pan offset of a zoomed image, in view pixels. Lets the user inspect
      *  the edges instead of only the centre of an enlarged page. */
     private float mPanX = 0.0f;
@@ -2024,10 +2030,32 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  flag is off, so a page drawn at 1/3 of its pixel size re-sampled one
      *  texel per pixel: thin glyph strokes then sparkled / crawled ("像素抖动"). */
     private void showOnPageImage(Bitmap bitmap) {
+        showOnPageImage(bitmap, 1.0f);
+    }
+
+    /** [k] is the shown-bitmap / page-width ratio; applyImageTransform divides
+     *  the matrix scale by it so the picture keeps the exact same on-screen
+     *  geometry while the GPU sees an almost 1:1 texture. */
+    private void showOnPageImage(Bitmap bitmap, float k) {
         Bitmap shown = safeForImageView(bitmap);
         if (shown == null || shown.isRecycled()) {
             mPageImage.setImageDrawable(null);
+            mShownK = 1.0f;
             return;
+        }
+        mShownK = (k > 0.05f && k <= 1.0f) ? k : 1.0f;
+        if (mShownK >= 0.99f) {
+            // A full-resolution page just replaced whatever was shown; force
+            // the next transform to re-evaluate whether a prefiltered copy is
+            // needed (page turns happen at the same scale, so an unchanged
+            // value would otherwise skip the resample forever).
+            mPrescaleWanted = -1f;
+        }
+        // safeForImageView() may shrink an over-budget page on its own; then
+        // the ratio must come from the bitmap that really got installed.
+        if (bitmap != null && shown.getWidth() != bitmap.getWidth()
+                && mDisplayWidth > 0) {
+            mShownK = shown.getWidth() / (float) mDisplayWidth;
         }
         try {
             android.graphics.drawable.BitmapDrawable drawable =
@@ -2964,13 +2992,96 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPanY = Math.max(-maxPanY, Math.min(maxPanY, mPanY));
         dx += mPanX;
         dy += mPanY;
-        mMatrix.setScale(sx, sy);
+        // Whole-pixel translation. With a fractional offset the bilinear tap
+        // blends a different pair of rows/columns on every scroll frame, which
+        // is what makes edges wobble at 1:1 and the whole page shimmer when
+        // zoomed out. Rounding pins the picture to the device pixel grid.
+        dx = Math.round(dx);
+        dy = Math.round(dy);
+        // When a prefiltered copy is on the ImageView, compensate its smaller
+        // pixel size so the on-screen geometry is unchanged.
+        float shownK = (!mTiledPage && mShownK > 0.05f && mShownK <= 1.0f) ? mShownK : 1.0f;
+        mMatrix.setScale(sx / shownK, sy / shownK);
         mMatrix.postTranslate(dx, dy);
         if (mTiledPage) {
             mStripView.setTileMatrix(mMatrix);
         } else {
             mPageImage.setImageMatrix(mMatrix);
         }
+        if (!mTiledPage) {
+            schedulePrescale(sx);
+        }
+    }
+
+    /** Keeps the ImageView's bitmap close to the number of pixels it actually
+     *  covers. Same idea as Aves/Glide decoding at display size: a page drawn
+     *  at 1/3 of its resolution is resampled by the GPU with a plain bilinear
+     *  tap, which skips source pixels and crawls while anything moves. A CPU
+     *  resample with our step-halving filter (MangaImageDecoder.scaleFiltered)
+     *  removes the aliasing before it reaches the sampler. */
+    private void schedulePrescale(float scale) {
+        if (mDestroyed || isContinuous() || mTiledPage) {
+            return;
+        }
+        if (Math.abs(scale - mPrescaleWanted) > 0.01f) {
+            mPrescaleWanted = scale;
+            mMainHandler.removeCallbacks(mPrescaleTask);
+            mMainHandler.postDelayed(mPrescaleTask, 160L);
+        }
+    }
+
+    private void prescalePageNow() {
+        if (mDestroyed || isContinuous() || mTiledPage) {
+            return;
+        }
+        final Bitmap full = mCurrent;
+        if (full == null || full.isRecycled() || mDisplayWidth <= 0) {
+            return;
+        }
+        final float want = mPrescaleWanted;
+        if (want >= 0.92f) {
+            if (mShownK < 0.99f) {
+                showOnPageImage(full);
+                applyImageTransform();
+            }
+            return;
+        }
+        // Quantise the factor so a pinch reuses one resample instead of
+        // spawning a decode per step.
+        float q = Math.round(want * 8f) / 8f;
+        if (q < 0.125f) {
+            q = 0.125f;
+        }
+        final int tw = Math.max(48, Math.round(mDisplayWidth * q));
+        final int th = Math.max(1, Math.round(mDisplayHeight * q));
+        if (tw >= full.getWidth()) {
+            return;
+        }
+        if (Math.abs(mShownK - q) < 0.03f) {
+            return;
+        }
+        final int generation = mLoadGeneration;
+        final float k = tw / (float) full.getWidth();
+        mExecutor.execute(() -> {
+            Bitmap scaled = null;
+            try {
+                scaled = MangaImageDecoder.scaleFiltered(full, tw, th);
+            } catch (Throwable ignored) {
+                // OOM: stay on the full-resolution bitmap.
+            }
+            if (scaled == null || scaled == full || scaled.isRecycled()) {
+                return;
+            }
+            final Bitmap result = scaled;
+            mMainHandler.post(() -> {
+                if (mDestroyed || generation != mLoadGeneration || mCurrent != full
+                        || isContinuous() || mTiledPage || mPageImage == null) {
+                    return;
+                }
+                showOnPageImage(result, k);
+                applyImageTransform();
+            });
+        });
     }
 
     private void applyTransition() {

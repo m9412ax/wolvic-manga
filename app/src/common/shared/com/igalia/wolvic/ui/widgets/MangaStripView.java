@@ -15,6 +15,8 @@ import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 
+import com.igalia.wolvic.manga.MangaImageDecoder;
+
 /**
  * Draws a seamless vertical "long strip" for continuous reading mode.
  *
@@ -47,18 +49,32 @@ public class MangaStripView extends View {
     private Bitmap[] mTiles;
     private boolean mTileMode = false;
     private final Matrix mTileMatrix = new Matrix();
-    // Fast continuous scrolling: bilinear-filtering huge bitmaps every frame is
-    // expensive. Turn filtering off while the offset jumps a lot per frame and
-    // restore it shortly after scrolling settles, so normal reading stays crisp.
-    private float mLastOffset = 0f;
-    private boolean mFilterOff = false;
-    private final Runnable mRestoreFilter = () -> {
-        if (mFilterOff) {
-            mFilterOff = false;
-            mPaint.setFilterBitmap(true);
-            postInvalidateOnAnimation();
-        }
-    };
+    /** Downscaled copies of the pages on screen, resampled to roughly the
+     *  number of pixels they actually cover.
+     *
+     *  Why: a page is decoded at native resolution, and continuous mode then
+     *  shrinks it to the canvas width times the zoom (often 0.2 - 0.5). Handing
+     *  that to the GPU means a plain bilinear tap over a 2-5x oversized
+     *  texture: most source pixels are skipped, and every scroll frame changes
+     *  which ones -> moire, crawling text, "抖动". Aves (Glide underneath)
+     *  solves the same problem by decoding at display resolution instead of
+     *  minifying at draw time. We cannot re-decode here, but one CPU resample
+     *  with our step-halving filter gives the GPU a near 1:1 texture, so the
+     *  sampling problem disappears (and the frame gets cheaper too). */
+    private final Bitmap[] mDisp = new Bitmap[5];
+    private final float[] mDispK = new float[5];      // disp.width / source.width
+    private final int[] mDispTarget = new int[5];     // requested disp width
+    private final java.util.concurrent.ExecutorService mScaler =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "manga-strip-scale");
+                t.setDaemon(true);
+                return t;
+            });
+    private final android.os.Handler mMain =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    /** Below this on-screen scale the source is prefiltered instead of being
+     *  minified by the GPU on every frame. */
+    private static final float PRESCALE_BELOW = 0.92f;
 
     public MangaStripView(Context context) {
         super(context);
@@ -83,6 +99,74 @@ public class MangaStripView extends View {
         return b;
     }
 
+    private void dropDisp(int slot) {
+        mDisp[slot] = null;
+        mDispK[slot] = 1f;
+        mDispTarget[slot] = 0;
+    }
+
+    /** Returns the bitmap to draw for [slot]: a prefiltered copy when the page
+     *  is shown much smaller than its pixel size, otherwise the source itself.
+     *  The resample runs off the UI thread; until it lands the source keeps
+     *  drawing, so nothing flickers or jumps. */
+    private Bitmap dispFor(int slot, Bitmap src, float si) {
+        if (src == null || src.isRecycled()) {
+            return src;
+        }
+        final int srcW = src.getWidth();
+        final int srcH = src.getHeight();
+        if (si >= PRESCALE_BELOW || si <= 0.02f || srcW < 128) {
+            if (mDisp[slot] != null) {
+                dropDisp(slot);
+            }
+            return src;
+        }
+        // Quantise to 1/8 so a pinch gesture reuses one resample instead of
+        // rebuilding on every step.
+        float q = Math.round(si * 8f) / 8f;
+        if (q >= 1f) {
+            return src;
+        }
+        if (q < 0.125f) {
+            q = 0.125f;
+        }
+        Bitmap cached = mDisp[slot];
+        if (cached != null && !cached.isRecycled()
+                && Math.abs(mDispK[slot] - q) < 0.03f) {
+            return cached;
+        }
+        final int target = Math.max(48, Math.round(srcW * q));
+        if (mDispTarget[slot] != target) {
+            mDispTarget[slot] = target;
+            final int th = Math.max(1, Math.round(srcH * q));
+            final Bitmap source = src;
+            mScaler.execute(() -> {
+                Bitmap out = null;
+                try {
+                    out = MangaImageDecoder.scaleFiltered(source, target, th);
+                } catch (Throwable ignored) {
+                    // OOM / recycled source: keep drawing the original.
+                }
+                if (out == null || out == source || out.isRecycled()) {
+                    return;
+                }
+                final Bitmap result = out;
+                mMain.post(() -> {
+                    // The slot may have been re-seeded (page turn) meanwhile.
+                    if (mSegments[slot] != source
+                            || result.isRecycled()
+                            || mDispTarget[slot] != target) {
+                        return;
+                    }
+                    mDisp[slot] = result;
+                    mDispK[slot] = result.getWidth() / (float) source.getWidth();
+                    postInvalidateOnAnimation();
+                });
+            });
+        }
+        return cached != null && !cached.isRecycled() ? cached : src;
+    }
+
     public void setStrip(Bitmap[] segments, float scale, float zoom, float offset) {
         boolean changed = mScale != (scale > 0 ? scale : 1.0f)
                 || mZoom != (zoom > 0 ? zoom : 1.0f);
@@ -92,6 +176,7 @@ public class MangaStripView extends View {
             if (mSegments[i] != b) {
                 changed = true;
                 mSegments[i] = b;
+                dropDisp(i);
             }
         }
         mScale = scale > 0 ? scale : 1.0f;
@@ -124,6 +209,7 @@ public class MangaStripView extends View {
             if (mSegments[i] != b) {
                 changed = true;
                 mSegments[i] = b;
+                dropDisp(i);
             }
         }
         mZoom = zoom > 0 ? zoom : 1.0f;
@@ -167,19 +253,9 @@ public class MangaStripView extends View {
     }
 
     public void setOffset(float offset) {
-        float step = Math.abs(offset - mLastOffset);
-        float height = getHeight() > 0 ? getHeight() : 1000f;
-        // A large per-frame jump means a fast flick; drop bilinear filtering to
-        // keep the frame budget. Restore it 120 ms after the motion settles.
-        // NEVER in tile mode: a giant 1:1 page is drawn heavily minified, and
-        // without filtering its text turns into crawling pixels.
-        if (!mTileMode && step > height * 0.12f && !mFilterOff) {
-            mFilterOff = true;
-            mPaint.setFilterBitmap(false);
-        }
-        removeCallbacks(mRestoreFilter);
-        postDelayed(mRestoreFilter, 120L);
-        mLastOffset = offset;
+        // Filtering stays ON at all times: with the prefiltered copies above a
+        // scaled blit is already cheap, and the old "drop the filter while
+        // flicking" trick made minified text crawl exactly when it was moving.
         mOffset = offset;
         postInvalidateOnAnimation();
     }
@@ -275,21 +351,30 @@ public class MangaStripView extends View {
         }
 
         for (int i = 0; i < 5; i++) {
-            Bitmap b = mSegments[i];
-            if (b == null || b.isRecycled()) {
+            Bitmap full = mSegments[i];
+            if (full == null || full.isRecycled()) {
                 continue;
             }
             // In fill-width mode each page uses its OWN width scale, so every
             // page is full-canvas-width from the first pixel (small pages no
             // longer appear narrow and jump big near the middle). Otherwise
             // all pages share the current-page scale.
-            final float si = mFillWidth ? (vw / (float) b.getWidth()) * mZoom : s;
-            float h = b.getHeight() * si;
+            final float siFull = mFillWidth
+                    ? (vw / (float) full.getWidth()) * mZoom : s;
+            float h = full.getHeight() * siFull;
             if (tops[i] >= vh || tops[i] + h <= 0) {
                 continue;
             }
+            // Near 1:1 we draw the page as decoded; when it is shown much
+            // smaller we draw a prefiltered copy of the same picture.
+            Bitmap b = dispFor(i, full, siFull);
+            float k = b.getWidth() / (float) full.getWidth();
+            if (k <= 0.001f) {
+                k = 1f;
+            }
+            final float si = siFull / k;             // view px per drawn px
             float w = b.getWidth() * si;
-            float left = (vw - w) / 2.0f + (mFillWidth ? mPanX : 0f);
+            float leftF = (vw - w) / 2.0f + (mFillWidth ? mPanX : 0f);
             float topShift = mFillWidth ? mPanY : 0f;
             float visibleTop = Math.max(0f, -tops[i] - topShift);
             float visibleBottom = Math.min(h, vh - tops[i] - topShift);
@@ -297,21 +382,28 @@ public class MangaStripView extends View {
                 continue;
             }
             try {
-                // Same rule as the tile path: an INTEGER source window whose
-                // dest is derived from it. Cropping with a fractional offset
-                // while drawing at a fractional position makes the whole page
-                // shift by sub-pixels on every scroll frame, which is the
-                // "文字一直在抖" effect when reading a long strip.
+                // Integer source rows AND an integer destination rect. A
+                // fractional destination makes the sampler blend a slightly
+                // different pair of pixels on every scroll frame - that
+                // sub-pixel phase drift is the "1:1 时边缘轻微晃动, 缩小后
+                // 整个画面抖" effect. Rounding both ends pins the sampling
+                // grid to the device pixels, so a static frame stops moving.
                 int srcTop = Math.max(0, (int) Math.floor(visibleTop / si));
                 int srcBottom = Math.min(b.getHeight(),
                         (int) Math.ceil(visibleBottom / si));
-                if (srcBottom > srcTop) {
-                    float dstTop = tops[i] + topShift + srcTop * si;
-                    float dstBottom = tops[i] + topShift + srcBottom * si;
-                    Rect src = new Rect(0, srcTop, b.getWidth(), srcBottom);
-                    RectF dst = new RectF(left, dstTop, left + w, dstBottom);
-                    canvas.drawBitmap(b, src, dst, mPaint);
+                if (srcBottom <= srcTop) {
+                    continue;
                 }
+                int left = Math.round(leftF);
+                int right = Math.round(leftF + w);
+                int dstTop = Math.round(tops[i] + topShift + srcTop * si);
+                int dstBottom = Math.round(tops[i] + topShift + srcBottom * si);
+                if (right <= left || dstBottom <= dstTop) {
+                    continue;
+                }
+                Rect src = new Rect(0, srcTop, b.getWidth(), srcBottom);
+                Rect dst = new Rect(left, dstTop, right, dstBottom);
+                canvas.drawBitmap(b, src, dst, mPaint);
             } catch (Throwable ignored) {
                 // A recycled / oversized page must never take down the reader.
             }
