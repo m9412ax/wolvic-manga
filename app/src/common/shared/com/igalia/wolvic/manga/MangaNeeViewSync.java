@@ -302,6 +302,8 @@ public final class MangaNeeViewSync {
                 return MangaSync.Result.fail("NeeView 历史为空");
             }
 
+            MangaReadingState state = MangaReadingState.get(context);
+
             // --- PC -> VR: whole history paints the blue/green frames ------
             // The 历史 page only shows one row, but NeeView's other thousands
             // of rows are real reading marks: import them so folders and files
@@ -314,7 +316,6 @@ public final class MangaNeeViewSync {
             String pageName = newest == null ? "" : newest.optString("Page", "");
             long ts = parseStamp(newest == null ? "" : newest.optString("LastAccessTime", ""));
             String id = canonical(pcPath);
-            MangaReadingState state = MangaReadingState.get(context);
             String key = chapterKey(context, settings, state, id);
             int[] pageInfo = pageOf(settings, chapterPath(key), pageName);
             boolean changed = state.importChapter(key, pageInfo[0], pageInfo[1], ts);
