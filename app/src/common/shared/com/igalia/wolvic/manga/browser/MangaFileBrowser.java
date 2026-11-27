@@ -81,6 +81,9 @@ public class MangaFileBrowser extends LinearLayout {
         @Nullable public Object tag;
         /** Read state: 0 none, 1 in progress (blue), 2 finished (green). */
         public int state;
+        /** When this folder/file was last read (0 = never). Lets the jump
+         *  button find the newest chapter regardless of the sort direction. */
+        public long readTs;
         /** Multi-select mark. */
         public boolean selected;
         /** Shows the trailing "⋯" action (历史 rows). */
@@ -322,10 +325,16 @@ public class MangaFileBrowser extends LinearLayout {
      */
     private void computeJumpTarget() {
         int target = -1;
+        long newest = 0L;
         for (int i = 0; i < mSorted.size(); i++) {
-            if (mSorted.get(i).state == 1) {   // MangaReadingState.READING
+            Entry entry = mSorted.get(i);
+            if (entry.state == 1) {   // MangaReadingState.READING
                 target = i;
                 break;
+            }
+            if (entry.readTs > newest) {
+                newest = entry.readTs;
+                target = i;
             }
         }
         if (target < 0) {

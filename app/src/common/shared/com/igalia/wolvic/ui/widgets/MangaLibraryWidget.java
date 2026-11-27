@@ -3783,6 +3783,8 @@ public class MangaLibraryWidget extends UIWidget {
             if (entry.directory) {
                 String key = keyer == null ? entry.path : keyer.key(entry.path);
                 entry.state = state.stateOfFolder(key);
+                MangaReadingState.Chapter mark = state.chapter(key);
+                entry.readTs = mark == null ? 0L : mark.ts;
             }
         }
         if (chapterKey == null) {
@@ -3807,9 +3809,16 @@ public class MangaLibraryWidget extends UIWidget {
         for (int i = 0; i < media.size() && i <= chapter.page; i++) {
             read.add(media.get(i).id);
         }
+        // The page the reader stopped on: flag it so the jump button lands on
+        // it even when the listing is sorted the other way round.
+        String currentId = chapter.page >= 0 && chapter.page < media.size()
+                ? media.get(chapter.page).id : null;
         for (MangaFileBrowser.Entry entry : entries) {
             if (!entry.directory && entry.state == 0 && read.contains(entry.path)) {
                 entry.state = MangaReadingState.DONE;
+            }
+            if (!entry.directory && currentId != null && currentId.equals(entry.path)) {
+                entry.readTs = 1L;
             }
         }
     }
