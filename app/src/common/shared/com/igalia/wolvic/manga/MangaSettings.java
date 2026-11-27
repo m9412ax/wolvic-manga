@@ -42,6 +42,14 @@ public final class MangaSettings {
     public static final String READER_AUTO_ADVANCE_SEC = "reader_auto_advance_sec";
     public static final String READER_SHOW_PAGE_NUMBER = "reader_show_page_number";
     public static final String READER_CROP_BORDERS = "reader_crop_borders";
+    /** Percent (25..100) of the on-screen pixel count the page bitmap is
+     *  resampled to before drawing. Wolvic renders every widget panel into a
+     *  SurfaceTexture at roughly 5x the panel's on-screen pixels and the VR
+     *  compositor then shrinks it with a plain bilinear tap (an external OES
+     *  texture cannot carry mipmaps). Content that carries detail finer than
+     *  the final screen pixels therefore crawls/shimmer when the head moves.
+     *  Lowering this trades sharpness for stability. 100 = off. */
+    public static final String READER_RENDER_SCALE = "reader_render_scale";
     /** In-RAM preload: how many NEIGHBOUR pages (each direction) are decoded
      *  into the Bitmap cache beforehand. Purely memory, independent of how
      *  many pages are fetched to disk. */
@@ -343,6 +351,8 @@ public final class MangaSettings {
                 return 8;
             case READER_PRELOAD:
                 return 4;
+            case READER_RENDER_SCALE:
+                return 100;
             case READER_FETCH_AHEAD:
                 return 4;
             case READER_PRELOAD_THREADS:

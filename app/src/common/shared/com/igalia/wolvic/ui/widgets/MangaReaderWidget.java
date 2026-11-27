@@ -2698,6 +2698,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (cur == null || cur.isRecycled()) {
             return;
         }
+        if (mStripView != null) {
+            mStripView.setRenderScale(renderScale());
+        }
         float vw = mStripView.getWidth() > 0 ? mStripView.getWidth() : mPageImage.getWidth();
         if (vw <= 0) {
             // Still push the pages so scrolling has segment heights to work
@@ -2935,6 +2938,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             mPageCounter.setVisibility(mSettings.bool(MangaSettings.READER_SHOW_PAGE_NUMBER)
                     ? VISIBLE : GONE);
         }
+        // READER_RENDER_SCALE may have changed: re-evaluate the resample.
+        applyImageTransform();
     }
 
     private void applyImageTransform() {
@@ -3023,11 +3028,24 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mDestroyed || isContinuous() || mTiledPage) {
             return;
         }
-        if (Math.abs(scale - mPrescaleWanted) > 0.01f) {
-            mPrescaleWanted = scale;
+        // The panel texture the compositor sees is several times larger than
+        // the pixels it covers on screen, so the useful resolution is only
+        // scale * renderScale(). See READER_RENDER_SCALE.
+        float want = Math.max(0.02f, scale * renderScale());
+        if (Math.abs(want - mPrescaleWanted) > 0.01f) {
+            mPrescaleWanted = want;
             mMainHandler.removeCallbacks(mPrescaleTask);
             mMainHandler.postDelayed(mPrescaleTask, 160L);
         }
+    }
+
+    /** 0.25..1 multiplier applied to every page resample. 1 = off. */
+    private float renderScale() {
+        int percent = mSettings.integer(MangaSettings.READER_RENDER_SCALE);
+        if (percent <= 0 || percent >= 100) {
+            return 1.0f;
+        }
+        return Math.max(0.25f, percent / 100.0f);
     }
 
     private void prescalePageNow() {

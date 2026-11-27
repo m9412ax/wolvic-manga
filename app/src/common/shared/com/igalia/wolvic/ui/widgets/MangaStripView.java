@@ -75,6 +75,13 @@ public class MangaStripView extends View {
     /** Below this on-screen scale the source is prefiltered instead of being
      *  minified by the GPU on every frame. */
     private static final float PRESCALE_BELOW = 0.92f;
+    /** Extra multiplier (0.25..1) applied to the resample target; mirrors the
+     *  reader's READER_RENDER_SCALE setting. */
+    private float mRenderScale = 1.0f;
+
+    public void setRenderScale(float scale) {
+        mRenderScale = (scale > 0.2f && scale <= 1.0f) ? scale : 1.0f;
+    }
 
     public MangaStripView(Context context) {
         super(context);
@@ -115,6 +122,9 @@ public class MangaStripView extends View {
         }
         final int srcW = src.getWidth();
         final int srcH = src.getHeight();
+        // The texture the compositor samples is far larger than the pixels the
+        // panel covers, so only si * mRenderScale is real resolution.
+        si = si * mRenderScale;
         if (si >= PRESCALE_BELOW || si <= 0.02f || srcW < 128) {
             if (mDisp[slot] != null) {
                 dropDisp(slot);
