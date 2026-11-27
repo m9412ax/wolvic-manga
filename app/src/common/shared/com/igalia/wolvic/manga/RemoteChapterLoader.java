@@ -502,7 +502,11 @@ public final class RemoteChapterLoader {
                 return true;
             }
             if (isVideoName(page.nameHint)) {
-                RemoteManga.writeVideoMarker(out, page);
+                try {
+                    RemoteManga.writeVideoMarker(out, page);
+                } catch (Throwable e) {
+                    Log.w(TAG, "video marker " + out.getName() + " failed: " + e.getMessage());
+                }
                 return isValidCached(out);
             }
             for (int attempt = 0; attempt < 2; attempt++) {
