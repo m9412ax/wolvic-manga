@@ -121,14 +121,14 @@ public class MangaStripView extends View {
             }
             return src;
         }
-        // Quantise to 1/8 so a pinch gesture reuses one resample instead of
-        // rebuilding on every step.
-        float q = Math.round(si * 8f) / 8f;
+        // Quantise UP to 1/16 so a pinch reuses one resample, and so the drawn
+        // copy is never upscaled (that would just look soft).
+        float q = (float) Math.ceil(si * 16f) / 16f;
         if (q >= 1f) {
             return src;
         }
-        if (q < 0.125f) {
-            q = 0.125f;
+        if (q < 0.0625f) {
+            q = 0.0625f;
         }
         Bitmap cached = mDisp[slot];
         if (cached != null && !cached.isRecycled()

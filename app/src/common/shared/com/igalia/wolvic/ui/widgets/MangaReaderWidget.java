@@ -3046,11 +3046,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             return;
         }
-        // Quantise the factor so a pinch reuses one resample instead of
-        // spawning a decode per step.
-        float q = Math.round(want * 8f) / 8f;
-        if (q < 0.125f) {
-            q = 0.125f;
+        // Quantise UP to 1/16: one resample per pinch step, never upscaled.
+        float q = (float) Math.ceil(want * 16f) / 16f;
+        if (q < 0.0625f) {
+            q = 0.0625f;
+        }
+        if (q >= 1f) {
+            return;
         }
         final int tw = Math.max(48, Math.round(mDisplayWidth * q));
         final int th = Math.max(1, Math.round(mDisplayHeight * q));
