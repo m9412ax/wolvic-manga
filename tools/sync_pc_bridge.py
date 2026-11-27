@@ -40,6 +40,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 FORMAT = "mangahub-sync/1"
@@ -88,7 +89,7 @@ def sync_id(pc_path_value, pc_root):
     root = str(pc_root).replace("\\", "/").rstrip("/")
     if root and raw.lower().startswith(root.lower()):
         raw = raw[len(root):].lstrip("/")
-        return (root + "/" + raw).rstrip("/")
+        return (root + "/" + raw).rstrip("/") if raw else root
     return raw.strip("/")
 
 
@@ -128,7 +129,9 @@ def to_neev(sync, sync_dir, pc_root, history_path):
             by_path[str(entry["path"]).lower()] = entry
 
     added = updated = 0
-    for chapter in sync["chapters"]:
+    # Only the single most recent mark is mirrored into NeeView history.
+    latest = sorted(sync["chapters"], key=lambda c: int(c.get("ts") or 0), reverse=True)[:1]
+    for chapter in latest:
         cid = chapter.get("id", "")
         if not cid or "://" in cid or cid.startswith("115:"):
             continue  # no local Windows path for online books
@@ -165,11 +168,15 @@ def from_neev(sync, pc_root, history_path):
     _, entries = neeview_entries(history_path)
     local = {str(c.get("id", "")).lower(): c for c in sync["chapters"]}
     added = updated = 0
+    # NeeView's history can hold thousands of books; only the newest one is
+    # pushed to the VR device.
+    entries = sorted([e for e in entries if isinstance(e, dict) and e.get("path")],
+                     key=lambda e: str(e.get("last_access") or ""), reverse=True)[:1]
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         folder = str(entry.get("path") or "")
-        if not folder or not os.path.isdir(folder):
+        if not folder:
             continue
         # A NeeView "book" is a folder of images: one chapter of the VR book.
         page = int(entry.get("last_page") or 0)
@@ -281,6 +288,10 @@ def main():
     action.add_argument("--from-neeview", metavar="HISTORY_JSON")
     action.add_argument("--to-mihon-json", metavar="OUT_JSON")
     action.add_argument("--from-mihon-json", metavar="IN_JSON")
+    action.add_argument("--watch-neeview", metavar="HISTORY_JSON",
+                        help="stay running and write back as soon as NeeView saves History.json")
+    parser.add_argument("--interval", type=int, default=5,
+                        help="watch poll interval in seconds (default 5)")
     parser.add_argument("--mihon-source-id", type=int, default=LOCAL_SOURCE_ID)
     args = parser.parse_args()
 
@@ -296,6 +307,20 @@ def main():
     elif args.from_mihon_json:
         from_mihon(sync, args.from_mihon_json)
         save_sync(sync_file, sync)
+    elif args.watch_neeview:
+        last = 0.0
+        print(f"watching {args.watch_neeview} every {args.interval}s (Ctrl+C to stop)")
+        while True:
+            try:
+                mtime = Path(args.watch_neeview).stat().st_mtime
+                if mtime != last:
+                    if last:
+                        from_neev(sync, args.pc_root, args.watch_neeview)
+                        save_sync(sync_file, sync)
+                    last = mtime
+            except Exception as exc:
+                print(f"watch error: {exc}", file=sys.stderr)
+            time.sleep(max(1, args.interval))
     print(f"sync file: {sync_file}")
 
 

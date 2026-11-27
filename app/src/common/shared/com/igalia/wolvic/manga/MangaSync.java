@@ -6,6 +6,7 @@
 package com.igalia.wolvic.manga;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -198,8 +199,14 @@ public final class MangaSync {
             }
             root.put("chapters", chapters);
 
+            // Only the single most recent 历史 row crosses devices. A PC with
+            // thousands of books must not accumulate a second full history.
+            // Chapter marks above are still complete, so 继续阅读 works for
+            // every book; only the 历史页 shortcut is deliberately minimal.
             JSONArray history = new JSONArray();
-            for (MangaReadingState.Record r : state.records()) {
+            List<MangaReadingState.Record> records = state.records();
+            if (!records.isEmpty()) {
+                MangaReadingState.Record r = records.get(0); // newest first
                 JSONObject item = new JSONObject();
                 item.put("id", syncId(context, settings,
                         r.path.isEmpty() ? r.id : r.path));
@@ -247,6 +254,7 @@ public final class MangaSync {
         for (MangaReadingState.Chapter c : state.allChapters()) {
             localChapters.put(chapterSyncId(context, settings, c.key), c.key);
         }
+        List<String> changedKeys = new ArrayList<>();
         JSONArray chapters = remote.optJSONArray("chapters");
         for (int i = 0; chapters != null && i < chapters.length(); i++) {
             JSONObject item = chapters.optJSONObject(i);
@@ -268,8 +276,13 @@ public final class MangaSync {
                     item.optLong("ts", 0));
             if (changed) {
                 result.chapters++;
+                changedKeys.add(key);
             }
         }
+        // The reader still resumes from its legacy "chap:" preference. Mirror
+        // imported marks there as well, otherwise the progress bar moves but
+        // 继续阅读 opens page 1.
+        updateLegacyResume(context, settings, state, changedKeys);
 
         Map<String, String> localRecords = new HashMap<>();
         for (MangaReadingState.Record r : state.records()) {
@@ -322,6 +335,52 @@ public final class MangaSync {
         result.message = "章节 +" + result.chapters + " · 历史 +" + result.history
                 + (added > 0 ? " · 书架 +" + added : "");
         return result;
+    }
+
+    /** Writes the imported chapter/page into the key the reader actually
+     *  resumes from. Without this, remote progress only colours the cards. */
+    private static void updateLegacyResume(Context context, MangaSettings settings,
+                                           MangaReadingState state, List<String> changedKeys) {
+        if (changedKeys.isEmpty()) {
+            return;
+        }
+        SharedPreferences prefs = context.getSharedPreferences(
+                MangaSettings.PROGRESS_PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        List<MangaReadingState.Chapter> all = state.allChapters();
+        for (String key : changedKeys) {
+            MangaReadingState.Chapter mark = state.chapter(key);
+            if (mark == null) {
+                continue;
+            }
+            int bar = key.lastIndexOf('|');
+            String book = bar > 0 ? key.substring(0, bar) : new File(key).getParent();
+            if (book == null || book.isEmpty()) {
+                continue;
+            }
+            String legacyKey;
+            if (book.startsWith("src:")) {
+                legacyKey = book;
+            } else if (book.startsWith("smb://") || book.startsWith("115:")) {
+                legacyKey = "remote:" + book;
+            } else {
+                legacyKey = "local:" + book;
+                // A chapter folder opened directly reads this per-page pref.
+                editor.putInt("page:" + key, mark.page);
+            }
+            List<String> siblings = new ArrayList<>();
+            for (MangaReadingState.Chapter c : all) {
+                if (MangaReadingState.underPrefix(c.key, book)) {
+                    siblings.add(c.key);
+                }
+            }
+            siblings.sort(NaturalOrder.INSTANCE);
+            int index = Math.max(0, siblings.indexOf(key));
+            editor.putString("chap:" + legacyKey,
+                    index + "|" + Math.max(0, mark.page) + "|0");
+        }
+        editor.apply();
+        Log.i(TAG, "updated legacy resume for " + changedKeys.size() + " chapters");
     }
 
     // -------------------------------------------------------------- I/O

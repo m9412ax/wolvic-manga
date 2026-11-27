@@ -187,6 +187,7 @@ public class MangaLibraryWidget extends UIWidget {
     private boolean mSyncRunning;
     private long mLastAutoPullMs;
     private long mLastAutoPushMs;
+    private boolean mForcePullNext;
 
     private String mWebDavUrl = "";
     private String mWebDavStatus = "未连接";
@@ -1528,8 +1529,12 @@ public class MangaLibraryWidget extends UIWidget {
             mLastAutoPushMs = mLastAutoPullMs;
             mMain.post(() -> {
                 mSyncRunning = false;
-                Toast.makeText(getContext(), result.message,
-                        result.ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                // Silent when automatic: an unreachable share must not
+                // interrupt someone who just opened a book.
+                if (!automatic || !result.ok) {
+                    Toast.makeText(getContext(), result.message,
+                            result.ok ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                }
                 if (result.ok) {
                     refreshShelf();
                     refreshPage(MangaPage.HISTORY);
@@ -1541,15 +1546,18 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
-    /** Entering the shelf may pull remote changes, at most every 5 minutes. */
+    /** Entering the shelf may pull remote changes (1 min; 20 s when a book
+     *  was just opened so a page left on the PC is picked up quickly). */
     private void maybeAutoPull() {
         if (!mSettings.bool(MangaSettings.SYNC_ENABLED)
                 || !mSettings.bool(MangaSettings.SYNC_AUTO_PULL)) {
             return;
         }
-        if (System.currentTimeMillis() - mLastAutoPullMs < 5 * 60 * 1000L) {
+        long gap = System.currentTimeMillis() - mLastAutoPullMs;
+        if (gap < (mForcePullNext ? 20_000L : 60_000L)) {
             return;
         }
+        mForcePullNext = false;
         runSync(true);
     }
 
@@ -2033,7 +2041,11 @@ public class MangaLibraryWidget extends UIWidget {
         mBookDir = folder;
         mBookRemoteKey = null;
         mBookTitle = folder.getName();
+        // Opening a book is the natural moment to pick up a page the PC just
+        // left off on; 20s throttle keeps it cheap.
+        mForcePullNext = true;
         switchPage(MangaPage.BOOK);
+        maybeAutoPull();
     }
 
     /** Opens the 书本详情 card of an SMB / 115 / 图源 book. */
@@ -2044,7 +2056,9 @@ public class MangaLibraryWidget extends UIWidget {
         mBookDir = null;
         mBookRemoteKey = shelfKey;
         mBookTitle = remoteShelfTitle(shelfKey);
+        mForcePullNext = true;
         switchPage(MangaPage.BOOK);
+        maybeAutoPull();
     }
 
     /**
