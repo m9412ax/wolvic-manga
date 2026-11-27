@@ -396,21 +396,6 @@ public final class MangaNeeViewSync {
                     key = vrRecord.chapterKey;
                 }
             }
-            // Fallback: a chapter touched by the reader in the last 10 minutes
-            // (imported marks keep their original, older timestamps).
-            if (recent == null) {
-                MangaReadingState.Chapter touched = null;
-                long cutoff = System.currentTimeMillis() - 10 * 60 * 1000L;
-                for (MangaReadingState.Chapter c : state.allChapters()) {
-                    if (c.ts >= cutoff && (touched == null || c.ts > touched.ts)) {
-                        touched = c;
-                    }
-                }
-                if (touched != null) {
-                    mark = touched;
-                    key = touched.key;
-                }
-            }
             String outId = canonical(MangaSync.syncId(context, settings, chapterPath(key)));
             if (!isDrivePath(outId)) {
                 // Local / 115 / extension reading cannot be opened by NeeView.
