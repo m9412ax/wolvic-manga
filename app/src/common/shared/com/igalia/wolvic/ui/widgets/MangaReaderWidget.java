@@ -816,6 +816,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         mMainHandler.post(() -> {
                             if (session == mChapterSession && !mDestroyed) {
                                 mPageTotal = total;
+                                // The tray scrubber keeps its own denominator:
+                                // publishing the true count here is what makes
+                                // "3 / 3" turn into "12 / 184" without the user
+                                // having to turn a page first.
+                                mPageCounter.setText(counterText());
+                                notifyTrayProgress();
                                 if (done < total) {
                                     updateChapterDownloadProgress(dir, done, total,
                                             curName, curDone, curTotal);
@@ -868,6 +874,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                             return;
                         }
                         mPageTotal = total;
+                        mPageCounter.setText(counterText());
+                        notifyTrayProgress();
                         updateChapterDownloadProgress(mChapterDirs.get(index), done, total,
                                 curName, curDone, curTotal);
                         if (!opened) {

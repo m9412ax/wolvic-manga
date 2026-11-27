@@ -182,6 +182,12 @@ public class MangaLibraryWidget extends UIWidget {
     private String mBookTitle = "";
     /** Measured grid width the current card geometry was computed for. */
     private int mShelfGridWidth = -1;
+    /** Grid items in display order, used by the shelf jump button. */
+    private final List<MangaCoverAdapter.MangaItem> mShelfItems = new ArrayList<>();
+    /** Floating 最近阅读 button over the shelf / book page. */
+    private TextView mPageJumpFab;
+    /** Chapter row the book page should jump to (latest read chapter). */
+    private View mBookJumpRow;
     /** Remote shelf keys whose cover download is already queued. */
     private final java.util.Set<String> mRemoteCoverPending = new java.util.HashSet<>();
     /** Sync guards: one in-flight job, throttled auto push/pull. */
@@ -337,6 +343,7 @@ public class MangaLibraryWidget extends UIWidget {
         mAdapter.setCompact(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1);
         mAdapter.setCardWidth(gridCardWidthPx(spanCount()));
         mGrid.setAdapter(mAdapter);
+        setupPageJumpFab();
         // The first layout pass has no measured width yet, so the card width
         // computed above is only a guess (it used a fallback panel width). Once
         // the grid is measured, re-derive columns / cover size. Without this
@@ -596,6 +603,7 @@ public class MangaLibraryWidget extends UIWidget {
         fillPage(page, content);
         syncHeaderVisibility(content);
         updateHeaderSize(page);
+        updatePageJumpFab();
     }
 
     /**
@@ -839,6 +847,7 @@ public class MangaLibraryWidget extends UIWidget {
             maybeAutoPull();
         }
         scrollPageToTop(page);
+        updatePageJumpFab();
         // SMB: once configured, auto-connect on entry and show the share as a
         // plain folder list (no repeated setup screen).
         if (page == MangaPage.SMB && smbConfigured() && !mSmbAutoConnected) {
@@ -944,6 +953,93 @@ public class MangaLibraryWidget extends UIWidget {
     /** Bumped by every shelf mutation so a stale background scan is dropped. */
     private int mShelfGeneration = 0;
 
+    // -------------------------------------------------- 最近阅读 floating button
+
+    /** Bottom-right "jump to where I was reading" button for the pages that are
+     *  not a file browser (shelf grid and book detail). The browser has its own
+     *  copy inside MangaFileBrowser so it can scroll its own list. */
+    private void setupPageJumpFab() {
+        if (mPageContainer == null || mPageJumpFab != null) {
+            return;
+        }
+        mPageJumpFab = new TextView(getContext());
+        mPageJumpFab.setText("⇣ 最近阅读");
+        mPageJumpFab.setTextSize(15f);
+        mPageJumpFab.setTextColor(0xFF80D5D2);
+        mPageJumpFab.setBackgroundResource(R.drawable.manga_pill_bg);
+        mPageJumpFab.setPadding(dp(18), dp(10), dp(18), dp(10));
+        mPageJumpFab.setClickable(true);
+        mPageJumpFab.setFocusable(true);
+        mPageJumpFab.setVisibility(GONE);
+        mPageJumpFab.setOnClickListener(v -> onPageJumpClicked());
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT);
+        lp.gravity = Gravity.BOTTOM | Gravity.END;
+        lp.setMargins(0, 0, dp(18), dp(18));
+        mPageContainer.addView(mPageJumpFab, lp);
+    }
+
+    /** Index of the book the user is reading on the shelf; -1 when nothing has
+     *  been read yet. */
+    private int shelfJumpIndex() {
+        int lastMarked = -1;
+        for (int i = 0; i < mShelfItems.size(); i++) {
+            int state = mShelfItems.get(i).state;
+            if (state == MangaReadingState.READING) {
+                return i;
+            }
+            if (state != MangaReadingState.NONE) {
+                lastMarked = i;
+            }
+        }
+        return lastMarked;
+    }
+
+    private void updatePageJumpFab() {
+        if (mPageJumpFab == null) {
+            return;
+        }
+        boolean show = false;
+        if (mCurrentPage == MangaPage.LIBRARY) {
+            show = shelfJumpIndex() >= 0;
+            mPageJumpFab.setText("⇣ 最近阅读");
+        } else if (mCurrentPage == MangaPage.BOOK) {
+            show = mBookJumpRow != null;
+            mPageJumpFab.setText("⇣ 最近章节");
+        }
+        mPageJumpFab.setVisibility(show ? VISIBLE : GONE);
+        if (show) {
+            mPageJumpFab.bringToFront();
+        }
+    }
+
+    private void onPageJumpClicked() {
+        if (mCurrentPage == MangaPage.LIBRARY && mGrid != null) {
+            int target = shelfJumpIndex();
+            if (target < 0) {
+                return;
+            }
+            RecyclerView.LayoutManager lm = mGrid.getLayoutManager();
+            int first = lm instanceof GridLayoutManager
+                    ? ((GridLayoutManager) lm).findFirstVisibleItemPosition() : 0;
+            mGrid.smoothScrollToPosition(first > 0 ? 0 : target);
+            return;
+        }
+        if (mCurrentPage == MangaPage.BOOK && mBookJumpRow != null) {
+            View page = mPageViews.get(MangaPage.BOOK);
+            if (!(page instanceof ScrollView)) {
+                return;
+            }
+            ScrollView scroll = (ScrollView) page;
+            if (scroll.getScrollY() > dp(8)) {
+                scroll.smoothScrollTo(0, 0);
+            } else {
+                scroll.smoothScrollTo(0, Math.max(0, mBookJumpRow.getTop() - dp(12)));
+            }
+        }
+    }
+
     /** Directory enumeration and cover discovery run off the UI thread: a
      *  large manga tree must never block app startup or freeze the loading
      *  screen. Only the adapter update is posted back to the main thread. */
@@ -964,6 +1060,9 @@ public class MangaLibraryWidget extends UIWidget {
                     return;
                 }
                 mAdapter.update(items);
+                mShelfItems.clear();
+                mShelfItems.addAll(items);
+                updatePageJumpFab();
                 // The adapter may have been measured before the very first
                 // layout; re-apply geometry now that there is data to draw.
                 applyShelfGeometry();
@@ -2238,6 +2337,7 @@ public class MangaLibraryWidget extends UIWidget {
      */
     private void fillBookPage(LinearLayout content) {
         final boolean local = mBookDir != null;
+        mBookJumpRow = null;
         if (!local && mBookRemoteKey == null) {
             addInfo(content, "书本", "没有选中漫画，请从书架重新进入。");
             return;
@@ -2332,6 +2432,7 @@ public class MangaLibraryWidget extends UIWidget {
         } else {
             listRemoteBookChapters(content, mBookRemoteKey, state);
         }
+        updatePageJumpFab();
     }
 
     /** Jumps the file browser to the folder of an SMB/115 shelf entry. */
@@ -2397,6 +2498,8 @@ public class MangaLibraryWidget extends UIWidget {
                     return;
                 }
                 int i = 0;
+                View latestRow = null;
+                long latestTs = -1L;
                 for (String name : chapters) {
                     i++;
                     String chapterKey = key + "/" + name;
@@ -2406,10 +2509,16 @@ public class MangaLibraryWidget extends UIWidget {
                             + Math.min(mark.page + 1, Math.max(1, mark.total))
                             + (mark.total > 0 ? "/" + mark.total : "") + " 页";
                     String label = markPrefix + i + ". " + name + tail;
-                    addBookChapterButton(content, label, () ->
+                    Button row = addBookChapterButton(content, label, () ->
                             openRemoteManga(smbManga(smbAuth(), rel + "/" + name),
                                     null, false));
+                    if (mark != null && mark.ts > latestTs) {
+                        latestTs = mark.ts;
+                        latestRow = row;
+                    }
                 }
+                mBookJumpRow = latestRow;
+                updatePageJumpFab();
                 if (chapters.isEmpty()) {
                     addInfo(content, "章节", "该漫画没有子文件夹章节，可直接继续阅读。");
                 }
@@ -2417,7 +2526,7 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
-    private void addBookChapterButton(LinearLayout content, String label, Runnable click) {
+    private Button addBookChapterButton(LinearLayout content, String label, Runnable click) {
         Button row = new Button(getContext());
         row.setText(label);
         row.setAllCaps(false);
@@ -2432,6 +2541,7 @@ public class MangaLibraryWidget extends UIWidget {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.setMargins(0, dp(3), 0, dp(3));
         content.addView(row, lp);
+        return row;
     }
 
     private String bookMetaText(boolean local, MangaReadingState.Progress progress) {
@@ -2500,6 +2610,8 @@ public class MangaLibraryWidget extends UIWidget {
         }
         MangaReadingState state = MangaReadingState.get(getContext());
         int index = 0;
+        View latestRow = null;
+        long latestTs = -1L;
         for (File chapter : chapters) {
             index++;
             MangaReadingState.Chapter mark = state.chapter(chapter.getAbsolutePath());
@@ -2522,7 +2634,12 @@ public class MangaLibraryWidget extends UIWidget {
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(0, dp(3), 0, dp(3));
             content.addView(row, lp);
+            if (mark != null && mark.ts > latestTs) {
+                latestTs = mark.ts;
+                latestRow = row;
+            }
         }
+        mBookJumpRow = latestRow;
     }
 
     /** Jumps to the file manager at [dir] (used by 打开本地文件夹). */

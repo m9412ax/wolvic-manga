@@ -42,6 +42,9 @@ public final class MangaNeeViewSync {
     private static final String PROFILE_SHARE = "d";
     private static final String HISTORY_FILE = "History.json";
     private static final String BOOKMARK_FILE = "Bookmark.json";
+    /** NeeView restores its startup book/page from here, NOT from History.json.
+     *  Writing only the history row is why "进度有了但打开位置没变". */
+    private static final String USER_SETTING_FILE = "UserSetting.json";
     /** NeeView expects 7 fractional digits and a numeric UTC offset. */
     private static final DateTimeFormatter STAMP =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSSSXXX");
@@ -422,6 +425,9 @@ public final class MangaNeeViewSync {
             items.put(0, row);
             MangaSmb.writeText(syncAuth(settings), profilePath(settings, HISTORY_FILE),
                     history.toString(2));
+            // History only feeds the recent list. NeeView reopens at
+            // UserSetting.StartUp.LastBookV2, so that is what has to move.
+            writeStartupPosition(settings, outId, outPage);
 
             int books = syncBookmarks(context, settings);
             settings.put(MangaSettings.SYNC_LAST_TS, System.currentTimeMillis());
@@ -431,6 +437,71 @@ public final class MangaNeeViewSync {
             Log.w(TAG, "sync failed: " + e);
             return MangaSync.Result.fail("同步失败：" + e.getMessage());
         }
+    }
+
+    /**
+     * Moves NeeView's "open last book" pointer to the position read in VR.
+     * NeeView keeps it in UserSetting.json → Config.StartUp.LastBookV2
+     * ({Path, Page, Props}) and reopens exactly that page on launch, so a
+     * History.json rewrite alone never changes where the app starts.
+     * NeeView rewrites this file when it exits, so VR sync must run while the
+     * PC app is closed for the change to stick.
+     */
+    private static void writeStartupPosition(MangaSettings settings, String pcPath,
+                                             String pageName) {
+        if (pcPath == null || pcPath.isEmpty()) {
+            return;
+        }
+        try {
+            String path = profilePath(settings, USER_SETTING_FILE);
+            String raw = MangaSmb.readText(syncAuth(settings), path);
+            if (raw == null || raw.trim().isEmpty()) {
+                Log.w(TAG, "UserSetting.json not found, startup position untouched");
+                return;
+            }
+            JSONObject root = new JSONObject(stripBom(raw));
+            JSONObject config = root.optJSONObject("Config");
+            if (config == null) {
+                config = new JSONObject();
+                root.put("Config", config);
+            }
+            JSONObject startup = config.optJSONObject("StartUp");
+            if (startup == null) {
+                startup = new JSONObject();
+                config.put("StartUp", startup);
+            }
+            String winPath = pcPath.replace('/', '\\');
+            String props = "IsWide";
+            JSONObject old = startup.optJSONObject("LastBookV2");
+            if (old != null && old.optString("Props", "").length() > 0) {
+                props = old.optString("Props");
+            }
+            JSONObject book = new JSONObject();
+            book.put("Path", winPath);
+            book.put("Page", pageName == null ? "" : pageName);
+            book.put("Props", props);
+            startup.put("LastBookV2", book);
+            startup.put("LastBook", book);
+
+            int cut = winPath.lastIndexOf('\\');
+            String parent = cut > 2 ? winPath.substring(0, cut) : winPath;
+            JSONObject folder = new JSONObject();
+            folder.put("Path", parent);
+            folder.put("Select", winPath);
+            folder.put("FolderOrder", "FileName");
+            folder.put("IsFolderRecursive", false);
+            startup.put("LastFolder", folder);
+
+            MangaSmb.writeText(syncAuth(settings), path, root.toString(2));
+            Log.i(TAG, "startup position -> " + winPath + " | " + pageName);
+        } catch (Exception e) {
+            Log.w(TAG, "startup position write failed: " + e.getMessage());
+        }
+    }
+
+    /** NeeView writes its JSON with a UTF-8 BOM; org.json chokes on it. */
+    private static String stripBom(String raw) {
+        return raw.startsWith("\uFEFF") ? raw.substring(1) : raw;
     }
 
     /** Merges NeeView Bookmark.json with the VR shelf, both directions. */

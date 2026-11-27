@@ -141,15 +141,8 @@ public final class MangaSmb {
 
     /** Lists direct children of [relativePath] inside the share root. */
     public static List<Entry> list(Auth auth, String relativePath) throws Exception {
-        SMBClient client = newClient();
-        Connection connection = null;
-        try {
-            connection = client.connect(auth.host);
-            Session session = connection.authenticate(new AuthenticationContext(
-                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
-                    auth.domain == null ? "" : auth.domain));
-            DiskShare share = (DiskShare) session.connectShare(auth.share);
-            String path = normalizePath(relativePath);
+        final String path = normalizePath(relativePath);
+        return withShare(auth, share -> {
             List<Entry> result = new ArrayList<>();
             for (FileIdBothDirectoryInformation info : share.list(path)) {
                 String name = info.getFileName();
@@ -167,30 +160,18 @@ public final class MangaSmb {
             Log.i(TAG, "list " + auth.host + "/" + auth.share + "/" + path
                     + " -> " + result.size() + " entries");
             return result;
-        } finally {
-            closeQuietly(connection);
-            closeQuietly(client);
-        }
+        });
     }
 
     /** Streams one SMB file to a local destination. */
     public static long download(Auth auth, String relativePath, java.io.File destination,
                                 ProgressListener listener) throws Exception {
-        SMBClient client = newClient();
-        Connection connection = null;
-        try {
-            connection = client.connect(auth.host);
-            Session session = connection.authenticate(new AuthenticationContext(
-                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
-                    auth.domain == null ? "" : auth.domain));
-            DiskShare share = (DiskShare) session.connectShare(auth.share);
-            String path = normalizePath(relativePath);
-            java.io.File parent = destination.getParentFile();
-            if (parent != null) {
-                parent.mkdirs();
-            }
-            final long total = share.getFileInformation(path)
-                    .getStandardInformation().getEndOfFile();
+        final String path = normalizePath(relativePath);
+        java.io.File parent = destination.getParentFile();
+        if (parent != null) {
+            parent.mkdirs();
+        }
+        return withShare(auth, share -> {
             final long[] written = {0};
             java.io.File tmp = new java.io.File(destination.getAbsolutePath() + ".tmp");
             try (File remote = share.openFile(path, READ_MASK, FILE_ATTRS, SHARE_ACCESS,
@@ -215,23 +196,13 @@ public final class MangaSmb {
             }
             Log.i(TAG, "download " + path + " -> " + written[0] + " bytes");
             return written[0];
-        } finally {
-            closeQuietly(connection);
-            closeQuietly(client);
-        }
+        });
     }
 
     /** Reads a small UTF-8 text file from the share (sync manifest). */
     public static String readText(Auth auth, String relativePath) throws Exception {
-        SMBClient client = newClient();
-        Connection connection = null;
-        try {
-            connection = client.connect(auth.host);
-            Session session = connection.authenticate(new AuthenticationContext(
-                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
-                    auth.domain == null ? "" : auth.domain));
-            DiskShare share = (DiskShare) session.connectShare(auth.share);
-            String path = normalizePath(relativePath);
+        final String path = normalizePath(relativePath);
+        return withShare(auth, share -> {
             if (!share.fileExists(path)) {
                 return null;
             }
@@ -246,10 +217,7 @@ public final class MangaSmb {
                 }
             }
             return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
-        } finally {
-            closeQuietly(connection);
-            closeQuietly(client);
-        }
+        });
     }
 
     /** Writes a small UTF-8 text file, creating [relativePath]'s folders. */
@@ -564,6 +532,119 @@ public final class MangaSmb {
                 connection.close();
             } catch (Exception e) {
                 Log.w(TAG, "close connection: " + e.getMessage());
+            }
+        }
+    }
+
+    // ------------------------------------------------------- connection pool
+
+    /**
+     * One SMB connection costs a TCP handshake + negotiate + session setup
+     * (~100-300 ms on a LAN). Opening a chapter used to do that three or four
+     * times (chapter list, page list, image read), which is most of the
+     * "打开要等好久" the user sees. Connections are therefore kept for a few
+     * minutes and reused; a broken one is dropped and the call retried once
+     * on a fresh connection, so reuse can never turn a transient error into a
+     * permanent one.
+     */
+    private static final class PooledShare {
+        final SMBClient client;
+        final Connection connection;
+        final DiskShare share;
+        final String key;
+        final long created = System.currentTimeMillis();
+        boolean reused;
+
+        PooledShare(SMBClient client, Connection connection, DiskShare share, String key) {
+            this.client = client;
+            this.connection = connection;
+            this.share = share;
+            this.key = key;
+        }
+    }
+
+    private interface ShareTask<T> {
+        T run(DiskShare share) throws Exception;
+    }
+
+    private static final java.util.Map<String, java.util.ArrayDeque<PooledShare>> POOL =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int POOL_MAX = 3;
+    private static final long POOL_TTL_MS = 5 * 60 * 1000L;
+
+    private static String poolKey(Auth auth) {
+        return auth.host + "|" + auth.share + "|"
+                + (auth.user == null ? "" : auth.user);
+    }
+
+    private static PooledShare borrowShare(Auth auth) throws Exception {
+        String key = poolKey(auth);
+        java.util.ArrayDeque<PooledShare> queue = POOL.get(key);
+        if (queue != null) {
+            PooledShare pooled;
+            while ((pooled = queue.poll()) != null) {
+                if (System.currentTimeMillis() - pooled.created < POOL_TTL_MS) {
+                    pooled.reused = true;
+                    return pooled;
+                }
+                closePooled(pooled);
+            }
+        }
+        SMBClient client = newClient();
+        Connection connection = null;
+        try {
+            connection = client.connect(auth.host);
+            Session session = connection.authenticate(new AuthenticationContext(
+                    auth.user, auth.pass == null ? new char[0] : auth.pass.toCharArray(),
+                    auth.domain == null ? "" : auth.domain));
+            DiskShare share = (DiskShare) session.connectShare(auth.share);
+            return new PooledShare(client, connection, share, key);
+        } catch (Exception e) {
+            closeQuietly(connection);
+            closeQuietly(client);
+            throw e;
+        }
+    }
+
+    private static void releaseShare(PooledShare pooled) {
+        if (pooled == null) {
+            return;
+        }
+        java.util.ArrayDeque<PooledShare> queue =
+                POOL.computeIfAbsent(pooled.key, k -> new java.util.ArrayDeque<>());
+        synchronized (queue) {
+            if (queue.size() < POOL_MAX) {
+                queue.add(pooled);
+                return;
+            }
+        }
+        closePooled(pooled);
+    }
+
+    private static void closePooled(PooledShare pooled) {
+        closeQuietly(pooled.connection);
+        closeQuietly(pooled.client);
+    }
+
+    /** Runs [task] on a pooled share, retrying once on a fresh connection. */
+    private static <T> T withShare(Auth auth, ShareTask<T> task) throws Exception {
+        boolean retried = false;
+        while (true) {
+            PooledShare pooled = borrowShare(auth);
+            try {
+                T value = task.run(pooled.share);
+                releaseShare(pooled);
+                return value;
+            } catch (Exception e) {
+                boolean wasReused = pooled.reused;
+                closePooled(pooled);
+                if (retried || !wasReused) {
+                    throw e;
+                }
+                // A pooled connection may simply have expired server-side.
+                retried = true;
+                Log.w(TAG, "pooled share failed, retrying on a new connection: "
+                        + e.getMessage());
             }
         }
     }

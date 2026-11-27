@@ -123,8 +123,44 @@ public final class SmbRemoteManga implements RemoteManga {
         return out;
     }
 
+    /** Page lists are reused for a short while: opening a chapter asks for
+     *  them three times (position the tap, download, refresh) and every SMB
+     *  listing costs a round trip. */
+    private static final long LIST_TTL_MS = 20_000L;
+    private static final java.util.Map<String, CachedPages> PAGE_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class CachedPages {
+        final List<PageInfo> pages;
+        final long at = System.currentTimeMillis();
+        CachedPages(List<PageInfo> pages) { this.pages = pages; }
+    }
+
+    private String pagesCacheKey(ChapterInfo chapter) {
+        return auth.host + "|" + auth.share + "|" + (chapter == null ? "" : chapter.id)
+                + "|" + sortMode + "|" + videoFirst;
+    }
+
     @Override
     public List<PageInfo> listPages(ChapterInfo chapter) throws Exception {
+        String cacheKey = pagesCacheKey(chapter);
+        CachedPages cached = PAGE_CACHE.get(cacheKey);
+        if (cached != null && System.currentTimeMillis() - cached.at < LIST_TTL_MS) {
+            return new ArrayList<>(cached.pages);
+        }
+        List<PageInfo> fresh = listPagesFresh(chapter);
+        PAGE_CACHE.put(cacheKey, new CachedPages(fresh));
+        if (PAGE_CACHE.size() > 64) {
+            long now = System.currentTimeMillis();
+            PAGE_CACHE.entrySet().removeIf(e -> now - e.getValue().at > LIST_TTL_MS);
+        }
+        return new ArrayList<>(fresh);
+    }
+
+    /** Re-lists the share, ignoring the cache (used by the "list looked
+     *  truncated" recovery path). */
+    public List<PageInfo> listPagesFresh(ChapterInfo chapter) throws Exception {
+        PAGE_CACHE.remove(pagesCacheKey(chapter));
         List<MangaSmb.Entry> entries = MangaSmb.list(auth, chapter.id);
         List<MangaFileCore.Entry> mediaEntries = new ArrayList<>();
         for (MangaSmb.Entry e : entries) {

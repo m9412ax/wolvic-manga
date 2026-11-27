@@ -313,7 +313,9 @@ public final class RemoteChapterLoader {
         new Thread(() -> {
             int added = 0;
             try {
-                List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
+                List<RemoteManga.PageInfo> pages = manga instanceof SmbRemoteManga
+                        ? ((SmbRemoteManga) manga).listPagesFresh(chapter)
+                        : manga.listPages(chapter);
                 if (pages == null || pages.isEmpty()) {
                     throw new IllegalStateException("刷新页面列表为空");
                 }
