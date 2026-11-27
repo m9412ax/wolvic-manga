@@ -172,6 +172,22 @@ public final class MangaNeeViewSync {
                 && id.charAt(1) == ':' && id.charAt(2) == '/';
     }
 
+    /** Repairs shelf keys saved by the old normaliser, which collapsed the
+     *  double slash of smb:// into a single one. */
+    private static String repairVrKey(String key) {
+        if (key == null) {
+            return "";
+        }
+        if (key.startsWith("smb:/") && !key.startsWith("smb://")) {
+            return "smb://" + key.substring(5);
+        }
+        int i = key.indexOf("smb:/");
+        if (i > 0 && !key.startsWith("smb://", i)) {
+            return key.substring(0, i) + "smb://" + key.substring(i + 5);
+        }
+        return key;
+    }
+
     /** VR shelf key of a PC path, used to deduplicate bookmarks. */
     private static String shelfKeyOf(Context context, MangaSettings settings, String pcPath) {
         String vr = MangaSync.fromSyncId(context, settings, canonical(pcPath));
@@ -299,8 +315,13 @@ public final class MangaNeeViewSync {
             rows.put(shelfKeyOf(context, settings, pcPath), o);
         }
 
-        // VR shelf -> NeeView bookmarks (only entries with a PC drive path).
+        List<String> currentShelf = new ArrayList<>();
         for (String vr : settings.bookshelf()) {
+            currentShelf.add(repairVrKey(vr));
+        }
+
+        // VR shelf -> NeeView bookmarks (only entries with a PC drive path).
+        for (String vr : currentShelf) {
             String pcPath = canonical(MangaSync.syncId(context, settings, vr));
             if (!isDrivePath(pcPath)) {
                 continue; // 115 / extension source / local-only shelf entry
@@ -318,7 +339,7 @@ public final class MangaNeeViewSync {
 
         // NeeView bookmarks -> VR shelf; keep VR-only entries as they are.
         List<String> shelf = new ArrayList<>();
-        for (String vr : settings.bookshelf()) {
+        for (String vr : currentShelf) {
             if (!isDrivePath(canonical(MangaSync.syncId(context, settings, vr)))) {
                 shelf.add(vr);
             }

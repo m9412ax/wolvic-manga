@@ -84,19 +84,26 @@ public final class MangaSync {
 
     // ------------------------------------------------------- path mapping
 
-    /** Normalises a path for use as a cross-device identity. */
+    /** Normalises a path for use as a cross-device identity. The scheme
+     *  separator of smb:// URLs must survive — collapsing it used to turn a
+     *  valid shelf key into "smb:/host/…", which the file browser cannot open. */
     static String norm(String path) {
         if (path == null) {
             return "";
         }
         String s = path.trim().replace('\\', '/');
+        String prefix = "";
+        if (s.startsWith("smb://")) {
+            prefix = "smb://";
+            s = s.substring(prefix.length());
+        }
         while (s.contains("//")) {
             s = s.replace("//", "/");
         }
         if (s.length() > 1 && s.endsWith("/")) {
             s = s.substring(0, s.length() - 1);
         }
-        return s;
+        return prefix + s;
     }
 
     /** Mapping line generated from the SMB settings when the user has not
