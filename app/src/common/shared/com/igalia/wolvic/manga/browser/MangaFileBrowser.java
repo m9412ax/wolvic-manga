@@ -323,26 +323,23 @@ public class MangaFileBrowser extends LinearLayout {
      * read, else the deepest mark in the folder. Rows arrive pre-sorted, so
      * "the last marked row" is the latest chapter in reading order.
      */
+    /**
+     * Row the jump button should land on: the FURTHEST position that has a
+     * reading record — not the most recently opened one. Reading chapter 100
+     * and then flicking back to chapter 10 must still jump to 100.
+     */
     private void computeJumpTarget() {
         int target = -1;
-        long newest = 0L;
+        String bestName = null;
         for (int i = 0; i < mSorted.size(); i++) {
             Entry entry = mSorted.get(i);
-            if (entry.state == 1) {   // MangaReadingState.READING
-                target = i;
-                break;
+            boolean marked = entry.state != 0 || entry.readTs != 0;
+            if (!marked) {
+                continue;
             }
-            if (entry.readTs > newest) {
-                newest = entry.readTs;
+            if (target < 0 || MangaCoverAdapter.naturalCompare(entry.name, bestName) > 0) {
                 target = i;
-            }
-        }
-        if (target < 0) {
-            for (int i = mSorted.size() - 1; i >= 0; i--) {
-                if (mSorted.get(i).state != 0) {
-                    target = i;
-                    break;
-                }
+                bestName = entry.name;
             }
         }
         mJumpTarget = target;

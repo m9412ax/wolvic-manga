@@ -231,6 +231,13 @@ public class MangaLibraryWidget extends UIWidget {
     // SMB2/3 browse state (path is relative to the configured share root).
     private final List<MangaSmb.Entry> mSmbEntries = new ArrayList<>();
     private String mSmbPath = "";
+    /** Bumped on every SMB navigation so a slow listing for the old folder
+     *  cannot repaint the list after the user already moved on. */
+    private int mSmbListGeneration = 0;
+    /** Dedicated threads for the "is this folder a chapter?" probe: sharing
+     *  the single IO thread made every tap delay the next folder listing. */
+    private final ExecutorService mProbeExecutor =
+            Executors.newFixedThreadPool(2, r -> new Thread(r, "smb-probe"));
     /** True while an SMB "open at chapter" probe is in flight. */
     private boolean mSmbOpenPending = false;
     private long mSmbOpenSeq = 0L;
@@ -1936,7 +1943,7 @@ public class MangaLibraryWidget extends UIWidget {
         if (getContext() != null) {
             Toast.makeText(getContext(), "正在打开…", Toast.LENGTH_SHORT).show();
         }
-        mIoExecutor.execute(() -> {
+        mProbeExecutor.execute(() -> {
             String root = folder;
             boolean promote = false;
             try {
@@ -2049,12 +2056,33 @@ public class MangaLibraryWidget extends UIWidget {
                 int page = 0;
                 float frac = 0f;
                 if (!fromStart) {
-                    float[] saved = MangaReaderWidget.readChapterProgress(
-                            progressPrefs(), "remote:" + manga.key());
-                    if (saved != null) {
-                        index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
-                        page = (int) saved[1];
-                        frac = saved[2];
+                    // 继续阅读 means "go to the furthest chapter that has a
+                    // record", not "the chapter opened last": reading 100 then
+                    // flicking back to 10 must still resume at 100.
+                    int[] furthest = furthestRecordedChapter(manga, chapters);
+                    if (furthest != null) {
+                        index = furthest[0];
+                        page = furthest[1];
+                    } else {
+                        float[] saved = MangaReaderWidget.readChapterProgress(
+                                progressPrefs(), "remote:" + manga.key());
+                        if (saved != null) {
+                            index = Math.max(0, Math.min((int) saved[0], chapters.size() - 1));
+                            page = (int) saved[1];
+                            frac = saved[2];
+                        }
+                    }
+                }
+                // Tapping a chapter row opens the whole book at that chapter so
+                // the reader keeps prev/next chapter navigation.
+                if (chapterHint != null && (startPageName == null || startPageName.isEmpty())) {
+                    int hinted = indexOfChapter(chapters, chapterHint);
+                    if (hinted >= 0) {
+                        index = hinted;
+                        MangaReadingState.Chapter mark = MangaReadingState.get(getContext())
+                                .chapter(manga.chapterKey(chapters.get(hinted)));
+                        page = mark == null ? 0 : mark.page;
+                        frac = 0f;
                     }
                 }
                 // If the user tapped a specific file, position the reader at
@@ -2096,6 +2124,45 @@ public class MangaLibraryWidget extends UIWidget {
                 Log.w(TAG, "openRemoteManga failed: " + msg);
             }
         });
+    }
+
+    /**
+     * Highest chapter (in reading order) that has any reading record, plus the
+     * page that record stopped at. Chapters arrive sorted by name, so the last
+     * match is the furthest one — independent of which was opened last.
+     */
+    @Nullable
+    private int[] furthestRecordedChapter(RemoteManga manga,
+                                          List<RemoteManga.ChapterInfo> chapters) {
+        MangaReadingState state = MangaReadingState.get(getContext());
+        int best = -1;
+        int page = 0;
+        for (int i = 0; i < chapters.size(); i++) {
+            MangaReadingState.Chapter mark = state.chapter(manga.chapterKey(chapters.get(i)));
+            if (mark != null) {
+                best = i;
+                page = Math.max(0, mark.page);
+            }
+        }
+        return best < 0 ? null : new int[]{best, page};
+    }
+
+    private int indexOfChapter(List<RemoteManga.ChapterInfo> chapters, String name) {
+        if (name == null) {
+            return -1;
+        }
+        for (int i = 0; i < chapters.size(); i++) {
+            String n = chapters.get(i).name;
+            if (n == null) {
+                continue;
+            }
+            String base = n.replace('\\', '/');
+            base = base.substring(base.lastIndexOf('/') + 1);
+            if (base.equals(name)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     /** Finds (chapterIndex, pageIndex) of a tapped file by name. Runs on the IO
@@ -2499,7 +2566,6 @@ public class MangaLibraryWidget extends UIWidget {
                 }
                 int i = 0;
                 View latestRow = null;
-                long latestTs = -1L;
                 for (String name : chapters) {
                     i++;
                     String chapterKey = key + "/" + name;
@@ -2509,11 +2575,14 @@ public class MangaLibraryWidget extends UIWidget {
                             + Math.min(mark.page + 1, Math.max(1, mark.total))
                             + (mark.total > 0 ? "/" + mark.total : "") + " 页";
                     String label = markPrefix + i + ". " + name + tail;
-                    Button row = addBookChapterButton(content, label, () ->
-                            openRemoteManga(smbManga(smbAuth(), rel + "/" + name),
-                                    null, false));
-                    if (mark != null && mark.ts > latestTs) {
-                        latestTs = mark.ts;
+                    Button row = addBookChapterButton(content, label, () -> {
+                        // Open the BOOK, positioned at this chapter: opening
+                        // the chapter folder alone gave a one-chapter playlist,
+                        // so prev/next chapter did nothing.
+                        mOpenChapterHint = name;
+                        openRemoteManga(smbManga(smbAuth(), rel), null, false);
+                    });
+                    if (mark != null) {
                         latestRow = row;
                     }
                 }
@@ -2611,7 +2680,6 @@ public class MangaLibraryWidget extends UIWidget {
         MangaReadingState state = MangaReadingState.get(getContext());
         int index = 0;
         View latestRow = null;
-        long latestTs = -1L;
         for (File chapter : chapters) {
             index++;
             MangaReadingState.Chapter mark = state.chapter(chapter.getAbsolutePath());
@@ -2634,8 +2702,9 @@ public class MangaLibraryWidget extends UIWidget {
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             lp.setMargins(0, dp(3), 0, dp(3));
             content.addView(row, lp);
-            if (mark != null && mark.ts > latestTs) {
-                latestTs = mark.ts;
+            // Chapters are listed in reading order: the last one with a mark
+            // is the furthest chapter read, regardless of open order.
+            if (mark != null) {
                 latestRow = row;
             }
         }
@@ -4278,21 +4347,32 @@ public class MangaLibraryWidget extends UIWidget {
             listSmbShares();
             return;
         }
-        mSmbStatus = "正在连接 " + auth.host + "/" + auth.share;
+        final int generation = ++mSmbListGeneration;
+        // The breadcrumb already points at the folder the user tapped, so the
+        // previous folder's rows must go NOW — otherwise the list looks like
+        // "已经进去了但还是老文件" until the listing returns.
+        mSmbEntries.clear();
+        mSmbStatus = "正在读取 " + (path.isEmpty() ? "/" : path);
         refreshPage(MangaPage.SMB);
         mIoExecutor.execute(() -> {
             try {
                 final List<MangaSmb.Entry> result = MangaSmb.list(auth, path);
                 mMain.post(() -> {
+                    if (generation != mSmbListGeneration) {
+                        return;   // user already moved to another folder
+                    }
                     mSmbEntries.clear();
                     mSmbEntries.addAll(result);
                     mSmbStatus = "已列出 " + result.size() + " 项";
-                    Log.i(TAG, "smb list ok=" + result.size());
+                    Log.i(TAG, "smb list ok=" + result.size() + " path=" + path);
                     refreshPage(MangaPage.SMB);
                 });
             } catch (Exception e) {
                 final String message = e.getMessage();
                 mMain.post(() -> {
+                    if (generation != mSmbListGeneration) {
+                        return;
+                    }
                     mSmbStatus = "连接失败：" + message;
                     mSmbEntries.clear();
                     Log.w(TAG, "smb list failed: " + message);

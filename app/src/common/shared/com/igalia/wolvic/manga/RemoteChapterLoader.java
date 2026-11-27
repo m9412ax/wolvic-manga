@@ -109,6 +109,14 @@ public final class RemoteChapterLoader {
 
     private RemoteChapterLoader() {}
 
+    /** One monitor per target file, shared by the bulk pass and on-demand
+     *  fetches so two writers never stream into the same .tmp file. */
+    private static final Map<String, Object> PAGE_LOCKS = new ConcurrentHashMap<>();
+
+    private static Object pageLock(File out) {
+        return PAGE_LOCKS.computeIfAbsent(out.getAbsolutePath(), k -> new Object());
+    }
+
     /** Root of all remote chapter caches: <cache>/remote-manga/<hash>/<chapter>. */
     public static File remoteCacheRoot(Context context) {
         File base = context.getExternalCacheDir();
@@ -189,6 +197,13 @@ public final class RemoteChapterLoader {
                     final int pageIdx = i;
                     boolean landed = isValidCached(out);
                     if (!landed) {
+                        // One writer per target file: the bulk pass and an
+                        // on-demand fetch for the SAME page used to stream into
+                        // the same .tmp and fight over rename(), which surfaced
+                        // as "切下一张失败，再切又好了".
+                        synchronized (pageLock(out)) {
+                        landed = isValidCached(out);
+                        if (!landed)
                         try {
                             if (isVideoName(p.nameHint)) {
                                 // Marker instead of the full video: reader will
@@ -225,6 +240,7 @@ public final class RemoteChapterLoader {
                             }
                         } catch (Throwable e) {
                             Log.w(TAG, "page " + pageIdx + " failed: " + e.getMessage());
+                        }
                         }
                     }
                     // Only pages that really landed count as done. Failed pages
@@ -280,13 +296,15 @@ public final class RemoteChapterLoader {
                 }
                 RemoteManga.PageInfo p = pages.get(pageIndex);
                 File out = cachedFile(dir, pageIndex, p.nameHint);
-                if (!isValidCached(out)) {
-                    File tmp = new File(out.getAbsolutePath() + ".tmp");
-                    if (tmp.exists()) tmp.delete();
-                    if (isVideoName(p.nameHint)) {
-                        RemoteManga.writeVideoMarker(out, p);
-                    } else {
-                        manga.fetchPage(p, out);
+                synchronized (pageLock(out)) {
+                    if (!isValidCached(out)) {
+                        File tmp = new File(out.getAbsolutePath() + ".tmp");
+                        if (tmp.exists()) tmp.delete();
+                        if (isVideoName(p.nameHint)) {
+                            RemoteManga.writeVideoMarker(out, p);
+                        } else {
+                            manga.fetchPage(p, out);
+                        }
                     }
                 }
                 boolean ok = out.exists() && out.length() > 0;
