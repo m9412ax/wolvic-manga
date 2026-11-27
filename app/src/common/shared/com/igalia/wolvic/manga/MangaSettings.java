@@ -42,7 +42,15 @@ public final class MangaSettings {
     public static final String READER_AUTO_ADVANCE_SEC = "reader_auto_advance_sec";
     public static final String READER_SHOW_PAGE_NUMBER = "reader_show_page_number";
     public static final String READER_CROP_BORDERS = "reader_crop_borders";
+    /** In-RAM preload: how many NEIGHBOUR pages (each direction) are decoded
+     *  into the Bitmap cache beforehand. Purely memory, independent of how
+     *  many pages are fetched to disk. */
     public static final String READER_PRELOAD = "reader_preload";
+    /** Disk preload: how many pages ahead of the reading position a remote
+     *  chapter (SMB / 115 / figure source) downloads to local storage. Kept
+     *  separate from READER_PRELOAD: a slow link wants deep disk prefetch, a
+     *  fast link with huge images wants deep RAM preload. */
+    public static final String READER_FETCH_AHEAD = "reader_fetch_ahead";
     /** Number of background threads that decode the preload window in parallel. */
     public static final String READER_PRELOAD_THREADS = "reader_preload_threads";
     public static final String READER_VIDEO_AUTOPLAY = "reader_video_autoplay";
@@ -335,7 +343,9 @@ public final class MangaSettings {
             case READER_AUTO_ADVANCE_SEC:
                 return 8;
             case READER_PRELOAD:
-                return 2;
+                return 4;
+            case READER_FETCH_AHEAD:
+                return 4;
             case READER_PRELOAD_THREADS:
                 return 3;
             case SOURCE_SPAN_COUNT:

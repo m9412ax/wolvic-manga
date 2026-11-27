@@ -130,11 +130,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Last page asked for explicit on-demand download, to throttle retries. */
     private int mSingleFetchPage = -1;
     private long mSingleFetchAt;
+    /** Prefetch requests currently in flight (page indexes). */
+    private final java.util.Set<Integer> mPrefetchInFlight = new java.util.HashSet<>();
     /** Throttles page-list refreshes triggered by "next" at the last page. */
     private long mLastListRefreshRequest;
     /** A next-page request that arrived while the target page was still
      *  downloading. Re-issued automatically once that page lands. */
     private int mPendingTargetPage = -1;
+    /** Set when the chapter was entered "at its end" (previous-chapter turn).
+     *  Resolved to the real last page once the page count is known. */
+    private boolean mOpenAtChapterEnd;
     private File mFolder;
     private int mIndex;
     private List<File> mChapterDirs;
@@ -687,6 +692,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPages.clear();
         mPageTotal = -1;
         mPendingTargetPage = -1;
+        // A chapter switch re-uses setFolder(); keep the "open at chapter end"
+        // intent that loadChapter() just set for the incoming chapter.
+        if (!mLoadingChapter) {
+            mOpenAtChapterEnd = false;
+        }
+        mPrefetchInFlight.clear();
         mIndex = 0;
         mZoom = 1.0f;
         mPanX = 0f;
@@ -759,6 +770,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPages.clear();
         mPageTotal = -1;
         mPendingTargetPage = -1;
+        mOpenAtChapterEnd = false;
+        mPrefetchInFlight.clear();
         mIndex = 0;
         mLoadGeneration++;
         mStripGeneration++;
@@ -793,6 +806,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         mChapterIndex = index;
+        // "Jump to the previous chapter" means its LAST page. For a remote
+        // chapter only a few head pages may be on disk yet, so the page list is
+        // short and clamping to mPages.size()-1 landed the reader on page 3-4
+        // instead of the end. Remember the intent and resolve it once the
+        // downloader reports the real page count.
+        mOpenAtChapterEnd = mChapterProvider != null && page >= Integer.MAX_VALUE - 1;
         // Each chapter has its own page count: keep the previous chapter's
         // total out of the scrubber until this one reports its own.
         mPageTotal = -1;
@@ -825,6 +844,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 // having to turn a page first.
                                 mPageCounter.setText(counterText());
                                 notifyTrayProgress();
+                                requestChapterEndIfNeeded(total);
                                 if (done < total) {
                                     updateChapterDownloadProgress(dir, done, total,
                                             curName, curDone, curTotal);
@@ -879,6 +899,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         mPageTotal = total;
                         mPageCounter.setText(counterText());
                         notifyTrayProgress();
+                        requestChapterEndIfNeeded(total);
                         updateChapterDownloadProgress(mChapterDirs.get(index), done, total,
                                 curName, curDone, curTotal);
                         if (!opened) {
@@ -940,6 +961,33 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         return true;
     }
 
+    /**
+     * Enters the chapter at its true last page. A remote chapter that only
+     * has its head pages downloaded reports a short page list, so the usual
+     * clamp (mPages.size()-1) stopped at page 3-4 of a 184 page chapter.
+     * Now the downloader's total decides, and that page is fetched on demand.
+     */
+    private void requestChapterEndIfNeeded(int total) {
+        if (!mOpenAtChapterEnd || total <= 0) {
+            return;
+        }
+        final int last = total - 1;
+        if (last < mPages.size()) {
+            // Last page is on disk (or the whole chapter is local): done.
+            mOpenAtChapterEnd = false;
+            if (mIndex != last) {
+                showPage(last);
+            }
+            return;
+        }
+        // Only the head of the chapter is downloaded. Ask for exactly the last
+        // page; it is re-asked on the next progress tick if setFolder() cleared
+        // the pending index while the chapter folder was being opened.
+        mPendingTargetPage = last;
+        showHint("正在定位第 " + total + " 张…");
+        requestSinglePage(last);
+    }
+
     /** One targeted retry for a page the bulk download gave up on. */
     private void requestSinglePage(final int index) {
         if (mChapterProvider == null) {
@@ -949,11 +997,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mSingleFetchPage == index && now - mSingleFetchAt < 5000L) {
             return;
         }
+        // The deep read-ahead window asks for the same pages on every
+        // preloadNext() tick. Without this guard the requests piled up into
+        // dozens of competing SMB downloads (each with its own thread + list).
+        if (!mPrefetchInFlight.add(index)) {
+            return;
+        }
         mSingleFetchPage = index;
         mSingleFetchAt = now;
         final int session = mChapterSession;
         final int chapterIndex = mChapterIndex;
         mChapterProvider.fetchPage(chapterIndex, index, (dir, error) -> mMainHandler.post(() -> {
+            mPrefetchInFlight.remove(index);
             if (mDestroyed || session != mChapterSession || chapterIndex != mChapterIndex) {
                 return;
             }
@@ -1079,6 +1134,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mPages.clear();
         mPages.addAll(all);
+        // Pages that just landed no longer need a prefetch slot.
+        mPrefetchInFlight.removeIf(i -> i < mPages.size());
         mIndex = keepIndex;
         // If the user asked for a page that was still downloading, take them
         // there now that it has landed - do NOT snap back to keepIndex.
@@ -1960,12 +2017,34 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     }
 
     private int preloadRadius() {
-        int radius = Math.max(0, Math.min(4, mSettings.integer(MangaSettings.READER_PRELOAD)));
+        // In-RAM window: how many pages are DECODED ahead of the current one.
+        // Independent from READER_FETCH_AHEAD (how many are pulled to disk).
+        int radius = Math.max(0, Math.min(8, mSettings.integer(MangaSettings.READER_PRELOAD)));
         return isContinuous() ? Math.max(2, radius) : radius;
     }
 
+    /** Pages decoded BEHIND the current one. One step back must be instant
+     *  too, but a full mirrored window doubles the RAM cost for a direction
+     *  the reader rarely needs (continuous mode still uses both: up-scrolling
+     *  lands on the previous page's tail). */
+    private int preloadBehind() {
+        int radius = preloadRadius();
+        return isContinuous() ? radius : Math.min(radius, 1);
+    }
+
+    /** How many not-yet-downloaded pages a remote chapter fetches ahead. */
+    private int fetchAhead() {
+        return Math.max(1, Math.min(12,
+                mSettings.integer(MangaSettings.READER_FETCH_AHEAD)));
+    }
+
     private long pageCacheBudget() {
-        long budget = (long) mCache.maxSize() * 1024 / (2 * preloadRadius() + 1);
+        // Deliberately NOT divided by the preload window: that made a bigger
+        // preload window silently halve the per-page decode budget, so "预载 4
+        // 页" produced blurrier pages than "预载 2 页". A fixed quarter of the
+        // RAM cache is enough for four full-size pages; extra preload pages
+        // simply evict the oldest.
+        long budget = (long) mCache.maxSize() * 1024 / 4;
         return Math.min(isContinuous() ? CONTINUOUS_PAGE_BYTES : SINGLE_BITMAP_LIMIT, budget);
     }
 
@@ -1995,7 +2074,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         for (int distance = 1; distance <= preloadRadius(); distance++) {
             addWindowPage(mIndex + direction * distance, ordered);
         }
-        for (int distance = 1; distance <= preloadRadius(); distance++) {
+        for (int distance = 1; distance <= preloadBehind(); distance++) {
             addWindowPage(mIndex - direction * distance, ordered);
         }
         if (!isContinuous()) {
@@ -2017,8 +2096,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 mCache.remove(key);
             }
         }
-        mPreloadExecutor.getQueue().clear();
-        mExecutor.getQueue().removeIf(task -> task instanceof PageLoad);
+        // Do NOT clear the whole queue. Every landed remote page calls
+        // refreshChapterPageList() -> preloadNext(), so a blanket clear threw
+        // away a half-finished multi-second AVIF decode on the NEXT page and
+        // restarted it from scratch - which is exactly why "预加载开着也不快".
+        // Only tasks that left the window are dropped.
+        mExecutor.getQueue().removeIf(task -> task instanceof PageLoad
+                && !mWindowKeys.contains(((PageLoad) task).key));
+        mPreloadExecutor.getQueue().removeIf(task -> task instanceof PageLoad
+                && !mWindowKeys.contains(((PageLoad) task).key));
+        // Nearest first so the page the user will turn to next is ready.
         for (PageLoad load : ordered) {
             if (!load.started) {
                 if (load.index == mIndex) {
@@ -2034,8 +2121,8 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // have landed. Prefetch the ones in the read-ahead window that are
         // still on the server, otherwise paging always downloads one at a time.
         if (mChapterProvider != null && mPageTotal > mPages.size()) {
-            int radius = Math.max(1, preloadRadius());
-            for (int d = 1; d <= radius; d++) {
+            int ahead = fetchAhead();
+            for (int d = 1; d <= ahead; d++) {
                 fetchIfMissing(mIndex + d);
                 if (d == 1) {
                     fetchIfMissing(mIndex - 1);
@@ -2063,6 +2150,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             requestSinglePage(index);
         }
     }
+
 
     private void addWindowPage(int index, List<PageLoad> ordered) {
         if (index < 0 || index >= mPages.size() || isVideoIndex(index)) {
@@ -2093,6 +2181,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         final boolean crop;
         volatile boolean started;
         volatile boolean cancelled;
+        volatile int retries;
 
         PageLoad(String key, int index, File first, File second, long budget, boolean crop) {
             this.key = key;
@@ -2123,16 +2212,41 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 if (mDestroyed || cancelled || mPendingPages.get(key) != this) {
                     return;
                 }
+                if (bitmap == null) {
+                    // The native AVIF decoder makes preloads yield while a
+                    // foreground page is decoding (returns null instead of
+                    // queueing behind it). Without a retry the window stayed
+                    // empty forever and every page turn re-decoded from zero.
+                    if (mWindowKeys.contains(key) && retries < 3) {
+                        retries++;
+                        mMainHandler.postDelayed(() -> {
+                            synchronized (PageLoad.this) {
+                                if (cancelled) {
+                                    return;
+                                }
+                                started = false;
+                            }
+                            if (!mDestroyed && mPendingPages.get(key) == PageLoad.this) {
+                                if (index == mIndex) {
+                                    mExecutor.execute(PageLoad.this);
+                                } else {
+                                    mPreloadExecutor.execute(PageLoad.this);
+                                }
+                            }
+                        }, 300L * retries);
+                    } else {
+                        mPendingPages.remove(key);
+                    }
+                    return;
+                }
                 mPendingPages.remove(key);
                 if (!mWindowKeys.contains(key)) {
                     return;
                 }
-                if (bitmap != null) {
-                    mCache.put(key, bitmap);
-                }
+                mCache.put(key, bitmap);
                 Log.i(TAG, "page decoded index=" + index + " ms="
                         + (android.os.SystemClock.uptimeMillis() - start)
-                        + " bytes=" + (bitmap == null ? 0 : bitmap.getAllocationByteCount()));
+                        + " bytes=" + bitmap.getAllocationByteCount());
                 if (key.equals(mRequestedPageKey)) {
                     displayLoadedPage(bitmap);
                 } else if (isContinuous() && key.equals(stripKey(index))) {

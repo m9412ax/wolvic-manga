@@ -323,6 +323,125 @@ public final class MangaNeeViewSync {
 
     // ----------------------------------------------------------------- sync
 
+    /** The PC's CURRENT reading position, as pulled on demand. */
+    public static final class PcPos {
+        public boolean valid;
+        /** Canonical PC id of the chapter folder (same shape the importer
+         *  stores as a record id, so the row is updated, not duplicated). */
+        public String chapterId = "";
+        /** Canonical PC id of the book folder (parent of the chapter). */
+        public String bookId = "";
+        public String title = "";
+        public String bookTitle = "";
+        /** VR keys (smb://host/share/...). */
+        public String chapterKey = "";
+        public String bookPath = "";
+        public String source = "SMB";
+        public String pageName = "";
+        public int page;
+        public int total;
+        public long ts;
+    }
+
+    /**
+     * Reads the position the PC would reopen RIGHT NOW. NeeView restores from
+     * UserSetting.Config.StartUp.LastBookV2 (History.json only feeds its recent
+     * list), so the startup pointer is authoritative and History row 0 is only
+     * the fallback + timestamp source. Cheap: two text reads, no folder
+     * listings — safe to call whenever the 历史 page opens.
+     *
+     * This is what makes "电脑阅读位置" follow the PC instead of being frozen
+     * at the value captured by the last full sync.
+     */
+    public static PcPos pullLatest(Context context, MangaSettings settings,
+                                   MangaReadingState state) {
+        PcPos out = new PcPos();
+        String pcPath = "";
+        String pageName = "";
+        long ts = 0L;
+        try {
+            String raw = MangaSmb.readText(syncAuth(settings),
+                    profilePath(settings, USER_SETTING_FILE));
+            if (raw != null && !raw.trim().isEmpty()) {
+                JSONObject root = new JSONObject(stripBom(raw));
+                JSONObject config = root.optJSONObject("Config");
+                JSONObject startup = config == null ? null : config.optJSONObject("StartUp");
+                JSONObject book = startup == null ? null : startup.optJSONObject("LastBookV2");
+                if (book == null && startup != null) {
+                    book = startup.optJSONObject("LastBook");
+                }
+                if (book != null) {
+                    pcPath = canonical(book.optString("Path", ""));
+                    pageName = book.optString("Page", "");
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "pull startup position: " + e.getMessage());
+        }
+        try {
+            String raw = MangaSmb.readText(syncAuth(settings),
+                    profilePath(settings, HISTORY_FILE));
+            if (raw != null && !raw.trim().isEmpty()) {
+                JSONArray items = new JSONObject(stripBom(raw)).optJSONArray("Items");
+                JSONObject newest = items == null ? null : items.optJSONObject(0);
+                if (newest != null) {
+                    String historyPath = canonical(newest.optString("Path", ""));
+                    if (pcPath.isEmpty()) {
+                        pcPath = historyPath;
+                        pageName = newest.optString("Page", "");
+                    }
+                    if (historyPath.equals(pcPath)) {
+                        ts = parseStamp(newest.optString("LastAccessTime", ""));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "pull history row: " + e.getMessage());
+        }
+        if (!isDrivePath(pcPath) || pageName.isEmpty()) {
+            return out;
+        }
+        // NeeView stores the CHAPTER (or single-folder book) as Path and the
+        // image name as Page — see writeStartupPosition(), which writes exactly
+        // that shape. Mirror sync()'s mapping so the row is updated in place
+        // instead of duplicated.
+        String chapterId = canonical(pcPath);
+        int cut = chapterId.lastIndexOf('/');
+        if (cut <= 2) {
+            return out;
+        }
+        String bookId = chapterId.substring(0, cut);
+        String chapterKey = chapterKey(context, settings, state, chapterId);
+        if (chapterKey == null || chapterKey.isEmpty()) {
+            return out;
+        }
+        String folderName = chapterId.substring(chapterId.lastIndexOf('/') + 1);
+        int pageNo = pageNumber(pageName);
+        int total = totalPages(folderName);
+        if (pageNo < 0) {
+            // No index in the file name: fall back to one SMB listing.
+            int[] info = pageOf(settings, chapterPath(chapterKey), pageName);
+            pageNo = info[0] + 1;
+            total = info[1];
+        }
+        if (pageNo <= 0) {
+            return out;
+        }
+        out.valid = true;
+        out.chapterId = chapterId;
+        out.bookId = bookId;
+        out.title = folderName;
+        out.bookTitle = bookId.substring(bookId.lastIndexOf('/') + 1);
+        out.chapterKey = chapterKey;
+        out.bookPath = MangaSync.fromSyncId(context, settings, bookId);
+        out.source = bookId.contains("115:") ? "115" : "SMB";
+        out.pageName = pageName;
+        out.page = pageNo - 1;                       // reader is 0-based
+        out.total = total < pageNo ? pageNo : total;
+        out.ts = ts > 0 ? ts : System.currentTimeMillis();
+        return out;
+    }
+
     /** Reads PC History.json, applies its newest row to VR, then writes VR's
      *  newest position back into that same row. Bookmarks are merged too. */
     public static MangaSync.Result sync(Context context, MangaSettings settings) {

@@ -180,6 +180,8 @@ public class MangaLibraryWidget extends UIWidget {
     @Nullable private File mBookDir;
     @Nullable private String mBookRemoteKey;
     private String mBookTitle = "";
+    /** Book card was opened from 历史记录: Back returns there, not the shelf. */
+    private boolean mBookFromHistory;
     /** Measured grid width the current card geometry was computed for. */
     private int mShelfGridWidth = -1;
     /** Grid items in display order, used by the shelf jump button. */
@@ -2370,12 +2372,18 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Opens the 书本详情 card of a LOCAL book (a shelf tile was tapped). */
     private void openBookPage(@Nullable File folder) {
+        openBookPage(folder, false);
+    }
+
+    /** @param fromHistory opened from a 历史记录 row, so Back returns there. */
+    private void openBookPage(@Nullable File folder, boolean fromHistory) {
         if (folder == null) {
             return;
         }
         mBookDir = folder;
         mBookRemoteKey = null;
         mBookTitle = folder.getName();
+        mBookFromHistory = fromHistory;
         // Opening a book is the natural moment to pick up a page the PC just
         // left off on; 20s throttle keeps it cheap.
         mForcePullNext = true;
@@ -2385,12 +2393,17 @@ public class MangaLibraryWidget extends UIWidget {
 
     /** Opens the 书本详情 card of an SMB / 115 / 图源 book. */
     private void openRemoteBookPage(@Nullable String shelfKey) {
+        openRemoteBookPage(shelfKey, false);
+    }
+
+    private void openRemoteBookPage(@Nullable String shelfKey, boolean fromHistory) {
         if (shelfKey == null) {
             return;
         }
         mBookDir = null;
         mBookRemoteKey = shelfKey;
         mBookTitle = remoteShelfTitle(shelfKey);
+        mBookFromHistory = fromHistory;
         mForcePullNext = true;
         switchPage(MangaPage.BOOK);
         maybeAutoPull();
@@ -2417,7 +2430,8 @@ public class MangaLibraryWidget extends UIWidget {
                 : state.progressOfFolder(progressPrefix);
 
         LinearLayout top = addRow(content);
-        addButton(top, "← 返回书架", v -> switchPage(MangaPage.LIBRARY));
+        addButton(top, mBookFromHistory ? "← 返回历史记录" : "← 返回书架",
+                v -> switchPage(mBookFromHistory ? MangaPage.HISTORY : MangaPage.LIBRARY));
         if (local && mSettings.isInBookshelf(mBookDir.getAbsolutePath())) {
             addButton(top, "★ 移出书架", v -> {
                 mSettings.removeFromBookshelf(mBookDir.getAbsolutePath());
@@ -2535,6 +2549,10 @@ public class MangaLibraryWidget extends UIWidget {
     /** Lists a remote book's sub-folders as chapters, off the UI thread. */
     private void listRemoteBookChapters(LinearLayout content, String shelfKey,
                                         final MangaReadingState state) {
+        if (shelfKey.startsWith(SHELF_115)) {
+            list115BookChapters(content, shelfKey, state);
+            return;
+        }
         if (!shelfKey.startsWith(SHELF_SMB)) {
             addInfo(content, "章节", "扩展来源请在漫画详情页查看章节。");
             return;
@@ -2595,8 +2613,65 @@ public class MangaLibraryWidget extends UIWidget {
         });
     }
 
-    private Button addBookChapterButton(LinearLayout content, String label, Runnable click) {
-        Button row = new Button(getContext());
+    /** 115 book card: sub-folders are the chapters, listed like the SMB ones. */
+    private void list115BookChapters(LinearLayout content, String shelfKey,
+                                     final MangaReadingState state) {
+        String rest = shelfKey.substring(SHELF_115.length());
+        int sep = rest.indexOf('|');
+        final String cid = sep > 0 ? rest.substring(0, sep) : rest;
+        final String title = sep > 0 ? rest.substring(sep + 1) : "115 网盘";
+        final String cookie = mSettings.text(MangaSettings.P115_COOKIE);
+        if (cid.isEmpty() || cookie == null || cookie.isEmpty()) {
+            addInfo(content, "章节", "请先在设置里登录 115。");
+            return;
+        }
+        mIoExecutor.execute(() -> {
+            List<String[]> chapters = new ArrayList<>();   // {cid, name}
+            try {
+                for (Manga115Api.DirEntry e : Manga115Api.listDir(cookie, cid)) {
+                    if (e.isDir && e.cid != null && !e.cid.isEmpty()) {
+                        chapters.add(new String[]{e.cid, e.name});
+                    }
+                }
+                chapters.sort((a, b) -> MangaCoverAdapter.naturalCompare(a[1], b[1]));
+            } catch (Exception e) {
+                Log.w(TAG, "list115BookChapters failed: " + e.getMessage());
+            }
+            final List<String[]> rows = chapters;
+            mMain.post(() -> {
+                if (mCurrentPage != MangaPage.BOOK || mBookRemoteKey == null
+                        || !mBookRemoteKey.equals(shelfKey)) {
+                    return;
+                }
+                int i = 0;
+                View latestRow = null;
+                for (String[] row : rows) {
+                    i++;
+                    String chapterKey = "115:" + row[0];
+                    MangaReadingState.Chapter mark = state.chapter(chapterKey);
+                    String markPrefix = mark == null ? "" : mark.isDone() ? "✓ " : "▸ ";
+                    String tail = mark == null ? "" : "  ·  "
+                            + Math.min(mark.page + 1, Math.max(1, mark.total))
+                            + (mark.total > 0 ? "/" + mark.total : "") + " 页";
+                    Button button = addBookChapterButton(content,
+                            markPrefix + i + ". " + row[1] + tail, () -> {
+                                mOpenChapterHint = row[1];
+                                openRemoteManga(p115Manga(cookie, cid, title), null, false);
+                            });
+                    if (mark != null) {
+                        latestRow = button;
+                    }
+                }
+                mBookJumpRow = latestRow;
+                updatePageJumpFab();
+                if (rows.isEmpty()) {
+                    addInfo(content, "章节", "该漫画没有子文件夹章节，可直接继续阅读。");
+                }
+            });
+        });
+    }
+
+    private Button addBookChapterButton(LinearLayout content, String label, Runnable click) {        Button row = new Button(getContext());
         row.setText(label);
         row.setAllCaps(false);
         row.setTextSize(17f);
@@ -3379,6 +3454,10 @@ public class MangaLibraryWidget extends UIWidget {
         }
 
         final MangaReadingState state = MangaReadingState.get(getContext());
+        // The row below must show where the PC is NOW, not the snapshot taken
+        // by the last full sync (NeeView rewrites its settings on every exit,
+        // so a cached value looked "固定不变").
+        pullPcPositionAsync();
         final String want = historyTabKey();
         // Pin the PC's last-opened position above the list. It comes from the
         // NeeView sync (record id is a PC drive path) and resumes at the exact
@@ -3483,6 +3562,76 @@ public class MangaLibraryWidget extends UIWidget {
         return "漫画";
     }
 
+    /** Throttle for the live PC position read (two SMB text reads). */
+    private static final long PC_PULL_MIN_GAP_MS = 10_000L;
+    private long mPcPullAt;
+    private boolean mPcPullRunning;
+
+    /**
+     * Pulls the PC's CURRENT position (NeeView reopens from UserSetting
+     * StartUp.LastBookV2) and refreshes the pinned 电脑最近阅读 row. Deliberately
+     * NOT the full sync: that writes back to the PC and re-imports 12k history
+     * rows, which is far too heavy for simply opening the 历史 page.
+     */
+    private void pullPcPositionAsync() {
+        if (mPcPullRunning || !smbConfigured()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - mPcPullAt < PC_PULL_MIN_GAP_MS) {
+            return;
+        }
+        mPcPullAt = now;
+        mPcPullRunning = true;
+        final MangaSettings settings = mSettings;
+        mIoExecutor.execute(() -> {
+            final MangaReadingState state = MangaReadingState.get(getContext());
+            MangaNeeViewSync.PcPos pos = null;
+            try {
+                pos = MangaNeeViewSync.pullLatest(getContext(), settings, state);
+            } catch (Throwable t) {
+                Log.w(TAG, "pull PC position failed: " + t.getMessage());
+            }
+            final MangaNeeViewSync.PcPos result = pos;
+            mMain.post(() -> {
+                mPcPullRunning = false;
+                if (result != null && result.valid) {
+                    applyPcPosition(result, state);
+                }
+            });
+        });
+    }
+
+    /** Writes the pulled position into the history row (and the resume slot). */
+    private void applyPcPosition(MangaNeeViewSync.PcPos pos, MangaReadingState state) {
+        MangaReadingState.Record existing = state.record(pos.bookId);
+        int oldPage = existing == null ? -1 : existing.page;
+        int oldTotal = existing == null ? -1 : existing.total;
+        String oldChapter = existing == null ? "" : existing.chapterKey;
+        String oldTitle = existing == null ? "" : existing.title;
+
+        MangaReadingState.Record record = new MangaReadingState.Record();
+        record.id = pos.bookId;
+        record.title = pos.bookTitle.isEmpty() ? pos.title : pos.bookTitle;
+        record.source = pos.source;
+        record.path = pos.bookPath;
+        record.chapterKey = pos.chapterKey;
+        record.page = pos.page;
+        record.total = pos.total;
+        record.ts = pos.ts;
+        boolean changed = state.overwriteRecord(record);
+        boolean moved = oldPage != pos.page || oldTotal != pos.total
+                || !oldChapter.equals(pos.chapterKey) || !oldTitle.equals(record.title);
+        if (changed || moved) {
+            // Make "继续阅读" open exactly that image, not just that chapter.
+            MangaSync.updateLegacyResume(getContext(), mSettings, state,
+                    java.util.Collections.singletonList(pos.chapterKey));
+            if (mCurrentPage == MangaPage.HISTORY) {
+                refreshPage(MangaPage.HISTORY);
+            }
+        }
+    }
+
     /** Newest record written from the PC NeeView sync (PC drive id). */
     @Nullable
     private MangaReadingState.Record pcHistoryRecord(MangaReadingState state) {
@@ -3584,7 +3733,8 @@ public class MangaLibraryWidget extends UIWidget {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            openLocalSession(dir, null, true);
+            // Same shape as a shelf tap: book card with chapters and jumps.
+            openBookPage(dir, true);
             return;
         }
         if (HIST_SMB.equals(record.source)) {
@@ -3599,17 +3749,16 @@ public class MangaLibraryWidget extends UIWidget {
                         Toast.LENGTH_LONG).show();
                 return;
             }
-            // Book-level history points at the manga folder; open the whole
-            // manga at its saved chapter/page so page turns keep working.
-            openRemoteManga(smbManga(smbAuth(), path.substring(prefix.length())),
-                    null, false);
+            // Book card first: chapter list, jump-to-latest and 打开文件夹,
+            // exactly like a shelf tap. Opening the reader straight away was
+            // the reason this page had "too few functions".
+            openRemoteBookPage(SHELF_SMB + smbBookRoot(path), true);
             return;
         }
         if (HIST_115.equals(record.source)) {
             String cid = record.path.startsWith("115:")
                     ? record.path.substring(4) : record.path;
-            String cookie = mSettings.text(MangaSettings.P115_COOKIE);
-            openRemoteManga(p115Manga(cookie, cid, record.title), null, false);
+            openRemoteBookPage(SHELF_115 + cid + "|" + record.title, true);
             return;
         }
         if (HIST_EXT.equals(record.source)) {
@@ -3617,6 +3766,40 @@ public class MangaLibraryWidget extends UIWidget {
             return;
         }
         Toast.makeText(getContext(), "未知记录来源", Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * The book root of a chapter path: the longest bookshelf entry that is a
+     * prefix wins, otherwise the parent folder. Without this, a history row
+     * pointing at a chapter folder opened a "book" with no chapters at all.
+     */
+    private String smbBookRoot(String smbPath) {
+        if (smbPath == null || smbPath.isEmpty()) {
+            return "";
+        }
+        String key = smbPath.endsWith("/")
+                ? smbPath.substring(0, smbPath.length() - 1) : smbPath;
+        String best = null;
+        for (String shelf : mSettings.bookshelf()) {
+            if (shelf == null || !shelf.startsWith(SHELF_SMB)) {
+                continue;
+            }
+            String candidate = MangaSync.repairSmbKey(
+                    shelf.substring(SHELF_SMB.length()), mSettings);
+            if (candidate == null || candidate.isEmpty()) {
+                continue;
+            }
+            if (key.equals(candidate) || key.startsWith(candidate + "/")) {
+                if (best == null || candidate.length() > best.length()) {
+                    best = candidate;
+                }
+            }
+        }
+        if (best != null) {
+            return best;
+        }
+        int cut = key.lastIndexOf('/');
+        return cut > "smb://".length() ? key.substring(0, cut) : key;
     }
 
     private void openHistoryFolder(MangaReadingState.Record record) {

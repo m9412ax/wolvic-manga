@@ -406,9 +406,43 @@ public final class MangaReadingState {
         return true;
     }
 
+    /**
+     * Overwrites a history row's position WITHOUT the "newer timestamp wins"
+     * guard. Used when the PC's live position is pulled: NeeView's startup
+     * pointer may carry an older timestamp than the last import yet is still
+     * exactly where the PC would reopen, so it must win. A page that moved
+     * BACKWARD (rereading an earlier chapter) is part of that.
+     */
+    public boolean overwriteRecord(Record incoming) {
+        if (incoming == null || TextUtils.isEmpty(incoming.id)) {
+            return false;
+        }
+        load();
+        for (Record local : mHistory) {
+            if (!local.id.equals(incoming.id)) {
+                continue;
+            }
+            boolean changed = local.page != incoming.page
+                    || local.total != incoming.total
+                    || !TextUtils.equals(local.chapterKey, incoming.chapterKey)
+                    || !TextUtils.equals(local.title, incoming.title);
+            local.title = incoming.title;
+            local.source = incoming.source;
+            local.path = incoming.path;
+            local.chapterKey = incoming.chapterKey;
+            local.page = incoming.page;
+            local.total = incoming.total;
+            local.ts = incoming.ts;
+            if (changed) {
+                saveHistory();
+            }
+            return changed;
+        }
+        return importRecord(incoming);
+    }
+
     /** Drops one chapter's progress (file deleted / chapter removed). */
-    public void forget(String key) {
-        if (TextUtils.isEmpty(key)) {
+    public void forget(String key) {        if (TextUtils.isEmpty(key)) {
             return;
         }
         load();

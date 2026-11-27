@@ -302,12 +302,19 @@ public class MangaOptionsView extends SettingsView
                 MangaSettings.VIDEO_BUFFER_MB,
                 new String[]{"8 MB", "12 MB", "16 MB", "24 MB", "32 MB", "48 MB", "64 MB"},
                 new int[]{8, 12, 16, 24, 32, 48, 64});
-        // Image preloading = decoding the current page's neighbours into an
-        // in-memory Bitmap cache, so the next page opens instantly. Kept here
-        // (not under "display") because it is a memory/cache behaviour.
+        // Two INDEPENDENT preload knobs. 内存 = decode neighbours ahead into
+        // RAM so a page turn paints instantly; 硬盘 = how many pages ahead a
+        // remote chapter is pulled to local storage. A slow SMB link needs
+        // deep disk prefetch while a fast link with 8K AVIF needs deep RAM
+        // preload, so tying them together always hurt one case.
         radio("图片预加载页数 · 内存（提前解码前后 N 页，翻页不黑屏）",
                 MangaSettings.READER_PRELOAD,
-                new String[]{"不预载", "1 页", "2 页", "4 页"}, new int[]{0, 1, 2, 4});
+                new String[]{"不预载", "1 页", "2 页", "3 页", "4 页", "6 页", "8 页"},
+                new int[]{0, 1, 2, 3, 4, 6, 8});
+        radio("远程预下载页数 · 硬盘（SMB / 115 / 图源提前拉到本地）",
+                MangaSettings.READER_FETCH_AHEAD,
+                new String[]{"1 页", "2 页", "3 页", "4 页", "6 页", "8 页", "12 页"},
+                new int[]{1, 2, 3, 4, 6, 8, 12});
         radio("图片预加载线程 · 内存（越多翻页越快，占用内存越高）",
                 MangaSettings.READER_PRELOAD_THREADS,
                 new String[]{"1 线程", "2 线程", "3 线程", "4 线程"}, new int[]{1, 2, 3, 4});
