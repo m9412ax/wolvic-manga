@@ -239,6 +239,16 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
     WhatsNewWidget mWhatsNewWidget = null;
     WebXRInterstitialWidget mWebXRInterstitial;
     private MangaLibraryWidget mMangaLibrary;
+
+    /** ADB/automation hook: am broadcast -a com.gzkj.mangahubvr.SYNC */
+    private final BroadcastReceiver mMangaSyncReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (mMangaLibrary != null) {
+                mMangaLibrary.syncFromExternal();
+            }
+        }
+    };
     private MangaReaderWidget mMangaReader;
     private MangaLibraryWidget.MangaDragBarWidget mMangaDragBar;
     /** Handle of the manga surface the tray is currently parented to; -1 when
@@ -535,6 +545,16 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
         mMangaUiMode = UI_LIBRARY;
         mMangaMode = true;
         mMangaLibrary = new MangaLibraryWidget(this);
+        try {
+            IntentFilter syncFilter = new IntentFilter("com.gzkj.mangahubvr.SYNC");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(mMangaSyncReceiver, syncFilter, Context.RECEIVER_EXPORTED);
+            } else {
+                registerReceiver(mMangaSyncReceiver, syncFilter);
+            }
+        } catch (Exception e) {
+            Log.w("MangaMode", "sync receiver: " + e);
+        }
         // The floating grab bar registers itself the first time it is attached.
         mMangaDragBar = new MangaLibraryWidget.MangaDragBarWidget(this);
         // show() performs the initial addWidget once the placement is visible.
@@ -742,6 +762,10 @@ public class VRBrowserActivity extends PlatformActivity implements WidgetManager
 
     @Override
     protected void onDestroy() {
+        try {
+            unregisterReceiver(mMangaSyncReceiver);
+        } catch (Exception ignored) {
+        }
         ((VRBrowserApplication)getApplication()).onActivityDestroy();
         SettingsStore.getInstance(getBaseContext()).setPid(0);
         mSearchEngineWrapper.unregisterForUpdates();

@@ -213,7 +213,7 @@ public class MangaOptionsView extends SettingsView
         switchRow("启用同步（进度 / 历史 / 书架）", MangaSettings.SYNC_ENABLED);
         switchRow("直接读写 NeeView 的 History.json（无需电脑脚本）",
                 MangaSettings.SYNC_NEEV_DIRECT);
-        edit("SMB 同步共享名（电脑放 NeeView Profile 的盘，如 d）",
+        edit("SMB 同步共享名（直连 NeeView 时固定为 d，漫画目录不受影响）",
                 MangaSettings.SYNC_SMB_SHARE);
         edit("SMB 同步文件夹（相对共享根，默认 APP/NeeView/Profile）",
                 MangaSettings.SYNC_NEEV_FOLDER);

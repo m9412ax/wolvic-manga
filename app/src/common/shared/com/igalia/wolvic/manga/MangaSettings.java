@@ -518,6 +518,11 @@ public final class MangaSettings {
         return out;
     }
 
+    /** Replaces the whole shelf (used when importing NeeView bookmarks). */
+    public void setBookshelf(List<String> list) {
+        writeBookshelf(list == null ? new ArrayList<>() : list);
+    }
+
     public boolean isInBookshelf(String path) {
         return path != null && bookshelf().contains(path);
     }

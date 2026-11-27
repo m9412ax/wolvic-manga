@@ -1531,6 +1531,14 @@ public class MangaLibraryWidget extends UIWidget {
 
     // ------------------------------------------------------ cross-device sync
 
+    /** External trigger (ADB broadcast / automation): enable the direct
+     *  NeeView sync and run one cycle. */
+    public void syncFromExternal() {
+        mSettings.put(MangaSettings.SYNC_ENABLED, true);
+        mSettings.put(MangaSettings.SYNC_NEEV_DIRECT, true);
+        runSync(false);
+    }
+
     /** Runs a pull→merge→push cycle off the UI thread. */
     private void runSync(boolean automatic) {
         if (!mSettings.bool(MangaSettings.SYNC_ENABLED)) {
