@@ -134,6 +134,13 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private TextView mTitle;
+    // Bookshelf toolbar (new pill style) and its multi-select bar.
+    private TextView mShelfViewButton;
+    private TextView mShelfSizeButton;
+    private TextView mShelfSortButton;
+    private LinearLayout mShelfSelectionBar;
+    private TextView mShelfSelectAll;
+    private TextView mShelfSelectInfo;
     private TextView mPanelSource;
     private FrameLayout mPageContainer;
     private LinearLayout mLibraryPage;
@@ -298,6 +305,11 @@ public class MangaLibraryWidget extends UIWidget {
         // doing it when the 扩展 page is first opened made the "home" look hung.
         // Warm it up here, off the main thread, so the page is instant.
         mIoExecutor.execute(() -> {
+            // Keep the thumbnail cache bounded; it is what makes the shelf
+            // appear instantly on a warm start.
+            try {
+                com.igalia.wolvic.manga.MangaThumbCache.trim(getContext(), 600);
+            } catch (Throwable ignored) { }
             try {
                 MangaSourceManager.INSTANCE.init(getContext());
             } catch (Throwable t) {
@@ -853,7 +865,8 @@ public class MangaLibraryWidget extends UIWidget {
         // Remote (SMB/115) bookshelf entries are tagged strings, not paths.
         List<String> remoteShelfKeys = new ArrayList<>();
         for (String saved : mSettings.bookshelf()) {
-            if (saved.startsWith(SHELF_SMB) || saved.startsWith(SHELF_115)) {
+            if (saved.startsWith(SHELF_SMB) || saved.startsWith(SHELF_115)
+                    || saved.startsWith(SHELF_SRC)) {
                 remoteShelfKeys.add(saved);
                 continue;
             }
@@ -1037,85 +1050,270 @@ public class MangaLibraryWidget extends UIWidget {
     }
 
     private void buildLibraryToolbar() {
+        if (mLibraryPage == null) {
+            return;
+        }
+        // Same pill language as the file browser header: one rounded strip with
+        // transparent buttons, instead of four opaque Buttons in different
+        // colours (the last piece of the old UI).
         LinearLayout bar = new LinearLayout(getContext());
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundResource(R.drawable.manga_action_bar_bg);
+        bar.setPadding(dp(6), dp(5), dp(6), dp(5));
         mLibraryPage.addView(bar, 0, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        Button viewToggle = new Button(getContext());
-        viewToggle.setAllCaps(false);
-        viewToggle.setTextSize(16f);
-        viewToggle.setTextColor(0xFFFFFFFF);
-        viewToggle.setBackgroundColor(0xFF2A3A5A);
-        viewToggle.setMinWidth(dp(160));
-        viewToggle.setText(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1
-                ? "▦ 切换图标视图" : "☰ 切换列表视图");
-        viewToggle.setOnClickListener(v -> {
-            int next = mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1 ? 0 : 1;
-            mSettings.put(MangaSettings.LIBRARY_VIEW_MODE, next);
-            mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
-            mAdapter.setCompact(next == 1);
-            mAdapter.notifyDataSetChanged();
-            viewToggle.setText(next == 1 ? "▦ 切换图标视图" : "☰ 切换列表视图");
-        });
-        bar.addView(viewToggle);
+        mShelfViewButton = shelfPill("", v -> toggleShelfView());
+        mShelfSizeButton = shelfPill("", v -> cycleShelfSize());
+        mShelfSortButton = shelfPill("", v -> cycleShelfSort());
+        bar.addView(mShelfViewButton);
+        bar.addView(mShelfSizeButton);
+        bar.addView(mShelfSortButton);
+        bar.addView(shelfPill("▶ 继续阅读", v -> continueLastReading()));
 
-        final String[] sizeNames = {"小", "中", "大"};
-        Button sizeToggle = new Button(getContext());
-        sizeToggle.setAllCaps(false);
-        sizeToggle.setTextSize(16f);
-        sizeToggle.setTextColor(0xFFFFFFFF);
-        sizeToggle.setBackgroundColor(0xFF4A3A6A);
-        sizeToggle.setMinWidth(dp(140));
-        sizeToggle.setText("⤢ 视图：" + sizeNames[mSettings.integer(MangaSettings.LIBRARY_SIZE)]);
-        sizeToggle.setOnClickListener(v -> {
-            int next = (mSettings.integer(MangaSettings.LIBRARY_SIZE) + 1) % 3;
-            mSettings.put(MangaSettings.LIBRARY_SIZE, next);
-            applyLibrarySize();
-            sizeToggle.setText("⤢ 视图：" + sizeNames[next]);
-        });
-        bar.addView(sizeToggle);
+        View spacer = new View(getContext());
+        bar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        bar.addView(shelfPill("☑ 多选", v -> setShelfSelectionMode(true)));
 
-        final Button sortToggle = new Button(getContext());
-        sortToggle.setAllCaps(false);
-        sortToggle.setTextSize(16f);
-        sortToggle.setTextColor(0xFFFFFFFF);
-        sortToggle.setBackgroundColor(0xFF5A4A2A);
-        sortToggle.setMinWidth(dp(180));
-        sortToggle.setText("↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)));
-        sortToggle.setOnClickListener(v -> {
-            int next = SortUtil.next(mSettings.integer(MangaSettings.SORT_MODE));
-            mSettings.put(MangaSettings.SORT_MODE, next);
-            sortToggle.setText("↕ " + SortUtil.label(next));
-            scanLibrary();
-        });
-        bar.addView(sortToggle);
+        LinearLayout sel = new LinearLayout(getContext());
+        sel.setOrientation(LinearLayout.HORIZONTAL);
+        sel.setGravity(Gravity.CENTER_VERTICAL);
+        sel.setBackgroundResource(R.drawable.manga_action_bar_bg);
+        sel.setPadding(dp(6), dp(5), dp(6), dp(5));
+        sel.setVisibility(GONE);
+        mLibraryPage.addView(sel, 1, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        mShelfSelectionBar = sel;
 
-        Button cont = new Button(getContext());
-        cont.setText("▶ 继续阅读");
-        cont.setAllCaps(false);
-        cont.setTextSize(16f);
-        cont.setTextColor(0xFFFFFFFF);
-        cont.setBackgroundColor(0xFF2A5A3A);
-        cont.setMinWidth(dp(160));
-        cont.setOnClickListener(v -> {
-            String path = mSettings.lastReadFolder();
-            File folder = path.isEmpty() ? null : new File(path);
-            if (folder == null || !folder.isDirectory()) {
-                Toast.makeText(getContext(), "还没有阅读记录", Toast.LENGTH_SHORT).show();
-                return;
+        mShelfSelectAll = shelfPill("全选", v -> shelfSelectAll());
+        mShelfSelectInfo = shelfPill("已选 0 项", null);
+        mShelfSelectInfo.setTextColor(0xFF80D5D2);
+        sel.addView(mShelfSelectAll);
+        sel.addView(mShelfSelectInfo, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        sel.addView(shelfPill("移出书架", v -> removeSelectedFromShelf()));
+        sel.addView(shelfPill("🗑 删除", v -> deleteSelectedShelfItems()));
+        sel.addView(shelfPill("取消", v -> setShelfSelectionMode(false)));
+
+        if (mAdapter != null) {
+            mAdapter.setSelectionListener(this::onShelfSelectionChanged);
+        }
+        refreshShelfToolbarLabels();
+    }
+
+    /** One transparent pill inside the shelf action strip. */
+    private TextView shelfPill(String text, View.OnClickListener click) {
+        TextView pill = new TextView(getContext());
+        pill.setText(text);
+        pill.setTextSize(15f);
+        pill.setTextColor(0xFFDCE4E2);
+        pill.setSingleLine(true);
+        pill.setGravity(Gravity.CENTER);
+        pill.setBackgroundResource(R.drawable.manga_pill_bg);
+        pill.setPadding(dp(14), dp(8), dp(14), dp(8));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(6);
+        pill.setLayoutParams(lp);
+        if (click != null) {
+            pill.setClickable(true);
+            pill.setFocusable(true);
+            pill.setOnClickListener(click);
+        }
+        return pill;
+    }
+
+    private void refreshShelfToolbarLabels() {
+        if (mShelfViewButton != null) {
+            mShelfViewButton.setText(mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1
+                    ? "☰ 列表" : "▦ 图标");
+        }
+        if (mShelfSizeButton != null) {
+            String[] names = {"小", "中", "大"};
+            int size = Math.max(0, Math.min(2, mSettings.integer(MangaSettings.LIBRARY_SIZE)));
+            mShelfSizeButton.setText("⤢ " + names[size]);
+        }
+        if (mShelfSortButton != null) {
+            mShelfSortButton.setText("↕ " + SortUtil.label(mSettings.integer(MangaSettings.SORT_MODE)));
+        }
+    }
+
+    private void toggleShelfView() {
+        int next = mSettings.integer(MangaSettings.LIBRARY_VIEW_MODE) == 1 ? 0 : 1;
+        mSettings.put(MangaSettings.LIBRARY_VIEW_MODE, next);
+        mGrid.setLayoutManager(new GridLayoutManager(getContext(), spanCount()));
+        mAdapter.setCompact(next == 1);
+        mAdapter.notifyDataSetChanged();
+        refreshShelfToolbarLabels();
+    }
+
+    private void cycleShelfSize() {
+        int next = (mSettings.integer(MangaSettings.LIBRARY_SIZE) + 1) % 3;
+        mSettings.put(MangaSettings.LIBRARY_SIZE, next);
+        applyLibrarySize();
+        refreshShelfToolbarLabels();
+    }
+
+    private void cycleShelfSort() {
+        int next = SortUtil.next(mSettings.integer(MangaSettings.SORT_MODE));
+        mSettings.put(MangaSettings.SORT_MODE, next);
+        refreshShelfToolbarLabels();
+        scanLibrary();
+    }
+
+    private void continueLastReading() {
+        String path = mSettings.lastReadFolder();
+        File folder = path.isEmpty() ? null : new File(path);
+        if (folder == null || !folder.isDirectory()) {
+            Toast.makeText(getContext(), "还没有阅读记录", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        continueReading(folder);
+    }
+
+    // -------------------------------------------------- shelf multi-select
+
+    private void setShelfSelectionMode(boolean on) {
+        if (mAdapter == null) {
+            return;
+        }
+        mAdapter.setSelectionMode(on);
+        if (mShelfSelectionBar != null) {
+            mShelfSelectionBar.setVisibility(on ? VISIBLE : GONE);
+        }
+        if (!on) {
+            onShelfSelectionChanged(0, mAdapter.totalCount());
+        }
+    }
+
+    private void onShelfSelectionChanged(int selected, int total) {
+        if (mShelfSelectInfo == null) {
+            return;
+        }
+        mShelfSelectInfo.setText(selected == 0
+                ? "点选漫画，长按也可多选" : ("已选 " + selected + " 项"));
+        if (mShelfSelectAll != null) {
+            mShelfSelectAll.setText(total > 0 && selected == total ? "取消全选" : "全选");
+        }
+    }
+
+    private void shelfSelectAll() {
+        if (mAdapter == null) {
+            return;
+        }
+        boolean all = mAdapter.selectedCount() > 0
+                && mAdapter.selectedCount() == mAdapter.totalCount();
+        mAdapter.selectAll(!all);
+    }
+
+    private void removeSelectedFromShelf() {
+        if (mAdapter == null) {
+            return;
+        }
+        List<MangaCoverAdapter.MangaItem> items = mAdapter.selectedItems();
+        if (items.isEmpty()) {
+            Toast.makeText(getContext(), "请先选择漫画", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int removed = 0;
+        for (MangaCoverAdapter.MangaItem item : items) {
+            String key = item.remoteKey != null ? item.remoteKey : item.folder.getAbsolutePath();
+            if (mSettings.isInBookshelf(key)) {
+                mSettings.removeFromBookshelf(key);
+                removed++;
             }
-            continueReading(folder);
+        }
+        if (removed == 0) {
+            Toast.makeText(getContext(), "根目录下的文件夹会自动显示，删除请用「🗑 删除」",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(getContext(), "已移出 " + removed + " 部", Toast.LENGTH_SHORT).show();
+        setShelfSelectionMode(false);
+        scanLibrary();
+    }
+
+    private void deleteSelectedShelfItems() {
+        if (mAdapter == null) {
+            return;
+        }
+        final List<MangaCoverAdapter.MangaItem> items = mAdapter.selectedItems();
+        if (items.isEmpty() || mPageContainer == null) {
+            Toast.makeText(getContext(), "请先选择漫画", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        int localCount = 0;
+        for (int i = 0; i < items.size() && i < 4; i++) {
+            if (i > 0) {
+                names.append("、");
+            }
+            names.append(items.get(i).title);
+        }
+        if (items.size() > 4) {
+            names.append(" 等 ").append(items.size()).append(" 部");
+        }
+        for (MangaCoverAdapter.MangaItem item : items) {
+            if (item.remoteKey == null) {
+                localCount++;
+            }
+        }
+        final int localTotal = localCount;
+        MangaQuickSheet sheet = MangaQuickSheet.open(mPageContainer, "删除", s -> {
+            s.section("将处理");
+            s.caption(names.toString());
+            s.divider();
+            s.hint(localTotal > 0
+                    ? "本地文件夹会连同里面的图片/视频一起删除且无法恢复；"
+                    + "SMB / 115 / 扩展源条目只会从书架移除，不会删远端文件。"
+                    : "只会从书架移除，不会删除远端文件，也不清除阅读进度。");
+        }, new MangaQuickSheet.DismissListener() {
+            @Override
+            public void onConfirm() {
+                performShelfDelete(items);
+            }
         });
-        bar.addView(cont);
+        sheet.withFooter(false);
+    }
+
+    private void performShelfDelete(final List<MangaCoverAdapter.MangaItem> items) {
+        mIoExecutor.execute(() -> {
+            int deleted = 0;
+            int unlinked = 0;
+            for (MangaCoverAdapter.MangaItem item : items) {
+                String key = item.remoteKey != null ? item.remoteKey : item.folder.getAbsolutePath();
+                if (item.remoteKey == null && item.folder.isDirectory()) {
+                    if (deleteRecursiveLocal(item.folder)) {
+                        deleted++;
+                    }
+                    MangaReadingState.get(getContext()).forgetPrefix(item.folder.getAbsolutePath());
+                }
+                if (mSettings.isInBookshelf(key)) {
+                    mSettings.removeFromBookshelf(key);
+                    unlinked++;
+                }
+            }
+            final int d = deleted;
+            final int u = unlinked;
+            mMain.post(() -> {
+                Toast.makeText(getContext(), "已删除 " + d + " 个文件夹 · 移出书架 " + u + " 项",
+                        Toast.LENGTH_SHORT).show();
+                setShelfSelectionMode(false);
+                scanLibrary();
+            });
+        });
     }
 
     // ------------------------------------------- ONLINE remote manga (SMB/115)
 
     private static final String SHELF_SMB = "remote:smb:";
     private static final String SHELF_115 = "remote:115:";
+    /** Extension entry: remote:src:&lt;sourceId&gt;|&lt;mangaUrl&gt;|&lt;title&gt; */
+    private static final String SHELF_SRC = "remote:src:";
 
     /** Cycles the shared sort mode and refreshes the relevant listing page. */
     private void cycleSortAndApply(MangaPage page) {
@@ -1311,7 +1509,85 @@ public class MangaLibraryWidget extends UIWidget {
                 return;
             }
             openRemoteManga(p115Manga(cookie, cid, title));
+        } else if (shelfKey.startsWith(SHELF_SRC)) {
+            openSourceFromShelf(shelfKey);
         }
+    }
+
+    /**
+     * Opens an extension entry that was added to the bookshelf. The key holds
+     * the source id and the manga URL, so the whole record survives restarts
+     * without keeping the Source object itself.
+     */
+    private void openSourceFromShelf(final String shelfKey) {
+        String rest = shelfKey.substring(SHELF_SRC.length());
+        int first = rest.indexOf('|');
+        int last = rest.lastIndexOf('|');
+        if (first < 0 || last <= first) {
+            Toast.makeText(getContext(), "书架条目已损坏", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final long sourceId;
+        try {
+            sourceId = Long.parseLong(rest.substring(0, first));
+        } catch (NumberFormatException e) {
+            Toast.makeText(getContext(), "书架条目的图源 id 无效", Toast.LENGTH_LONG).show();
+            return;
+        }
+        final String mangaUrl = rest.substring(first + 1, last);
+        final String title = rest.substring(last + 1);
+        MangaSourceManager.LoadedSource found = null;
+        for (MangaSourceManager.LoadedSource candidate : MangaSourceManager.INSTANCE.getSources()) {
+            if (candidate.getSource().getId() == sourceId) {
+                found = candidate;
+                break;
+            }
+        }
+        if (found == null) {
+            if (!MangaSourceManager.INSTANCE.isInitialized()) {
+                requestSourceScan();
+                Toast.makeText(getContext(), "图源还在加载，请稍后再点一次", Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(getContext(), "该条目所属的图源没有加载（扩展被卸载？）",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
+        mSourceEntry = found;
+        SManga stub = new eu.kanade.tachiyomi.source.model.SMangaImpl();
+        stub.setUrl(mangaUrl);
+        stub.setTitle(title == null || title.isEmpty() ? mangaUrl : title);
+        mSourceManga = stub;
+        mSourceChapters.clear();
+        mSourceMangaStatus = "加载详情…";
+        Toast.makeText(getContext(), "正在打开 " + stub.getTitle(), Toast.LENGTH_SHORT).show();
+        MangaSourceRepository.INSTANCE.details(found.getSource(), stub, (update, error) -> {
+            if (update == null) {
+                mSourceMangaStatus = "详情加载失败：" + error;
+                mMain.post(() -> {
+                    switchPage(MangaPage.SOURCE_MANGA);
+                    refreshPage(MangaPage.SOURCE_MANGA);
+                });
+                return;
+            }
+            mSourceManga = update.getManga();
+            mSourceChapters.clear();
+            mSourceChapters.addAll(update.getChapters());
+            mSourceMangaStatus = mSourceChapters.size() + " 个章节";
+            mMain.post(() -> {
+                List<SChapter> list = sortedChapters();
+                float[] saved = MangaReaderWidget.readChapterProgress(progressPrefs(), srcProgressKey());
+                if (list.isEmpty()) {
+                    switchPage(MangaPage.SOURCE_MANGA);
+                    return;
+                }
+                int index = saved == null ? 0
+                        : Math.max(0, Math.min((int) saved[0], list.size() - 1));
+                int page = saved == null ? 0 : (int) saved[1];
+                float frac = saved == null ? 0f : saved[2];
+                openSourceSession(list, index, page, frac);
+            });
+        });
     }
 
     /** Parses a remote shelf key into a display title. */
@@ -1325,6 +1601,11 @@ public class MangaLibraryWidget extends UIWidget {
             String rest = shelfKey.substring(SHELF_115.length());
             int sep = rest.indexOf('|');
             return sep > 0 ? rest.substring(sep + 1) : "115 网盘";
+        }
+        if (shelfKey.startsWith(SHELF_SRC)) {
+            String rest = shelfKey.substring(SHELF_SRC.length());
+            int sep = rest.lastIndexOf('|');
+            return sep >= 0 ? rest.substring(sep + 1) : "扩展漫画";
         }
         return "在线漫画";
     }
@@ -4596,6 +4877,21 @@ public class MangaLibraryWidget extends UIWidget {
         LinearLayout actions = addRow(content);
         addButton(actions, "▶ 开始阅读", v -> startSourceReading());
         addButton(actions, "▶▶ 继续阅读", v -> continueSourceReading());
+        final String shelfKey = sourceShelfKey();
+        boolean onShelf = shelfKey != null && mSettings.isInBookshelf(shelfKey);
+        addButton(actions, onShelf ? "★ 已在书架" : "＋ 加入书架", v -> {
+            if (shelfKey == null) {
+                return;
+            }
+            if (mSettings.isInBookshelf(shelfKey)) {
+                mSettings.removeFromBookshelf(shelfKey);
+                Toast.makeText(getContext(), "已移出书架", Toast.LENGTH_SHORT).show();
+            } else {
+                mSettings.addToBookshelf(shelfKey);
+                Toast.makeText(getContext(), "已加入书架", Toast.LENGTH_SHORT).show();
+            }
+            refreshPage(MangaPage.SOURCE_MANGA);
+        });
 
         addInfo(content, "章节列表", mSourceMangaStatus);
         SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
@@ -4651,6 +4947,18 @@ public class MangaLibraryWidget extends UIWidget {
 
     private String srcProgressKey() {
         return "src:" + mSourceEntry.getSource().getId() + ":" + mSourceManga.getUrl();
+    }
+
+    /** Bookshelf key of the manga currently shown, or null when unavailable. */
+    @Nullable
+    private String sourceShelfKey() {
+        if (mSourceEntry == null || mSourceManga == null
+                || mSourceManga.getUrl() == null || mSourceManga.getUrl().isEmpty()) {
+            return null;
+        }
+        String title = mSourceManga.getTitle() == null ? "" : mSourceManga.getTitle();
+        return SHELF_SRC + mSourceEntry.getSource().getId() + "|" + mSourceManga.getUrl()
+                + "|" + title.replace('|', ' ').trim();
     }
 
     private void startSourceReading() {

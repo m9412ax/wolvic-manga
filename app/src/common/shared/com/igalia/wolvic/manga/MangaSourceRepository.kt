@@ -48,6 +48,25 @@ object MangaSourceRepository {
      *  is (timestamp, pages); entries older than TTL are re-fetched. */
     private data class PageListEntry(val at: Long, val pages: List<eu.kanade.tachiyomi.source.model.Page>)
     private val pageListCache = java.util.concurrent.ConcurrentHashMap<String, PageListEntry>()
+
+    /**
+     * Sites answer a burst of image requests with 429 and then hand out empty
+     * bodies for a while. Once that happens every worker parks until this
+     * timestamp instead of hammering the host with retries that all fail.
+     */
+    private val rateLimitUntil = java.util.concurrent.atomic.AtomicLong(0L)
+
+    private suspend fun awaitRateLimit() {
+        val until = rateLimitUntil.get()
+        val now = System.currentTimeMillis()
+        if (until > now) {
+            val wait = minOf(until - now, 15000L)
+            if (wait > 0) {
+                Log.w(TAG, "rate limited, waiting ${wait}ms")
+                delay(wait)
+            }
+        }
+    }
     private const val PAGE_LIST_TTL_MS = 5 * 60 * 1000L
 
     private fun pageListKey(source: Source, chapter: SChapter): String =
@@ -366,6 +385,7 @@ object MangaSourceRepository {
     }
 
     private suspend fun fetchPage(source: Source, page: eu.kanade.tachiyomi.source.model.Page, dir: File) {
+        awaitRateLimit()
         // Direct media URL (some sources put the clip in page.url): never fetch
         // a multi-megabyte file just to decide what it is.
         if (SourceVideo.isVideoUrl(page.url) && page.imageUrl == null) {
@@ -389,6 +409,10 @@ object MangaSourceRepository {
             else -> throw IllegalStateException("第 ${page.index + 1} 页没有图片地址")
         }
         response.use { resp ->
+            if (resp.code == 429) {
+                rateLimitUntil.set(System.currentTimeMillis() + 8000L)
+                throw IllegalStateException("第 ${page.index + 1} 页被限流 (429)")
+            }
             val body = resp.body
             val ext = extensionFor(body.contentType()?.toString(), page.imageUrl ?: page.url)
             val out = File(dir, "%04d.%s".format(page.index, ext))

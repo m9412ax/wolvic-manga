@@ -21,13 +21,16 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.igalia.wolvic.R;
-import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
+import com.igalia.wolvic.manga.MangaSettings;
+import com.igalia.wolvic.manga.MangaThumbCache;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -44,6 +47,11 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         /** Called for remote (SMB/115) bookshelf entries that have no local
          *  folder. Default delegates with a dummy file for compatibility. */
         default void onRemoteMangaClick(@NonNull String remoteKey) { }
+    }
+
+    /** Selection changed (multi-select on the bookshelf). */
+    public interface OnSelectionChanged {
+        void onSelectionChanged(int selected, int total);
     }
 
     /** Long-press callback, e.g. to reset reading progress for a folder. */
@@ -84,6 +92,9 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     private final List<MangaItem> mItems = new ArrayList<>();
     private final OnMangaClickListener mListener;
     private final OnMangaLongClickListener mLongListener;
+    private final Set<String> mSelected = new HashSet<>();
+    private boolean mSelectionMode;
+    @Nullable private OnSelectionChanged mSelectionListener;
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private final Handler mMainHandler = new Handler(Looper.getMainLooper());
     /** Cover decode budget from 设置 → 漫画 · 图源 → 封面解码尺寸. */
@@ -103,6 +114,80 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         mCompact = compact;
     }
 
+    public void setSelectionListener(@Nullable OnSelectionChanged listener) {
+        mSelectionListener = listener;
+    }
+
+    public boolean isSelectionMode() {
+        return mSelectionMode;
+    }
+
+    /** Stable identity of an item, also used by the host for batch actions. */
+    public static String keyOf(@NonNull MangaItem item) {
+        return item.remoteKey != null ? item.remoteKey : item.folder.getAbsolutePath();
+    }
+
+    public void setSelectionMode(boolean on) {
+        if (mSelectionMode == on) {
+            return;
+        }
+        mSelectionMode = on;
+        if (!on) {
+            mSelected.clear();
+        }
+        notifyDataSetChanged();
+        notifySelection();
+    }
+
+    public void toggleSelection(int position) {
+        if (position < 0 || position >= mItems.size()) {
+            return;
+        }
+        String key = keyOf(mItems.get(position));
+        if (!mSelected.remove(key)) {
+            mSelected.add(key);
+        }
+        notifyItemChanged(position);
+        notifySelection();
+    }
+
+    public void selectAll(boolean select) {
+        mSelected.clear();
+        if (select) {
+            for (MangaItem item : mItems) {
+                mSelected.add(keyOf(item));
+            }
+        }
+        notifyDataSetChanged();
+        notifySelection();
+    }
+
+    public int selectedCount() {
+        return mSelected.size();
+    }
+
+    public int totalCount() {
+        return mItems.size();
+    }
+
+    /** Items currently ticked, in list order. */
+    @NonNull
+    public List<MangaItem> selectedItems() {
+        List<MangaItem> out = new ArrayList<>();
+        for (MangaItem item : mItems) {
+            if (mSelected.contains(keyOf(item))) {
+                out.add(item);
+            }
+        }
+        return out;
+    }
+
+    private void notifySelection() {
+        if (mSelectionListener != null) {
+            mSelectionListener.onSelectionChanged(mSelected.size(), mItems.size());
+        }
+    }
+
     public MangaCoverAdapter(@NonNull Context context, @Nullable OnMangaClickListener listener,
                              @Nullable OnMangaLongClickListener longListener) {
         mContext = context;
@@ -113,6 +198,7 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
     }
 
     public void update(@Nullable List<MangaItem> items) {
+        mSelected.clear();
         mItems.clear();
         if (items != null) {
             mItems.addAll(items);
@@ -147,7 +233,14 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
             holder.cover.setLayoutParams(lp);
         }
         loadCover(holder.cover, item.cover);
+        boolean selected = mSelectionMode && mSelected.contains(keyOf(item));
+        holder.itemView.setBackgroundResource(selected
+                ? R.drawable.manga_card_selected : R.drawable.manga_card_bg);
         holder.itemView.setOnClickListener(v -> {
+            if (mSelectionMode) {
+                toggleSelection(holder.getBindingAdapterPosition());
+                return;
+            }
             if (mListener != null) {
                 if (item.remoteKey != null) {
                     mListener.onRemoteMangaClick(item.remoteKey);
@@ -157,11 +250,15 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
             }
         });
         holder.itemView.setOnLongClickListener(v -> {
-            if (mLongListener != null) {
-                mLongListener.onMangaLongClick(item.folder);
-                return true;
+            // Long-press enters multi-select (VR users cannot aim at a tiny
+            // checkbox). Progress reset moved to the selection bar's menu.
+            if (!mSelectionMode) {
+                setSelectionMode(true);
+                toggleSelection(holder.getBindingAdapterPosition());
+            } else {
+                toggleSelection(holder.getBindingAdapterPosition());
             }
-            return false;
+            return true;
         });
     }
 
@@ -191,15 +288,22 @@ public class MangaCoverAdapter extends RecyclerView.Adapter<MangaCoverAdapter.Co
         // Tag guards against recycled views receiving a stale bitmap.
         view.setTag(path);
         mExecutor.execute(() -> {
-            final Bitmap bitmap = decodeScaled(cover, mTargetPx, mTargetPx);
+            Bitmap bitmap = MangaThumbCache.load(mContext, cover, mTargetPx);
+            if (bitmap == null) {
+                bitmap = decodeScaled(cover, mTargetPx, mTargetPx);
+                if (bitmap != null) {
+                    MangaThumbCache.save(mContext, cover, mTargetPx, bitmap);
+                }
+            }
+            final Bitmap result = bitmap;
             mMainHandler.post(() -> {
-                if (bitmap == null) {
+                if (result == null) {
                     return;
                 }
                 if (path.equals(view.getTag())) {
-                    view.setImageBitmap(bitmap);
+                    view.setImageBitmap(result);
                 } else {
-                    bitmap.recycle();
+                    result.recycle();
                 }
             });
         });
