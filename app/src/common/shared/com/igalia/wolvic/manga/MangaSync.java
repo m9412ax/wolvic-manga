@@ -125,6 +125,23 @@ public final class MangaSync {
         if (raw.isEmpty()) {
             return "";
         }
+        // 115: the user mounts the netdisk as X: on the PC. Chapter keys are
+        // recorded with their real folder name when a chapter is opened;
+        // shelf keys carry the book title after the '|'.
+        String learned = settings.path115(raw);
+        if (!learned.isEmpty()) {
+            return learned;
+        }
+        String lowerRaw = raw.toLowerCase(Locale.ROOT);
+        if (lowerRaw.startsWith("remote:115:")) {
+            String rest = raw.substring("remote:115:".length());
+            int bar = rest.indexOf('|');
+            String title = bar >= 0 ? rest.substring(bar + 1) : rest;
+            return "X:/" + norm(title).replaceFirst("^/+", "");
+        }
+        if (lowerRaw.startsWith("115:")) {
+            return "X:/" + raw.substring(4);
+        }
         String config = settings.text(MangaSettings.SYNC_PATH_MAP);
         if (config.trim().isEmpty()) {
             config = defaultMapping(settings);
@@ -164,6 +181,17 @@ public final class MangaSync {
         String raw = norm(id);
         if (raw.isEmpty()) {
             return "";
+        }
+        String learned = settings.key115ForPath(raw);
+        if (!learned.isEmpty()) {
+            return learned;
+        }
+        if (raw.toLowerCase(Locale.ROOT).startsWith("x:/")) {
+            for (String shelf : settings.bookshelf()) {
+                if (raw.equals(syncId(context, settings, shelf))) {
+                    return shelf;
+                }
+            }
         }
         String config = settings.text(MangaSettings.SYNC_PATH_MAP);
         if (config.trim().isEmpty()) {

@@ -1878,6 +1878,14 @@ public class MangaLibraryWidget extends UIWidget {
                     MangaChapterSession session = MangaChapterSession.remote(
                             getContext(), manga, chapters, dirs, fi, fp, ff);
                     if (fi >= 0 && fi < chapters.size()) {
+                        if (manga.key().startsWith("115:")) {
+                            // Remember the X: path of this chapter so the
+                            // NeeView sync can translate 115:<cid> <-> X:/… .
+                            String cname = chapters.get(fi).name.replace('\\', '/');
+                            String bname = manga.title().replace('\\', '/');
+                            String pc = "X:/" + (cname.equals(bname) ? bname : bname + "/" + cname);
+                            mSettings.put115Path(manga.chapterKey(chapters.get(fi)), pc);
+                        }
                         noteHistory(manga.key().startsWith("115:") ? HIST_115 : HIST_SMB,
                                 manga.key(), manga.title(), manga.key(),
                                 manga.chapterKey(chapters.get(fi)));

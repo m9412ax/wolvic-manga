@@ -112,6 +112,29 @@ public final class MangaNeeViewSync {
     /** Sorted image file names of one chapter folder on the manga share. */
     private static List<String> pageNames(MangaSettings settings, String vrChapterPath) {
         List<String> names = new ArrayList<>();
+        if (vrChapterPath != null && vrChapterPath.startsWith("115:")) {
+            // 115 pages are named files in a netdisk folder, not on the SMB
+            // share. Resolve them through the saved cookie so page indices
+            // still match what NeeView sees on its X: mount.
+            String cid = vrChapterPath.substring(4);
+            String cookie = settings.text(MangaSettings.P115_COOKIE);
+            if (!cid.isEmpty() && !cookie.isEmpty()) {
+                try {
+                    for (Manga115Api.DirEntry e : Manga115Api.listDir(cookie, cid)) {
+                        if (!e.isDir && (MangaSettings.hasExtension(e.name,
+                                settings.imageExtensions())
+                                || MangaSettings.hasExtension(e.name,
+                                settings.videoExtensions()))) {
+                            names.add(e.name);
+                        }
+                    }
+                    names.sort(NaturalOrder.INSTANCE);
+                } catch (Exception e) {
+                    Log.w(TAG, "115 pageNames " + cid + ": " + e);
+                }
+            }
+            return names;
+        }
         String rel = relativeToShare(settings, vrChapterPath);
         if (rel.isEmpty()) {
             return names;

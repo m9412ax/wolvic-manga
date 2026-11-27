@@ -162,6 +162,8 @@ public final class MangaSettings {
     public static final String SYNC_SMB_SHARE = "sync_smb_share";
     /** Folder under that share containing History.json. */
     public static final String SYNC_NEEV_FOLDER = "sync_neev_folder";
+    /** 115 chapter key -> X:/… path on the PC, recorded when a chapter opens. */
+    public static final String SYNC_115_PATHS = "sync_115_paths";
 
     public static final String WEBDAV_URL = "webdav_url";
     public static final String WEBDAV_USER = "webdav_user";
@@ -521,6 +523,53 @@ public final class MangaSettings {
     /** Replaces the whole shelf (used when importing NeeView bookmarks). */
     public void setBookshelf(List<String> list) {
         writeBookshelf(list == null ? new ArrayList<>() : list);
+    }
+
+    // --------------------------------------------- 115 -> PC X: drive mapping
+
+    /** Remembers the PC path of a 115 chapter when it is first opened. */
+    public void put115Path(String chapterKey, String pcPath) {
+        if (chapterKey == null || chapterKey.isEmpty() || pcPath == null || pcPath.isEmpty()) {
+            return;
+        }
+        JSONObject map = paths115();
+        map.put(chapterKey, pcPath);
+        prefs().edit().putString(SYNC_115_PATHS, map.toString()).apply();
+    }
+
+    /** PC path of a 115 chapter key, or "". */
+    public String path115(String chapterKey) {
+        if (chapterKey == null || chapterKey.isEmpty()) {
+            return "";
+        }
+        return paths115().optString(chapterKey, "");
+    }
+
+    /** Reverse lookup: 115 chapter key of a PC path, or "". */
+    public String key115ForPath(String pcPath) {
+        if (pcPath == null || pcPath.isEmpty()) {
+            return "";
+        }
+        JSONObject map = paths115();
+        for (java.util.Iterator<String> it = map.keys(); it.hasNext();) {
+            String key = it.next();
+            if (pcPath.equals(map.optString(key, ""))) {
+                return key;
+            }
+        }
+        return "";
+    }
+
+    private JSONObject paths115() {
+        String raw = prefs().getString(SYNC_115_PATHS, null);
+        if (raw == null) {
+            return new JSONObject();
+        }
+        try {
+            return new JSONObject(raw);
+        } catch (JSONException e) {
+            return new JSONObject();
+        }
     }
 
     public boolean isInBookshelf(String path) {
