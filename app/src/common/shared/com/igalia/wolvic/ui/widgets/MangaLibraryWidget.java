@@ -230,6 +230,9 @@ public class MangaLibraryWidget extends UIWidget {
     private long mSmbOpenSeq = 0L;
     /** folder -> whether that folder is a chapter of a bigger book. */
     private final java.util.Map<String, Boolean> mSmbChapterProbe = new java.util.HashMap<>();
+    /** Chapter name to look in first when positioning the reader (set by the
+     *  SMB file tap, consumed by the IO task that resolves the start page). */
+    private String mOpenChapterHint;
     private String mSmbStatus = "未连接";
     /** Once credentials are saved, entering the SMB tab auto-connects and
      *  shows the share as a folder list; the config form is hidden behind
@@ -1836,9 +1839,10 @@ public class MangaLibraryWidget extends UIWidget {
         }
         mIoExecutor.execute(() -> {
             String root = folder;
+            boolean promote = false;
             try {
                 Boolean known = mSmbChapterProbe.get(folder);
-                boolean promote = known != null ? known : probeChapterSiblings(auth, folder);
+                promote = known != null ? known : probeChapterSiblings(auth, folder);
                 if (known == null && seq == mSmbOpenSeq) {
                     mSmbChapterProbe.put(folder, promote);
                 }
@@ -1852,28 +1856,23 @@ public class MangaLibraryWidget extends UIWidget {
                 Log.w(TAG, "openSmbAtChapter probe failed: " + e.getMessage());
             }
             final String openRoot = root;
+            final String hint = promote
+                    ? folder.substring(folder.lastIndexOf('/') + 1) : null;
             mMain.post(() -> {
                 mSmbOpenPending = false;
+                mOpenChapterHint = hint;
                 openRemoteManga(smbManga(auth, openRoot), pageName);
             });
         });
     }
 
     /** True when [folder] is itself a chapter (loose media) living next to
-     *  other chapter folders, i.e. the parent is the book to open. Only a few
-     *  sibling folders are listed so the probe stays snappy on a slow share. */
+     *  other chapter folders, i.e. the parent is the book to open.
+     *  onOpen only fires for media files, so the folder is known to hold pages
+     *  already — the extra "list itself" round trip is skipped and only a few
+     *  siblings are probed, keeping the wait short on a slow share. */
     private boolean probeChapterSiblings(MangaSmb.Auth auth, String folder) throws Exception {
         String[] media = concat(mSettings.imageExtensions(), mSettings.videoExtensions());
-        boolean loose = false;
-        for (MangaSmb.Entry e : MangaSmb.list(auth, folder)) {
-            if (!e.directory && MangaSmb.isMediaFile(e.name, media)) {
-                loose = true;
-                break;
-            }
-        }
-        if (!loose) {
-            return false;
-        }
         int slash = folder.lastIndexOf('/');
         if (slash <= 0) {
             return false;
@@ -1885,7 +1884,7 @@ public class MangaLibraryWidget extends UIWidget {
             if (!e.directory) {
                 continue;
             }
-            if (++checked > 4) {
+            if (++checked > 3) {
                 break;
             }
             for (MangaSmb.Entry kid : MangaSmb.list(auth, e.path)) {
@@ -1933,6 +1932,8 @@ public class MangaLibraryWidget extends UIWidget {
         Toast.makeText(getContext(), "正在读取 " + manga.title() + " 的章节…", Toast.LENGTH_SHORT).show();
         mIoExecutor.execute(() -> {
             try {
+                final String chapterHint = mOpenChapterHint;
+                mOpenChapterHint = null;
                 final List<RemoteManga.ChapterInfo> chapters = manga.listChapters();
                 if (chapters.isEmpty()) {
                     mMain.post(() -> {
@@ -1960,7 +1961,7 @@ public class MangaLibraryWidget extends UIWidget {
                 // If the user tapped a specific file, position the reader at
                 // that image instead of at the saved/first page.
                 if (startPageName != null && !startPageName.isEmpty()) {
-                    int[] found = locateRemotePage(manga, chapters, startPageName);
+                    int[] found = locateRemotePage(manga, chapters, startPageName, chapterHint);
                     if (found != null) {
                         index = found[0];
                         page = found[1];
@@ -2002,21 +2003,50 @@ public class MangaLibraryWidget extends UIWidget {
      *  thread. Returns null when not found (caller keeps saved position). */
     private int[] locateRemotePage(RemoteManga manga,
                                    List<RemoteManga.ChapterInfo> chapters,
-                                   String startPageName) {
-        for (int c = 0; c < chapters.size(); c++) {
-            try {
-                List<RemoteManga.PageInfo> pages = manga.listPages(chapters.get(c));
-                for (int p = 0; p < pages.size(); p++) {
-                    String hint = pages.get(p).nameHint;
-                    if (hint != null && (hint.equals(startPageName)
-                            || hint.endsWith("/" + startPageName)
-                            || startPageName.equals(new File(hint).getName()))) {
-                        return new int[]{c, p};
+                                   String startPageName,
+                                   @Nullable String chapterHint) {
+        // The tap came from a chapter folder: list that chapter only, instead
+        // of walking the whole book one listing at a time.
+        if (chapterHint != null && !chapterHint.isEmpty()) {
+            for (int c = 0; c < chapters.size(); c++) {
+                String name = chapters.get(c).name;
+                if (name == null) {
+                    continue;
+                }
+                String base = name.replace('\\', '/');
+                base = base.substring(base.lastIndexOf('/') + 1);
+                if (base.equals(chapterHint)) {
+                    int[] hit = findPageInChapter(manga, chapters.get(c), c, startPageName);
+                    if (hit != null) {
+                        return hit;
                     }
                 }
-            } catch (Exception e) {
-                Log.w(TAG, "locateRemotePage chapter " + c + ": " + e.getMessage());
             }
+        }
+        for (int c = 0; c < chapters.size(); c++) {
+            int[] hit = findPageInChapter(manga, chapters.get(c), c, startPageName);
+            if (hit != null) {
+                return hit;
+            }
+        }
+        return null;
+    }
+
+    @Nullable
+    private int[] findPageInChapter(RemoteManga manga, RemoteManga.ChapterInfo chapter,
+                                    int index, String startPageName) {
+        try {
+            List<RemoteManga.PageInfo> pages = manga.listPages(chapter);
+            for (int p = 0; p < pages.size(); p++) {
+                String hint = pages.get(p).nameHint;
+                if (hint != null && (hint.equals(startPageName)
+                        || hint.endsWith("/" + startPageName)
+                        || startPageName.equals(new File(hint).getName()))) {
+                    return new int[]{index, p};
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "locateRemotePage chapter " + index + ": " + e.getMessage());
         }
         return null;
     }
