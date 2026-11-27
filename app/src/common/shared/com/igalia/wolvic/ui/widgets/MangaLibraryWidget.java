@@ -248,6 +248,11 @@ public class MangaLibraryWidget extends UIWidget {
     /** Chapter name to look in first when positioning the reader (set by the
      *  SMB file tap, consumed by the IO task that resolves the start page). */
     private String mOpenChapterHint;
+    /** Exact chapter + page forced by "电脑最近阅读 → 继续阅读". Consumed (and
+     *  cleared) by the next openRemoteManga(), because the normal resume logic
+     *  prefers the furthest recorded chapter and ignored the PC's image. */
+    private String mForceChapterKey;
+    private int mForcePage = -1;
     private String mSmbStatus = "未连接";
     /** Once credentials are saved, entering the SMB tab auto-connects and
      *  shows the share as a folder list; the config form is hidden behind
@@ -2057,7 +2062,23 @@ public class MangaLibraryWidget extends UIWidget {
                 int index = 0;
                 int page = 0;
                 float frac = 0f;
-                if (!fromStart) {
+                // A forced position (电脑最近阅读 → 继续阅读) wins over every
+                // heuristic: the user asked for THAT chapter and THAT image.
+                final String forcedKey = mForceChapterKey;
+                final int forcedPage = mForcePage;
+                mForceChapterKey = null;
+                mForcePage = -1;
+                boolean forced = false;
+                if (!fromStart && forcedKey != null) {
+                    int forcedIndex = indexOfChapterKey(chapters, forcedKey);
+                    if (forcedIndex >= 0) {
+                        index = forcedIndex;
+                        page = Math.max(0, forcedPage);
+                        frac = 0f;
+                        forced = true;
+                    }
+                }
+                if (!fromStart && !forced) {
                     // 继续阅读 means "go to the furthest chapter that has a
                     // record", not "the chapter opened last": reading 100 then
                     // flicking back to 10 must still resume at 100.
@@ -2161,6 +2182,29 @@ public class MangaLibraryWidget extends UIWidget {
             String base = n.replace('\\', '/');
             base = base.substring(base.lastIndexOf('/') + 1);
             if (base.equals(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Finds a chapter by its canonical key (smb://host/share/rel), falling back
+     *  to the folder name so a host/share change still matches. */
+    private int indexOfChapterKey(List<RemoteManga.ChapterInfo> chapters, String key) {
+        if (key == null || key.isEmpty()) {
+            return -1;
+        }
+        String want = MangaSync.repairSmbKey(key, mSettings);
+        if (want == null || want.isEmpty()) {
+            want = key;
+        }
+        String wantName = want.substring(want.lastIndexOf('/') + 1);
+        for (int i = 0; i < chapters.size(); i++) {
+            RemoteManga.ChapterInfo chapter = chapters.get(i);
+            String id = chapter.id == null ? "" : chapter.id.replace('\\', '/');
+            String name = chapter.name == null ? "" : chapter.name.replace('\\', '/');
+            if ((!id.isEmpty() && (id.equals(want) || want.endsWith("/" + id)))
+                    || name.equals(wantName) || name.endsWith("/" + wantName)) {
                 return i;
             }
         }
@@ -3465,9 +3509,15 @@ public class MangaLibraryWidget extends UIWidget {
         MangaReadingState.Record pcLatest = pcHistoryRecord(state);
         if (pcLatest != null) {
             LinearLayout pin = addRow(content);
+            // Two choices, because they answer different questions: "where do
+            // I want to read" (详情: chapters / folder / manage) and "just put
+            // me back on that image" (继续阅读).
             addButton(pin, "💻 电脑最近阅读：" + pcLatest.title, v ->
                     openPcHistoryRecord(pcLatest));
-            addInfo(content, "位置", historyMeta(pcLatest));
+            addButton(pin, "▶ 继续阅读（第 " + (pcLatest.page + 1) + " 页）", v ->
+                    resumePcHistoryRecord(pcLatest));
+            addInfo(content, "位置", historyMeta(pcLatest)
+                    + " · 点书名进入漫画详情（章节目录 / 打开文件夹 / 管理）");
         }
 
         List<MangaFileBrowser.Entry> entries = new ArrayList<>();
@@ -3644,32 +3694,54 @@ public class MangaLibraryWidget extends UIWidget {
         return null;
     }
 
-    /** Opens the PC's last position, resuming at the exact image in VR. */
-    private void openPcHistoryRecord(MangaReadingState.Record record) {
+    /** Chapter key of a PC record, normalised to the CURRENT SMB settings. */
+    @Nullable
+    private String pcChapterKey(MangaReadingState.Record record) {
         String chapterKey = record.chapterKey;
         if (chapterKey == null || chapterKey.isEmpty()) {
             chapterKey = record.path;
         }
-        if (chapterKey == null || !chapterKey.startsWith("smb://")) {
+        if (chapterKey == null || chapterKey.isEmpty()) {
+            return null;
+        }
+        if (!chapterKey.startsWith("smb://")) {
             chapterKey = MangaSync.repairSmbKey(chapterKey, mSettings);
         }
+        return chapterKey;
+    }
+
+    /**
+     * Opens the 书本详情 card of the PC's last book, so 历史 behaves like the
+     * shelf: chapter list, jump button, 打开文件夹, 移出书架. Tapping the row
+     * used to jump straight into the reader, which is exactly what this page
+     * was lacking ("点开还是直接继续阅读了").
+     */
+    private void openPcHistoryRecord(MangaReadingState.Record record) {
+        String chapterKey = pcChapterKey(record);
         if (chapterKey != null && chapterKey.startsWith("smb://")) {
             String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
                     + mSettings.text(MangaSettings.SMB_SHARE) + "/";
             if (chapterKey.startsWith(prefix)) {
-                // Seed the resume position with the exact page NeeView was on
-                // so "继续阅读" lands on that image, not chapter page 1.
-                if (record.page > 0) {
-                    String indexKey = "remote:" + chapterKey;
-                    float[] parts = MangaReaderWidget.readChapterProgress(
-                            progressPrefs(), indexKey);
-                    int chapterIndex = parts != null ? (int) parts[0] : 0;
-                    float frac = parts != null ? parts[2] : 0f;
-                    progressPrefs().edit()
-                            .putString("chap:" + indexKey,
-                                    chapterIndex + "|" + record.page + "|" + frac)
-                            .apply();
-                }
+                openRemoteBookPage(SHELF_SMB + smbBookRoot(chapterKey), true);
+                return;
+            }
+        }
+        // 115 / unmapped: no book card available, keep the old behaviour.
+        resumePcHistoryRecord(record);
+    }
+
+    /** Opens the PC's last position, resuming at the exact image in VR. */
+    private void resumePcHistoryRecord(MangaReadingState.Record record) {
+        String chapterKey = pcChapterKey(record);
+        if (chapterKey != null && chapterKey.startsWith("smb://")) {
+            String prefix = "smb://" + mSettings.text(MangaSettings.SMB_HOST) + "/"
+                    + mSettings.text(MangaSettings.SMB_SHARE) + "/";
+            if (chapterKey.startsWith(prefix)) {
+                // Force the exact chapter+image. The old "seed the progress
+                // prefs" trick was ignored whenever any chapter of the book had
+                // a VR record, because 继续阅读 prefers the furthest record.
+                mForceChapterKey = chapterKey;
+                mForcePage = Math.max(0, record.page);
                 openRemoteManga(smbManga(smbAuth(),
                                 chapterKey.substring(prefix.length())),
                         null, false);

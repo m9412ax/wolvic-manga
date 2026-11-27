@@ -296,19 +296,9 @@ public final class RemoteChapterLoader {
                 }
                 RemoteManga.PageInfo p = pages.get(pageIndex);
                 File out = cachedFile(dir, pageIndex, p.nameHint);
-                synchronized (pageLock(out)) {
-                    if (!isValidCached(out)) {
-                        File tmp = new File(out.getAbsolutePath() + ".tmp");
-                        if (tmp.exists()) tmp.delete();
-                        if (isVideoName(p.nameHint)) {
-                            RemoteManga.writeVideoMarker(out, p);
-                        } else {
-                            manga.fetchPage(p, out);
-                        }
-                    }
-                }
-                boolean ok = out.exists() && out.length() > 0;
-                Log.i(TAG, "fetchSingle " + chapter.name + " #" + pageIndex + " ok=" + ok);
+                boolean ok = fetchOne(manga, p, out);
+                Log.i(TAG, "fetchSingle " + chapter.name + " #" + pageIndex + " ok=" + ok
+                        + " file=" + out.getName());
                 if (callback != null) {
                     MAIN.post(() -> callback.onResult(ok ? dir : null,
                             ok ? null : "该页下载为空"));
@@ -346,13 +336,7 @@ public final class RemoteChapterLoader {
                 for (int i = 0; i < n; i++) {
                     RemoteManga.PageInfo p = pages.get(i);
                     File out = cachedFile(dir, i, p.nameHint);
-                    if (isValidCached(out)) continue;
-                    if (isVideoName(p.nameHint)) {
-                        RemoteManga.writeVideoMarker(out, p);
-                    } else {
-                        manga.fetchPage(p, out);
-                    }
-                    if (out.exists() && out.length() > 0) added++;
+                    if (fetchOne(manga, p, out)) added++;
                 }
                 Log.i(TAG, "refreshPageList " + chapter.name + " added=" + added);
                 if (callback != null) MAIN.post(() -> callback.onResult(dir, null));
@@ -379,18 +363,13 @@ public final class RemoteChapterLoader {
                 if (pages == null || pages.isEmpty()) return;
                 if (!dir.exists() && !dir.mkdirs()) return;
                 int n = Math.min(maxPages, pages.size());
+                int got = 0;
                 for (int i = 0; i < n; i++) {
                     RemoteManga.PageInfo p = pages.get(i);
                     File out = cachedFile(dir, i, p.nameHint);
-                    if (isValidCached(out)) continue;
-                    if (isVideoName(p.nameHint)) {
-                        RemoteManga.writeVideoMarker(out, p);
-                        continue;
-                    }
-                    manga.fetchPage(p, out);
-                    if (!out.exists() || out.length() == 0L) continue;
+                    if (fetchOne(manga, p, out)) got++;
                 }
-                Log.i(TAG, "prefetch " + chapter.name + " " + n + " pages");
+                Log.i(TAG, "prefetch " + chapter.name + " " + got + "/" + n + " pages");
             } catch (Throwable e) {
                 Log.w(TAG, "prefetch failed: " + e.getMessage());
             }
@@ -505,5 +484,42 @@ public final class RemoteChapterLoader {
 
     private static boolean isValidCached(File f) {
         return f.exists() && !f.getName().endsWith(".tmp") && f.length() > 0;
+    }
+
+    /**
+     * Fetches ONE page into its cache file, serialised against every other
+     * writer of the same target (bulk download, on-demand read-ahead, chapter
+     * prefetch). Without the shared lock two threads streamed into the same
+     * .tmp and fought over rename(), which surfaced as "最后一张一直加载不出来"
+     * / "下载为空": the page never became valid, so the reader waited forever.
+     */
+    private static boolean fetchOne(RemoteManga manga, RemoteManga.PageInfo page, File out) {
+        if (page == null || out == null) {
+            return false;
+        }
+        synchronized (pageLock(out)) {
+            if (isValidCached(out)) {
+                return true;
+            }
+            if (isVideoName(page.nameHint)) {
+                RemoteManga.writeVideoMarker(out, page);
+                return isValidCached(out);
+            }
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    manga.fetchPage(page, out);
+                    if (isValidCached(out)) {
+                        return true;
+                    }
+                } catch (Throwable e) {
+                    Log.w(TAG, "fetchOne " + out.getName() + " attempt " + attempt
+                            + " failed: " + e.getMessage());
+                }
+                File tmp = new File(out.getAbsolutePath() + ".tmp");
+                if (tmp.exists()) tmp.delete();
+                if (out.exists() && out.length() == 0) out.delete();
+            }
+            return false;
+        }
     }
 }

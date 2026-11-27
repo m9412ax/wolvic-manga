@@ -140,6 +140,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     /** Set when the chapter was entered "at its end" (previous-chapter turn).
      *  Resolved to the real last page once the page count is known. */
     private boolean mOpenAtChapterEnd;
+    /** Retries spent on pulling the "chapter end" page on demand. */
+    private int mEndPageRetries;
+    /** Page number the caller asked to open this chapter at ("继续阅读第 N 张"),
+     *  pulled on demand when that page is not on disk yet - otherwise setFolder
+     *  clamps to the few pages that exist and the reader opens at page 3. */
+    private int mRequestedPage = -1;
+    /** When the current page decode started (mDecodePending timeout guard):
+     *  a cancelled PageLoad used to leave the flag set forever, which then
+     *  suppressed the download overlay -> black screen with no info at all. */
+    private long mDecodeSince;
     private File mFolder;
     private int mIndex;
     private List<File> mChapterDirs;
@@ -689,6 +699,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         mPreloadExecutor.getQueue().clear();
         mWindowKeys.clear();
         mRequestedPageKey = null;
+        // A cancelled decode used to keep mDecodePending=true forever, which
+        // then suppressed every download overlay ("黑屏 + 什么都不显示").
+        mDecodePending = false;
         mPages.clear();
         mPageTotal = -1;
         mPendingTargetPage = -1;
@@ -812,6 +825,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // instead of the end. Remember the intent and resolve it once the
         // downloader reports the real page count.
         mOpenAtChapterEnd = mChapterProvider != null && page >= Integer.MAX_VALUE - 1;
+        mEndPageRetries = 0;
         // Each chapter has its own page count: keep the previous chapter's
         // total out of the scrubber until this one reports its own.
         mPageTotal = -1;
@@ -826,11 +840,25 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             // overlay here: there is already readable content on screen.
             openChapterDir(dir, page, frac, startFilePath);
             if (mChapterProvider != null) {
+                // "Open at image N" for an online chapter: N may not be on disk.
+                mRequestedPage = page >= 0 && page < Integer.MAX_VALUE - 1 ? page : -1;
+                resolveRequestedPageIfNeeded();
+            }
+            if (mOpenAtChapterEnd) {
+                // Head pages were on disk, but the user asked for the chapter
+                // END. Say so instead of silently showing page 3 of 184.
+                showLoading("正在定位本章末页…", -1, -1, -1, -1);
+            }
+            if (mChapterProvider != null) {
                 mChapterProvider.ensureChapter(index, page, new MangaChapterSession.DirCallback() {
                     @Override
                     public void onDir(File d, String error) {
                         // The folder is already open; onProgress grows mPages.
-                        hideLoading();
+                        // Keep the overlay while the requested page (chapter
+                        // end) is still missing - hiding it looked like a hang.
+                        if (!mOpenAtChapterEnd && mPendingTargetPage < 0) {
+                            hideLoading();
+                        }
                     }
                     @Override
                     public void onProgress(int done, int total, String curName,
@@ -845,7 +873,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 mPageCounter.setText(counterText());
                                 notifyTrayProgress();
                                 requestChapterEndIfNeeded(total);
-                                if (done < total) {
+                                resolveRequestedPageIfNeeded();
+                                if (done < total || mOpenAtChapterEnd
+                                        || mPendingTargetPage >= 0) {
+                                    // Still downloading OR still waiting for the
+                                    // page the user asked for: keep the overlay
+                                    // (and its live numbers) on screen.
                                     updateChapterDownloadProgress(dir, done, total,
                                             curName, curDone, curTotal);
                                 } else {
@@ -885,6 +918,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         if (!opened) {
                             opened = true;
                             openChapterDir(d, page, frac, startFilePath);
+                            if (mChapterProvider != null) {
+                                mRequestedPage = page >= 0 && page < Integer.MAX_VALUE - 1
+                                        ? page : -1;
+                                resolveRequestedPageIfNeeded();
+                            }
                         }
                     });
                 }
@@ -900,6 +938,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                         mPageCounter.setText(counterText());
                         notifyTrayProgress();
                         requestChapterEndIfNeeded(total);
+                        resolveRequestedPageIfNeeded();
                         updateChapterDownloadProgress(mChapterDirs.get(index), done, total,
                                 curName, curDone, curTotal);
                         if (!opened) {
@@ -912,6 +951,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                                 hideLoading();
                                 mChapterDirs.set(index, d);
                                 openChapterDir(d, page, frac, startFilePath);
+                                if (mChapterProvider != null) {
+                                    mRequestedPage = page >= 0 && page < Integer.MAX_VALUE - 1
+                                            ? page : -1;
+                                    resolveRequestedPageIfNeeded();
+                                }
                             }
                         } else {
                             // Already open: grow the page list as the tail lands.
@@ -972,20 +1016,55 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         final int last = total - 1;
-        if (last < mPages.size()) {
-            // Last page is on disk (or the whole chapter is local): done.
+        // The page list of an online chapter only contains what has landed and
+        // in download order, so look the LAST PAGE NUMBER up by its file name.
+        // Using mPages.size()-1 here is what stopped the reader on page 3-4 of
+        // a 184 page chapter.
+        int position = positionOfRemotePage(last);
+        if (position >= 0) {
             mOpenAtChapterEnd = false;
-            if (mIndex != last) {
-                showPage(last);
+            mPendingTargetPage = -1;
+            mEndPageRetries = 0;
+            if (mIndex != position) {
+                showPage(position);
             }
             return;
         }
-        // Only the head of the chapter is downloaded. Ask for exactly the last
-        // page; it is re-asked on the next progress tick if setFolder() cleared
-        // the pending index while the chapter folder was being opened.
-        mPendingTargetPage = last;
-        showHint("正在定位第 " + total + " 张…");
+        // Not on disk yet: remember the page NUMBER (not a list position) and
+        // pull exactly that page; refreshChapterPageList() jumps the moment it
+        // appears, wherever it sits in the list.
+        if (mPendingTargetPage != last) {
+            mPendingTargetPage = last;
+            showHint("正在定位第 " + total + " 张…");
+        }
         requestSinglePage(last);
+    }
+
+    /**
+     * Honours the page the caller asked for when opening a chapter. For an
+     * online chapter only some pages are on disk, so setFolder() clamped to the
+     * last AVAILABLE page and the reader opened at page 3 instead of the page
+     * the user asked for. Here the page is requested by its server number and
+     * the reader jumps as soon as it lands.
+     */
+    private void resolveRequestedPageIfNeeded() {
+        if (mChapterProvider == null || mRequestedPage < 0) {
+            return;
+        }
+        int position = positionOfRemotePage(mRequestedPage);
+        if (position >= 0) {
+            mRequestedPage = -1;
+            if (mIndex != position) {
+                showPage(position);
+            }
+            return;
+        }
+        if (mPendingTargetPage != mRequestedPage) {
+            mPendingTargetPage = mRequestedPage;
+            showHint("正在定位第 " + (mRequestedPage + 1) + " 张…");
+            showLoading("正在定位第 " + (mRequestedPage + 1) + " 张…", -1, -1, -1, -1);
+        }
+        requestSinglePage(mRequestedPage);
     }
 
     /** One targeted retry for a page the bulk download gave up on. */
@@ -1015,12 +1094,31 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             if (dir == null) {
                 showHint("第 " + (index + 1) + " 张加载失败"
                         + (error == null || error.isEmpty() ? "" : "：" + error));
+                // A missing TARGET page is what made "switch to the previous
+                // chapter" hang on a black screen forever: the bulk pass had
+                // already moved past it, and nothing asked again.
+                if (mPendingTargetPage == index && mEndPageRetries < 3) {
+                    mEndPageRetries++;
+                    mSingleFetchPage = -1;          // bypass the 5 s throttle
+                    mMainHandler.postDelayed(() -> {
+                        if (!mDestroyed && mPendingTargetPage == index) {
+                            showHint("第 " + (index + 1) + " 张重试中…");
+                            requestSinglePage(index);
+                        }
+                    }, 1200L * mEndPageRetries);
+                }
                 return;
             }
             mLastChapterListRefreshMs = 0L;
             refreshChapterPageList(true);
-            if (mPendingTargetPage >= 0 && mPendingTargetPage < mPages.size()) {
-                showPage(mPendingTargetPage);
+            if (mPendingTargetPage >= 0) {
+                int position = positionOfRemotePage(mPendingTargetPage);
+                if (position >= 0) {
+                    mOpenAtChapterEnd = false;
+                    mPendingTargetPage = -1;
+                    mEndPageRetries = 0;
+                    showPage(position);
+                }
             }
         }));
     }
@@ -1134,16 +1232,23 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
         mPages.clear();
         mPages.addAll(all);
-        // Pages that just landed no longer need a prefetch slot.
-        mPrefetchInFlight.removeIf(i -> i < mPages.size());
+        // Pages that just landed no longer need a prefetch slot. Matched by
+        // REMOTE page number: a position comparison dropped the slot of a page
+        // that had not actually arrived (its file sat later in the list).
+        mPrefetchInFlight.removeIf(i -> positionOfRemotePage(i) >= 0);
         mIndex = keepIndex;
         // If the user asked for a page that was still downloading, take them
         // there now that it has landed - do NOT snap back to keepIndex.
         boolean jumped = false;
-        if (mPendingTargetPage >= 0 && mPendingTargetPage < mPages.size()) {
-            mIndex = mPendingTargetPage;
-            mPendingTargetPage = -1;
-            jumped = true;
+        if (mPendingTargetPage >= 0) {
+            int position = positionOfRemotePage(mPendingTargetPage);
+            if (position >= 0) {
+                mIndex = position;
+                mPendingTargetPage = -1;
+                mOpenAtChapterEnd = false;
+                mEndPageRetries = 0;
+                jumped = true;
+            }
         }
         mPageCounter.setText(counterText());
         notifyTrayProgress();
@@ -1223,6 +1328,61 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  otherwise the number of files we can see on disk. */
     private int pageTotal() {
         return mPageTotal > mPages.size() ? mPageTotal : mPages.size();
+    }
+
+    /**
+     * Remote page number encoded in a cache file name ("0183.avif" → 183).
+     *
+     * For an online chapter the cache folder only holds the pages that have
+     * landed, and they land in download order (the page the user jumped to
+     * first, then outwards), so a position inside mPages is NOT the page
+     * number. Everything that talks to the server (fetchPage, the last-page
+     * jump, the read-ahead window) must use this number instead.
+     */
+    private int remoteIndexOfFile(File file) {
+        if (file == null) {
+            return -1;
+        }
+        String name = file.getName();
+        int end = 0;
+        while (end < name.length() && Character.isDigit(name.charAt(end))) {
+            end++;
+        }
+        if (end == 0 || end > 6) {
+            return -1;   // local folder with "page 1.jpg"-style names
+        }
+        try {
+            return Integer.parseInt(name.substring(0, end));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** Position in [mPages] of a REMOTE page number, -1 when it has not landed
+     *  yet. For local chapters (or a provider-less session) the two coincide. */
+    private int positionOfRemotePage(int remote) {
+        if (remote < 0) {
+            return -1;
+        }
+        if (mChapterProvider == null) {
+            return remote < mPages.size() ? remote : -1;
+        }
+        for (int i = 0; i < mPages.size(); i++) {
+            if (remoteIndexOfFile(mPages.get(i)) == remote) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Remote page number of the page currently on screen. */
+    private int currentRemoteIndex() {
+        if (mChapterProvider == null) {
+            return mIndex;
+        }
+        int remote = mIndex >= 0 && mIndex < mPages.size()
+                ? remoteIndexOfFile(mPages.get(mIndex)) : -1;
+        return remote >= 0 ? remote : mIndex;
     }
 
     private String counterText() {
@@ -1490,6 +1650,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             index = pageGroupAnchorFor(index, pageGroupAnchors());
         }
         mPendingTargetPage = -1;
+        // A real page turn cancels any "open at page N" request that was still
+        // waiting for its download; otherwise the next progress tick would
+        // yank the user back to it.
+        mRequestedPage = -1;
         stopVideo(true);
         cancelAuto();
         final int generation = ++mLoadGeneration;
@@ -1675,6 +1839,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // Only show the overlay if decoding actually takes a while (large
         // image / AVIF). Fast decodes cancel it in displayLoadedPage().
         mDecodePending = true;
+        mDecodeSince = android.os.SystemClock.uptimeMillis();
         mMainHandler.removeCallbacks(mShowDecodeLoading);
         mMainHandler.postDelayed(mShowDecodeLoading, 250L);
         mRequestedPageKey = cacheKey;
@@ -2122,10 +2287,16 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // still on the server, otherwise paging always downloads one at a time.
         if (mChapterProvider != null && mPageTotal > mPages.size()) {
             int ahead = fetchAhead();
+            // Window arithmetic must happen in REMOTE page numbers: a partially
+            // downloaded chapter has gaps, so position+1 is not the next page.
+            int base = currentRemoteIndex();
+            if (base < 0) {
+                base = mIndex;
+            }
             for (int d = 1; d <= ahead; d++) {
-                fetchIfMissing(mIndex + d);
-                if (d == 1) {
-                    fetchIfMissing(mIndex - 1);
+                fetchIfMissing(base + d);
+                if (d <= preloadBehind()) {
+                    fetchIfMissing(base - d);
                 }
             }
         }
@@ -2140,15 +2311,19 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /** Fetches a not-yet-cached page of an online chapter in the background. */
-    private void fetchIfMissing(int index) {
-        if (index < 0 || index >= pageTotal()) {
+    /** Fetches a not-yet-cached page of an online chapter in the background.
+     *  [remoteIndex] is the PAGE NUMBER on the server, not a list position. */
+    private void fetchIfMissing(int remoteIndex) {
+        if (mChapterProvider == null) {
             return;
         }
-        // Not landed yet (beyond the current on-disk page list).
-        if (index >= mPages.size()) {
-            requestSinglePage(index);
+        if (remoteIndex < 0 || remoteIndex >= pageTotal()) {
+            return;
         }
+        if (positionOfRemotePage(remoteIndex) >= 0) {
+            return;   // already on disk
+        }
+        requestSinglePage(remoteIndex);
     }
 
 
@@ -3892,7 +4067,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  suppressed so background page downloads never cover what is being read. */
     private void updateChapterDownloadProgress(File dir, int done, int total,
                                                String curName, long curDone, long curTotal) {
-        if (hasVisibleContent()) {
+        // The user asked for a specific page (chapter end / scrubbed target) and
+        // it is not on disk yet: keep telling them what is happening, even if
+        // the head of the chapter is already readable. Silence here looked
+        // exactly like a frozen reader on a black screen.
+        final boolean waiting = mPendingTargetPage >= 0 || mOpenAtChapterEnd;
+        if (!waiting && hasVisibleContent()) {
             // The page the user opened is already on screen. A background
             // download of the REST of the chapter must not leave a stale
             // "已下载 x / y 个文件" bar hanging over readable content.
@@ -3902,7 +4082,9 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         // A page is decoding (cache miss) - the overlay must say "正在加载图片",
         // NOT the chapter's background download progress. Those are different
         // things; showing download numbers over a decoding page is misleading.
-        if (mDecodePending) {
+        // The flag can be left behind by a cancelled decode, so it expires.
+        if (mDecodePending && !waiting
+                && android.os.SystemClock.uptimeMillis() - mDecodeSince < 4000L) {
             return;
         }
         // A video page buffers via MediaDataSource, NOT via the chapter image
@@ -3930,6 +4112,15 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
                 sizePart = " " + formatMiB(curDone);
             }
             fileLine = curName + sizePart;
+        }
+        if (waiting) {
+            int target = mPendingTargetPage + 1;
+            String head = target > 0
+                    ? "正在定位第 " + target + " 张…"
+                    : "正在定位本章末页…";
+            showLoading(head + (fileLine.isEmpty() ? "" : " · " + fileLine),
+                    done, total, -1L, -1L);
+            return;
         }
         showLoading(fileLine, done, total, -1L, -1L);
     }
