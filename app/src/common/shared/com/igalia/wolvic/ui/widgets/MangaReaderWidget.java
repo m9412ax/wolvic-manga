@@ -2718,7 +2718,7 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             return;
         }
         if (mStripView != null) {
-            mStripView.setRenderScale(panelTextureScale());
+            mStripView.setRenderScale(panelScreenShare());
         }
         float vw = mStripView.getWidth() > 0 ? mStripView.getWidth() : mPageImage.getWidth();
         if (vw <= 0) {
@@ -3047,12 +3047,12 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         if (mDestroyed || isContinuous() || mTiledPage) {
             return;
         }
-        // The page is drawn into a layer texture that is textureScale times the
-        // view's own pixel size (that is how Wolvic oversamples a panel), so the
-        // useful resolution is exactly scale * textureScale. Resampling to that
-        // size instead of to the view size means the compositor's own tap and
-        // ours live at the same scale: one cheap, static step instead of two.
-        float want = Math.max(0.02f, scale * panelTextureScale());
+        // The page is drawn into a surface whose pixel size is textureWidth(),
+        // which is not the same thing as the pixels the panel covers on screen.
+        // Resampling to the screen's pixel count means the canvas ends up
+        // drawing the copy at 1:1, so the compositor has nothing left to shrink
+        // and its single bilinear tap never has to skip a source pixel.
+        float want = Math.max(0.02f, scale * panelScreenShare());
         if (Math.abs(want - mPrescaleWanted) > 0.01f) {
             mPrescaleWanted = want;
             mMainHandler.removeCallbacks(mPrescaleTask);
@@ -3060,9 +3060,25 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         }
     }
 
-    /** How many pixels of layer texture one page pixel spans on this panel. */
-    private float panelTextureScale() {
-        return mWidgetPlacement != null ? mWidgetPlacement.textureScale : 1.0f;
+    /** Screen pixels per surface pixel of the reader panel.
+     *
+     *  <p>The widget surface is exactly {@code textureWidth()} px wide, so its
+     *  canvas is not the screen: at 1x the texture is already sized to the
+     *  panel's on-screen footprint and this is 1, on an oversampled panel it is
+     *  below 1. Pre-scaled copies have to target the screen, not the canvas -
+     *  a copy sized to the canvas instead gets shrunk a second time by the
+     *  compositor's one bilinear tap, which is exactly the softness (and the
+     *  edge crawl that never goes away) seen at 1x. */
+    private float panelScreenShare() {
+        if (mWidgetPlacement == null) {
+            return 1.0f;
+        }
+        final float texW = mWidgetPlacement.textureWidth();
+        if (texW <= 0.0f) {
+            return 1.0f;
+        }
+        final float share = MangaPanelScale.screenFootprintPx(mWidgetPlacement) / texW;
+        return (share > 0.05f && share < 8.0f) ? share : 1.0f;
     }
 
     private void prescalePageNow() {
