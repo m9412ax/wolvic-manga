@@ -134,7 +134,13 @@ public class MangaStripView extends View {
         }
         // Quantise UP to 1/16 so a pinch reuses one resample, and so the drawn
         // copy is never upscaled (that would just look soft).
-        float q = (float) Math.ceil(si * 16f) / 16f;
+        // Nearest 1/32, never above the target: ceiling left copies up to 6%
+        // wider than the texture the compositor samples, which it then had to
+        // shrink again - that second pass is visible as softness at 1:1.
+        float q = (float) Math.round(si * 32f) / 32f;
+        if (q > si) {
+            q = si;
+        }
         if (q >= 1f) {
             return src;
         }

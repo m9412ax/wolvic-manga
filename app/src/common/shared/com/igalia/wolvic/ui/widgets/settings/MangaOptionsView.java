@@ -168,8 +168,8 @@ public class MangaOptionsView extends SettingsView
         radio("面板分辨率", MangaSettings.READER_RENDER_MODE,
                 new String[]{"自动（按面板屏幕尺寸计算）", "手动（用下面的百分比）"},
                 new int[]{0, 1});
-        radio("自动清晰度倍数", MangaSettings.READER_RENDER_MULT,
-                new String[]{"1x 最稳", "2x 推荐（稳且更清晰）", "3x 最锐（可能摩尔纹）"},
+        radio("自动清晰度", MangaSettings.READER_RENDER_MULT,
+                new String[]{"1x 稳定（推荐）", "2x 更锐但会抖", "3x 最锐，抖动明显"},
                 new int[]{1, 2, 3});
         percentSlider("手动面板分辨率（仅“手动”生效；重开书生效）",
                 MangaSettings.READER_RENDER_SCALE, 20, 100);

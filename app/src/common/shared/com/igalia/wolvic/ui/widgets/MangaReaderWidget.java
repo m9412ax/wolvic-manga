@@ -87,10 +87,6 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  Keep a wide margin. This is a DRAW limit, not a decode limit - pages
      *  above it are decoded at 1:1 into tiles, so no detail is lost. */
     private static final long SINGLE_BITMAP_LIMIT = 72L * 1024 * 1024;
-    /** Decode budget for a single-page AVIF frame. AVIF cannot be tiled, so
-     *  this is the only chance to keep the full frame; it still stays well
-     *  below the draw limit. */
-    private static final long AVIF_PAGE_BYTES = 96L * 1024 * 1024;
     /** Each region tile must also stay far below the draw limit. */
     private static final long TILE_BYTES_LIMIT = 40L * 1024 * 1024;
     /** Above this size, holding every 1:1 tile at once would exhaust memory;
@@ -2127,13 +2123,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private Bitmap decodePage(File file, long byteBudget, boolean crop) {
         try {
             if (MangaImageDecoder.isAvif(file)) {
-                // AVIF has no tiled fallback, so a page that misses the byte
-                // budget by a little (a 3000x6290 frame is 75 MB) gets halved
-                // and stays soft for good. Give the single-page decode some
-                // head room; the pre-scaled copy is only panel-sized anyway.
-                long avifBudget = byteBudget >= SINGLE_BITMAP_LIMIT
-                        ? Math.max(byteBudget, AVIF_PAGE_BYTES) : byteBudget;
-                Bitmap bitmap = MangaImageDecoder.decodeAvifWithinBudget(file, avifBudget);
+                // AVIF has no tiled fallback, and decoding the full frame of a
+                // large page takes seconds. Keep the budget at the single
+                // bitmap limit: the panel texture is far smaller than that, so
+                // a bigger source buys nothing visible but costs load time.
+                Bitmap bitmap = MangaImageDecoder.decodeAvifWithinBudget(file, byteBudget);
                 return bitmap != null && crop ? cropBorders(bitmap) : bitmap;
             }
             BitmapFactory.Options bounds = new BitmapFactory.Options();
@@ -3083,8 +3077,11 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
             }
             return;
         }
-        // Quantise UP to 1/16: one resample per pinch step, never upscaled.
-        float q = (float) Math.ceil(want * 16f) / 16f;
+        // Snap to within ~1.5% of the exact target instead of rounding UP: the
+        // old ceil() could leave the copy up to 6% wider than the panel
+        // texture, and the compositor then had to shrink it once more. At 1:1
+        // that extra downscale is exactly the softness that is visible.
+        float q = (float) Math.round(want * 32f) / 32f;
         if (q < 0.0625f) {
             q = 0.0625f;
         }

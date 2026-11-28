@@ -50,9 +50,12 @@ public final class MangaSettings {
      *  percentage of Wolvic's default textureScale. */
     public static final String READER_RENDER_MODE = "reader_render_mode";
     /** In automatic mode, how many texels per screen pixel the panel gets.
-     *  1 = steadiest, 2 = steadiest while keeping twice the detail (a bilinear
-     *  tap averages exactly a 2x2 block), 3 = more detail but moire-prone. */
-    public static final String READER_RENDER_MULT = "reader_render_mult";
+     *  ONLY 1 works: at exactly 1:1 the compositor's bilinear tap degenerates
+     *  into a copy, so nothing moves when the head does. Any larger multiple
+     *  covers several texels per screen pixel and the sampling grid slides
+     *  with every head movement, which reads as shimmer - measured on this
+     *  device: 2x and 3x shake, 1x is rock steady. */
+    public static final String READER_RENDER_MULT = "reader_panel_mult";
     /** In-RAM preload: how many NEIGHBOUR pages (each direction) are decoded
      *  into the Bitmap cache beforehand. Purely memory, independent of how
      *  many pages are fetched to disk. */
@@ -357,7 +360,7 @@ public final class MangaSettings {
             case READER_RENDER_SCALE:
                 return 100;
             case READER_RENDER_MULT:
-                return 2;
+                return 1;
             case READER_FETCH_AHEAD:
                 return 4;
             case READER_PRELOAD_THREADS:
