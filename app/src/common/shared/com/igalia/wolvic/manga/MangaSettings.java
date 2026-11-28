@@ -42,14 +42,17 @@ public final class MangaSettings {
     public static final String READER_AUTO_ADVANCE_SEC = "reader_auto_advance_sec";
     public static final String READER_SHOW_PAGE_NUMBER = "reader_show_page_number";
     public static final String READER_CROP_BORDERS = "reader_crop_borders";
-    /** Percent (25..100) of the on-screen pixel count the page bitmap is
-     *  resampled to before drawing. Wolvic renders every widget panel into a
-     *  SurfaceTexture at roughly 5x the panel's on-screen pixels and the VR
-     *  compositor then shrinks it with a plain bilinear tap (an external OES
-     *  texture cannot carry mipmaps). Content that carries detail finer than
-     *  the final screen pixels therefore crawls/shimmer when the head moves.
-     *  Lowering this trades sharpness for stability. 100 = off. */
+    /** Percent (20..100) added on top of Wolvic's own textureScale. Only used
+     *  when {@link #READER_RENDER_MODE} is manual. */
     public static final String READER_RENDER_SCALE = "reader_render_scale";
+    /** 0 = work the panel resolution out from its own on-screen size (see
+     *  MangaPanelScale), 1 = use {@link #READER_RENDER_SCALE} as a manual
+     *  percentage of Wolvic's default textureScale. */
+    public static final String READER_RENDER_MODE = "reader_render_mode";
+    /** In automatic mode, how many texels per screen pixel the panel gets.
+     *  1 = steadiest, 2 = steadiest while keeping twice the detail (a bilinear
+     *  tap averages exactly a 2x2 block), 3 = more detail but moire-prone. */
+    public static final String READER_RENDER_MULT = "reader_render_mult";
     /** In-RAM preload: how many NEIGHBOUR pages (each direction) are decoded
      *  into the Bitmap cache beforehand. Purely memory, independent of how
      *  many pages are fetched to disk. */
@@ -353,6 +356,8 @@ public final class MangaSettings {
                 return 4;
             case READER_RENDER_SCALE:
                 return 100;
+            case READER_RENDER_MULT:
+                return 2;
             case READER_FETCH_AHEAD:
                 return 4;
             case READER_PRELOAD_THREADS:

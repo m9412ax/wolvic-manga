@@ -48,6 +48,7 @@ import com.igalia.wolvic.manga.MangaChapterSession;
 import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSettings;
 import com.igalia.wolvic.manga.MangaImageDecoder;
+import com.igalia.wolvic.manga.MangaPanelScale;
 import com.igalia.wolvic.manga.RemoteManga;
 import com.igalia.wolvic.manga.RemoteChapterLoader;
 import com.igalia.wolvic.manga.SourceVideo;
@@ -86,6 +87,10 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
      *  Keep a wide margin. This is a DRAW limit, not a decode limit - pages
      *  above it are decoded at 1:1 into tiles, so no detail is lost. */
     private static final long SINGLE_BITMAP_LIMIT = 72L * 1024 * 1024;
+    /** Decode budget for a single-page AVIF frame. AVIF cannot be tiled, so
+     *  this is the only chance to keep the full frame; it still stays well
+     *  below the draw limit. */
+    private static final long AVIF_PAGE_BYTES = 96L * 1024 * 1024;
     /** Each region tile must also stay far below the draw limit. */
     private static final long TILE_BYTES_LIMIT = 40L * 1024 * 1024;
     /** Above this size, holding every 1:1 tile at once would exhaust memory;
@@ -634,23 +639,18 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         aPlacement.parentHandle = -1;
         aPlacement.cylinder = false;
         aPlacement.visible = false;
-        // The reader panel is a VR quad layer. The compositor shrinks its
+        // The reader panel is a VR quad layer, so the compositor samples its
         // texture down to the pixels the panel covers on screen with a single
-        // bilinear tap, and Wolvic already oversamples the panel on top of the
-        // display density (~1.6x here). A 3000px page therefore gets minified
-        // 4-5x every frame, which is exactly what makes text and 1dp borders
-        // crawl while the head moves. Lowering the LAYER texture (not the page
-        // bitmap) brings that tap close to 1:1; the page resample below follows
-        // the same factor so the page is still drawn at full panel resolution.
-        int panelPct = initSettings.integer(MangaSettings.READER_RENDER_SCALE);
-        float texScale = SettingsStore.getInstance(context).getDisplayDpi() / 100.0f;
-        if (panelPct > 0 && panelPct < 100) {
-            texScale *= Math.max(0.2f, panelPct / 100.0f);
-        }
-        aPlacement.textureScale = Math.max(0.2f, texScale);
+        // bilinear tap (an external OES texture cannot carry mipmaps). Sizing
+        // the texture to an exact multiple of that footprint is what keeps the
+        // sampling grid locked while the head moves; MangaPanelScale derives it
+        // from the panel's own world size and distance.
+        aPlacement.textureScale = MangaPanelScale.textureScale(context, aPlacement);
         Log.i(TAG, "placement w=" + aPlacement.width + " y=" + aPlacement.translationY
                 + " z=" + aPlacement.translationZ
-                + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight());
+                + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight()
+                + " footprint=" + Math.round(MangaPanelScale.screenFootprintPx(aPlacement))
+                + " texScale=" + aPlacement.textureScale);
     }
 
     // ----------------------------------------------------------- content
@@ -2127,7 +2127,13 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
     private Bitmap decodePage(File file, long byteBudget, boolean crop) {
         try {
             if (MangaImageDecoder.isAvif(file)) {
-                Bitmap bitmap = MangaImageDecoder.decodeAvifWithinBudget(file, byteBudget);
+                // AVIF has no tiled fallback, so a page that misses the byte
+                // budget by a little (a 3000x6290 frame is 75 MB) gets halved
+                // and stays soft for good. Give the single-page decode some
+                // head room; the pre-scaled copy is only panel-sized anyway.
+                long avifBudget = byteBudget >= SINGLE_BITMAP_LIMIT
+                        ? Math.max(byteBudget, AVIF_PAGE_BYTES) : byteBudget;
+                Bitmap bitmap = MangaImageDecoder.decodeAvifWithinBudget(file, avifBudget);
                 return bitmap != null && crop ? cropBorders(bitmap) : bitmap;
             }
             BitmapFactory.Options bounds = new BitmapFactory.Options();

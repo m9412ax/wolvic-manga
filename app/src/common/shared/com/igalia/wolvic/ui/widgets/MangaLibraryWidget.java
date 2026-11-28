@@ -57,6 +57,7 @@ import com.igalia.wolvic.manga.MangaDownloader;
 import com.igalia.wolvic.manga.MangaFileCore;
 import com.igalia.wolvic.manga.MangaKeyCapture;
 import com.igalia.wolvic.manga.MangaPaidFilter;
+import com.igalia.wolvic.manga.MangaPanelScale;
 import com.igalia.wolvic.manga.MangaReadingState;
 import com.igalia.wolvic.manga.MangaSmb;
 import com.igalia.wolvic.manga.Manga115Api;
@@ -492,17 +493,14 @@ public class MangaLibraryWidget extends UIWidget {
         aPlacement.visible = false;
         // Same reasoning as the reader: the panel is a VR layer, so the
         // compositor minifies this texture to screen pixels with one bilinear
-        // tap, and at Wolvic's default oversampling thin 1dp borders crawl when
-        // the head moves. Recomputed from the DPI base every time so calling
-        // this again (applyLibrarySize) does not compound the factor.
-        int panelPct = MangaSettings.get(context).integer(MangaSettings.READER_RENDER_SCALE);
-        float texScale = SettingsStore.getInstance(context).getDisplayDpi() / 100.0f;
-        if (panelPct > 0 && panelPct < 100) {
-            texScale *= Math.max(0.2f, panelPct / 100.0f);
-        }
-        aPlacement.textureScale = Math.max(0.2f, texScale);
+        // tap. MangaPanelScale sizes it to an exact multiple of the panel's
+        // on-screen footprint, derived from the placement itself so calling
+        // this again (applyLibrarySize) cannot compound the factor.
+        aPlacement.textureScale = MangaPanelScale.textureScale(context, aPlacement);
         Log.i(TAG, "placement y=" + aPlacement.translationY + " z=" + aPlacement.translationZ
-                + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight());
+                + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight()
+                + " footprint=" + Math.round(MangaPanelScale.screenFootprintPx(aPlacement))
+                + " texScale=" + aPlacement.textureScale);
     }
 
     @Override

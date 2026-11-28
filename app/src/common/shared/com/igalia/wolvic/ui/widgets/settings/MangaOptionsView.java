@@ -158,21 +158,20 @@ public class MangaOptionsView extends SettingsView
         radio("缩放模式", MangaSettings.READER_SCALE,
                 new String[]{"适应屏幕", "拉伸填满", "居中裁剪", "原始尺寸"},
                 new int[]{0, 1, 2, 3});
-        // Wolvic draws every panel into a VR layer texture at ~1.6x the pixels
-        // the panel covers on screen, and the compositor then minifies it with
-        // a plain bilinear tap (external OES textures cannot carry mipmaps).
-        // Detail finer than the final screen pixels shimmers when the head
-        // moves. This scales the LAYER TEXTURE itself, so the sampler works at
-        // ~1:1 instead of 4-5x minification: sharp and steady at the same time.
-        // Takes effect the next time a book is opened (the layer is created
-        // then). Lower values are softer only because they carry fewer texels
-        // than the panel really covers.
-        // Only INTEGER minification ratios are steady: at exactly N:1 a
-        // bilinear tap averages an N x N block, while at 2.7:1 it keeps
-        // skipping texels and the sampling grid slides with every head move.
-        // A coarse radio group can never land on the exact ratio, so this is a
-        // 1% slider: the stable band is narrow and you have to hunt for it.
-        percentSlider("面板分辨率（低=更稳，高=更锐；重开书生效）",
+        // A panel is composited from an external OES texture that cannot carry
+        // mipmaps, so the runtime shrinks it to screen pixels with one bilinear
+        // tap. Automatic mode derives the panel's real on-screen width from its
+        // angular size and sizes the texture to an exact multiple of it, which
+        // is what keeps the sampling grid locked while the head moves. 1x is
+        // steadiest, 2x keeps twice the detail and still averages exactly a
+        // 2x2 texel block per tap.
+        radio("面板分辨率", MangaSettings.READER_RENDER_MODE,
+                new String[]{"自动（按面板屏幕尺寸计算）", "手动（用下面的百分比）"},
+                new int[]{0, 1});
+        radio("自动清晰度倍数", MangaSettings.READER_RENDER_MULT,
+                new String[]{"1x 最稳", "2x 推荐（稳且更清晰）", "3x 最锐（可能摩尔纹）"},
+                new int[]{1, 2, 3});
+        percentSlider("手动面板分辨率（仅“手动”生效；重开书生效）",
                 MangaSettings.READER_RENDER_SCALE, 20, 100);
         radio("阅读背景", MangaSettings.READER_BACKGROUND,
                 new String[]{"黑色", "白色", "灰色"}, new int[]{0, 1, 2});
