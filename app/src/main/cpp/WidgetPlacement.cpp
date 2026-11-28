@@ -69,6 +69,7 @@ WidgetPlacement::FromJava(JNIEnv* aEnv, jobject& aObject) {
   GET_BOOLEAN_FIELD(layer);
   GET_INT_FIELD(layerPriority);
   GET_BOOLEAN_FIELD(proxifyLayer);
+  GET_BOOLEAN_FIELD(mipmap);
   GET_FLOAT_FIELD(textureScale, "textureScale");
   GET_BOOLEAN_FIELD(cylinder);
   GET_FLOAT_FIELD(cylinderMapRadius, "cylinderMapRadius");

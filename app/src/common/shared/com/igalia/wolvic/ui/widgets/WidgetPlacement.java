@@ -66,6 +66,11 @@ public class WidgetPlacement {
     public boolean layer = true;
     public int layerPriority = 0; // Used for depth sorting
     public boolean proxifyLayer = false;
+    // Render the widget in the scene as a quad with a mip mapped copy of its
+    // surface texture, instead of submitting a composition layer. Composition
+    // layers sample an external OES texture with one bilinear tap, which crawls
+    // whenever the content is drawn smaller than 1:1.
+    public boolean mipmap = false;
     public float textureScale = SettingsStore.DISPLAY_DPI_DEFAULT / 100.0f;
     // Widget will be curved if enabled.
     public boolean cylinder = true;
@@ -117,6 +122,7 @@ public class WidgetPlacement {
         this.layer = w.layer;
         this.layerPriority = w.layerPriority;
         this.proxifyLayer = w.proxifyLayer;
+        this.mipmap = w.mipmap;
         this.textureScale = w.textureScale;
         this.cylinder = w.cylinder;
         this.tintColor = w.tintColor;

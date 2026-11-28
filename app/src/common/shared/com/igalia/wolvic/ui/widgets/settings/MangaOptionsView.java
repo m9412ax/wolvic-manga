@@ -158,18 +158,16 @@ public class MangaOptionsView extends SettingsView
         radio("缩放模式", MangaSettings.READER_SCALE,
                 new String[]{"适应屏幕", "拉伸填满", "居中裁剪", "原始尺寸"},
                 new int[]{0, 1, 2, 3});
-        // A panel is composited from an external OES texture that cannot carry
-        // mipmaps, so the runtime shrinks it to screen pixels with one bilinear
-        // tap. Automatic mode derives the panel's real on-screen width from its
-        // angular size and sizes the texture to an exact multiple of it, which
-        // is what keeps the sampling grid locked while the head moves. 1x is
-        // steadiest, 2x keeps twice the detail and still averages exactly a
-        // 2x2 texel block per tap.
+        // The reader panel is drawn in the scene from a mip mapped copy of its
+        // surface, so minification is filtered: the multiple only trades
+        // memory for detail now, it no longer decides whether the panel
+        // crawls. Automatic mode derives the panel's real on-screen width from
+        // its angular size and sizes the texture to that multiple of it.
         radio("面板分辨率", MangaSettings.READER_RENDER_MODE,
                 new String[]{"自动（按面板屏幕尺寸计算）", "手动（用下面的百分比）"},
                 new int[]{0, 1});
         radio("自动清晰度", MangaSettings.READER_RENDER_MULT,
-                new String[]{"1x 稳定（推荐）", "2x 更锐但会抖", "3x 最锐，抖动明显"},
+                new String[]{"1x 省内存", "2x 清晰（推荐）", "3x 最锐（吃内存）"},
                 new int[]{1, 2, 3});
         percentSlider("手动面板分辨率（仅“手动”生效；重开书生效）",
                 MangaSettings.READER_RENDER_SCALE, 20, 100);

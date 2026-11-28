@@ -41,6 +41,9 @@ struct WidgetPlacement {
   bool layer;
   int32_t layerPriority;
   bool proxifyLayer;
+  // Draw the widget in the scene with a mip mapped copy of its surface texture
+  // instead of submitting it as a composition layer.
+  bool mipmap;
   float textureScale;
   bool cylinder;
   float cylinderMapRadius;

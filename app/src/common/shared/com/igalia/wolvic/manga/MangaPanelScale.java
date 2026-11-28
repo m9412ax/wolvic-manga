@@ -11,24 +11,24 @@ import com.igalia.wolvic.browser.SettingsStore;
 import com.igalia.wolvic.ui.widgets.WidgetPlacement;
 
 /**
- * Works out how big the VR quad layer's texture has to be.
+ * Works out how big the reader panel's texture has to be.
  *
- * <p>A Wolvic panel is submitted to the runtime as an {@code XrCompositionLayerQuad}
- * and the compositor samples its texture down to the pixels the panel really
- * covers on screen with a single bilinear tap. {@code textureWidth()} is
- * {@code width * density * textureScale}, and the default {@code textureScale}
- * (display DPI / 100) oversamples the panel by a large factor - a 626dp reader
- * panel ends up with a texture that is several times wider than the number of
- * pixels it occupies on screen. Everything finer than the final screen pixels
- * then either crawls while the head moves (fractional minification ratio) or
- * turns into moire (integer ratio far above 1:1).
+ * <p>The panel is drawn in the scene (see {@code WidgetPlacement.mipmap}): the
+ * widget surface is copied into a regular 2D texture whose mip chain is rebuilt
+ * whenever the page changes, and the scene renderer minifies it with trilinear
+ * filtering. That removes the crawl a composition layer had - a layer samples
+ * an external OES texture that cannot carry mipmaps, so anything below 1:1 was
+ * picked from a moving, undersampled grid.
  *
- * <p>This class derives the panel's real on-screen width from its angular size
- * (world width and distance, both known to the widget) and returns a
- * {@code textureScale} that makes the texture an exact integer multiple of it.
- * 1x is the steadiest (nothing left to skip), 2x is the sweet spot: a bilinear
- * tap averages exactly a 2x2 block, so it stays perfectly steady while keeping
- * twice the detail.
+ * <p>{@code textureWidth()} is {@code width * density * textureScale}, and the
+ * default {@code textureScale} (display DPI / 100) oversamples the panel by a
+ * large factor - a 626dp reader panel ends up with a texture several times
+ * wider than the number of screen pixels it covers. Most of that detail can
+ * never be displayed, so this class derives the panel's real on-screen width
+ * from its angular size (world width and distance, both known to the widget)
+ * and returns a {@code textureScale} that gives the texture that many texels
+ * per screen pixel: enough headroom for a sharp result, small enough to stay
+ * cheap to filter.
  */
 public final class MangaPanelScale {
 

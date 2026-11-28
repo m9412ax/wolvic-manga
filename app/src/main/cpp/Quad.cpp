@@ -256,8 +256,10 @@ Quad::UpdateProgram(const std::string& aCustomFragmentShader) {
   if (texture) {
     if (texture->GetTarget() == GL_TEXTURE_CUBE_MAP) {
       features |= vrb::FeatureCubeTexture;
-    } else if (dynamic_cast<vrb::TextureSurface*>(texture.get()) != nullptr) {
-      features |= vrb::FeatureSurfaceTexture;
+    } else if (vrb::TextureSurface* surfaceTexture = dynamic_cast<vrb::TextureSurface*>(texture.get())) {
+      // A resolved surface texture is a plain 2D texture with a mip chain, so it
+      // has to be sampled with the regular sampler2D shader.
+      features |= surfaceTexture->IsMipmapResolveEnabled() ? vrb::FeatureTexture : vrb::FeatureSurfaceTexture;
     } else {
       features |= vrb::FeatureTexture;
     }

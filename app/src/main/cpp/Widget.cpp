@@ -111,6 +111,10 @@ struct Widget::State {
         vrb::RenderContextPtr render = context.lock();
         surface = vrb::TextureSurface::Create(render, name);
       }
+      // Widgets that ask for it get an in-scene quad whose texture is a regular
+      // 2D copy of the surface with a full mip chain, so the scene renderer can
+      // minify it with trilinear filtering instead of a single bilinear tap.
+      surface->SetMipmapResolve(placement->mipmap, aTextureWidth, aTextureHeight);
 
       vrb::Color tintColor = placement->GetTintColor();
       std::string customFragment;
@@ -284,6 +288,9 @@ Widget::GetSurfaceTextureSize(int32_t& aWidth, int32_t& aHeight) const {
 
 void
 Widget::SetSurfaceTextureSize(int32_t aWidth, int32_t aHeight) {
+  if (m.surface) {
+    m.surface->SetMipmapResolve(m.placement && m.placement->mipmap, aWidth, aHeight);
+  }
   if (m.quad) {
     m.quad->SetTextureSize(aWidth, aHeight);
   } else {
