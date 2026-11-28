@@ -13,12 +13,11 @@ import com.igalia.wolvic.ui.widgets.WidgetPlacement;
 /**
  * Works out how big the reader panel's texture has to be.
  *
- * <p>The panel is drawn in the scene (see {@code WidgetPlacement.mipmap}): the
- * widget surface is copied into a regular 2D texture whose mip chain is rebuilt
- * whenever the page changes, and the scene renderer minifies it with trilinear
- * filtering. That removes the crawl a composition layer had - a layer samples
- * an external OES texture that cannot carry mipmaps, so anything below 1:1 was
- * picked from a moving, undersampled grid.
+ * <p>The panel is a composition layer, and a layer samples an external OES
+ * texture that cannot carry mipmaps: anything below 1:1 is picked from a
+ * moving, undersampled grid, which is the crawl. At exactly 1:1 the bilinear
+ * tap degenerates into a copy, so matching the texture to the panel's real
+ * on-screen pixel count is what keeps it steady.
  *
  * <p>{@code textureWidth()} is {@code width * density * textureScale}, and the
  * default {@code textureScale} (display DPI / 100) oversamples the panel by a

@@ -50,12 +50,12 @@ public final class MangaSettings {
      *  percentage of Wolvic's default textureScale. */
     public static final String READER_RENDER_MODE = "reader_render_mode";
     /** In automatic mode, how many texels per screen pixel the panel gets.
-     *  The panel is drawn in the scene from a mip mapped copy of its surface
-     *  texture, so minification is filtered instead of undersampled and any
-     *  multiple is stable. 2 = crisp edges with about 2 texels per screen
-     *  pixel of headroom; 1 is lighter on memory, 3 only pays off when the
-     *  page is zoomed in a lot. */
-    public static final String READER_RENDER_MULT = "reader_panel_mult_mip";
+     *  ONLY 1 works: the layer's external OES texture cannot carry mipmaps, so
+     *  at exactly 1:1 the bilinear tap degenerates into a copy and nothing
+     *  moves when the head does. Any larger multiple covers several texels per
+     *  screen pixel and the sampling grid slides with every head movement -
+     *  measured on this device: 2x and 3x shake, 1x is rock steady. */
+    public static final String READER_RENDER_MULT = "reader_panel_mult";
     /** In-RAM preload: how many NEIGHBOUR pages (each direction) are decoded
      *  into the Bitmap cache beforehand. Purely memory, independent of how
      *  many pages are fetched to disk. */
@@ -360,7 +360,7 @@ public final class MangaSettings {
             case READER_RENDER_SCALE:
                 return 100;
             case READER_RENDER_MULT:
-                return 2;
+                return 1;
             case READER_FETCH_AHEAD:
                 return 4;
             case READER_PRELOAD_THREADS:

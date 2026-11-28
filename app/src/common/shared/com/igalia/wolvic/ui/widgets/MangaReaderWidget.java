@@ -635,26 +635,22 @@ public class MangaReaderWidget extends UIWidget implements TextureView.SurfaceTe
         aPlacement.parentHandle = -1;
         aPlacement.cylinder = false;
         aPlacement.visible = false;
-        // Render the panel in the scene instead of as a composition layer.
-        // A layer samples an external OES texture with a single bilinear tap and
-        // that texture cannot carry a mip chain, so every pixel of the panel
-        // that lands on less than one screen pixel is picked from a moving,
-        // undersampled grid: that is the crawl. In the scene we copy the
-        // surface into a regular 2D texture and rebuild its mip chain, so the
-        // panel can be minified with trilinear filtering at any ratio.
-        aPlacement.layer = false;
-        aPlacement.mipmap = true;
-        // With a mip chain the panel no longer has to sit at exactly 1:1, so
-        // the texture is sized to a small multiple of its on-screen footprint
-        // (MangaPanelScale works the footprint out from the panel's own world
-        // size and distance) and keeps that much real detail.
+        // The panel stays a composition layer: an in-scene quad has to rebuild
+        // its mip chain on every produced frame, which costs a full copy plus
+        // glGenerateMipmap per frame and shows up as stutter and blur.
+        aPlacement.layer = true;
+        aPlacement.mipmap = false;
+        // A layer samples an external OES texture that cannot carry mipmaps, so
+        // the panel is only steady when the texture matches the pixels it
+        // covers on screen. MangaPanelScale derives that footprint from the
+        // panel's own world width and distance.
         aPlacement.textureScale = MangaPanelScale.textureScale(context, aPlacement);
         Log.i(TAG, "placement w=" + aPlacement.width + " y=" + aPlacement.translationY
                 + " z=" + aPlacement.translationZ
                 + " tex=" + aPlacement.textureWidth() + "x" + aPlacement.textureHeight()
                 + " footprint=" + Math.round(MangaPanelScale.screenFootprintPx(aPlacement))
                 + " texScale=" + aPlacement.textureScale
-                + " layer=" + aPlacement.layer + " mip=" + aPlacement.mipmap);
+                + " layer=" + aPlacement.layer);
     }
 
     // ----------------------------------------------------------- content
